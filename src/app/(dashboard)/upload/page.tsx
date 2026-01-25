@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Upload, FolderSearch, RefreshCw } from "lucide-react";
 import { Dropzone } from "@/components/upload/dropzone";
 import { RunList } from "@/components/upload/run-list";
-import { RunMeta, UploadResponse, IngestResponse, RunsListResponse } from "@/lib/types";
+import { RunManifestInfo, UploadResponse, IngestResponseV2, RunsListResponseV2 } from "@/lib/types";
 
 export default function UploadPage() {
   const [uploadedFile, setUploadedFile] = useState<{ name: string; size: number } | null>(null);
@@ -15,7 +15,8 @@ export default function UploadPage() {
   const [isIngesting, setIsIngesting] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [ingestError, setIngestError] = useState<string | null>(null);
-  const [runs, setRuns] = useState<RunMeta[]>([]);
+  const [runs, setRuns] = useState<RunManifestInfo[]>([]);
+  const [ingestStats, setIngestStats] = useState<{ newRuns: number; duplicateRuns: number } | null>(null);
   const [isLoadingRuns, setIsLoadingRuns] = useState(true);
 
   // Load existing runs on mount
@@ -27,7 +28,7 @@ export default function UploadPage() {
     setIsLoadingRuns(true);
     try {
       const response = await fetch("/api/runs");
-      const data: RunsListResponse = await response.json();
+      const data: RunsListResponseV2 = await response.json();
       if (data.success && data.runs) {
         setRuns(data.runs);
       }
@@ -75,6 +76,7 @@ export default function UploadPage() {
 
     setIsIngesting(true);
     setIngestError(null);
+    setIngestStats(null);
 
     try {
       const response = await fetch("/api/ingest", {
@@ -83,16 +85,21 @@ export default function UploadPage() {
         body: JSON.stringify({ zipPath: uploadPath }),
       });
 
-      const data: IngestResponse = await response.json();
+      const data: IngestResponseV2 = await response.json();
 
       if (!data.success) {
         setIngestError(data.error || "Extraction failed");
       } else if (data.runs) {
-        // Add new runs to the list
+        // Store ingest stats for display
+        setIngestStats({
+          newRuns: data.newRuns || 0,
+          duplicateRuns: data.duplicateRuns || 0,
+        });
+
+        // Add new runs to the list (use runUid for deduplication)
         setRuns((prev) => {
-          // Merge new runs with existing, avoiding duplicates by runFolder
-          const existingFolders = new Set(prev.map((r) => r.runFolder));
-          const newRuns = data.runs!.filter((r) => !existingFolders.has(r.runFolder));
+          const existingUids = new Set(prev.map((r) => r.runUid));
+          const newRuns = data.runs!.filter((r) => !existingUids.has(r.runUid));
           return [...newRuns, ...prev];
         });
         // Clear uploaded file state after successful ingest
@@ -163,6 +170,18 @@ export default function UploadPage() {
           {ingestError && (
             <div className="p-4 bg-destructive/10 text-destructive rounded-lg text-sm">
               {ingestError}
+            </div>
+          )}
+
+          {ingestStats && (
+            <div className="p-4 bg-green-100 dark:bg-green-900/20 text-green-700 dark:text-green-300 rounded-lg text-sm">
+              <p className="font-medium">Extraction complete!</p>
+              <p>
+                {ingestStats.newRuns > 0 && `${ingestStats.newRuns} new run${ingestStats.newRuns !== 1 ? "s" : ""} added`}
+                {ingestStats.newRuns > 0 && ingestStats.duplicateRuns > 0 && ", "}
+                {ingestStats.duplicateRuns > 0 && `${ingestStats.duplicateRuns} duplicate${ingestStats.duplicateRuns !== 1 ? "s" : ""} skipped`}
+                {ingestStats.newRuns === 0 && ingestStats.duplicateRuns === 0 && "No runs found in ZIP"}
+              </p>
             </div>
           )}
         </CardContent>

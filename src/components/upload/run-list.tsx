@@ -1,12 +1,12 @@
 "use client";
 
-import { RunMeta } from "@/lib/types";
+import { RunManifestInfo } from "@/lib/types";
 import { Card, CardContent } from "@/components/ui/card";
-import { Calendar, FolderOpen, FileText, Clock } from "lucide-react";
+import { Calendar, FolderOpen, FileText, Clock, Network } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 interface RunListProps {
-  runs: RunMeta[];
+  runs: RunManifestInfo[];
   loading?: boolean;
   emptyMessage?: string;
 }
@@ -41,27 +41,23 @@ export function RunList({
 
   return (
     <div className="space-y-3">
-      {runs.map((run, index) => (
-        <RunCard key={run.runFolder || index} run={run} />
+      {runs.map((run) => (
+        <RunCard key={run.runUid} run={run} />
       ))}
     </div>
   );
 }
 
 interface RunCardProps {
-  run: RunMeta;
+  run: RunManifestInfo;
 }
 
 function RunCard({ run }: RunCardProps) {
-  const keyFileCount = Object.values(run.keyFiles).flat().length;
+  const keyFileCount = run.stats?.keyFileCount ?? Object.values(run.keyFiles).flat().length;
   const keyFileLabels = Object.keys(run.keyFiles);
 
   // Format timestamp
-  const timestamp = run.timestamp
-    ? typeof run.timestamp === "string"
-      ? new Date(run.timestamp)
-      : run.timestamp
-    : null;
+  const timestamp = run.timestamp ? new Date(run.timestamp) : null;
 
   const formattedDate = timestamp
     ? timestamp.toLocaleDateString("en-US", {
@@ -78,9 +74,6 @@ function RunCard({ run }: RunCardProps) {
       })
     : "";
 
-  // Extract folder name for display
-  const folderName = run.runFolder.split(/[/\\]/).pop() || run.runFolder;
-
   return (
     <Card className="hover:bg-muted/50 transition-colors">
       <CardContent className="p-4">
@@ -88,12 +81,19 @@ function RunCard({ run }: RunCardProps) {
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 mb-1">
               <FolderOpen className="h-4 w-4 text-muted-foreground shrink-0" />
-              <h3 className="font-medium truncate" title={folderName}>
-                {folderName}
+              <h3 className="font-medium truncate" title={run.folderName}>
+                {run.folderName}
               </h3>
             </div>
 
             <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted-foreground">
+              {run.network && (
+                <div className="flex items-center gap-1">
+                  <Network className="h-3.5 w-3.5" />
+                  <span className="font-medium text-foreground">{run.network}</span>
+                </div>
+              )}
+
               {timestamp && (
                 <div className="flex items-center gap-1">
                   <Calendar className="h-3.5 w-3.5" />

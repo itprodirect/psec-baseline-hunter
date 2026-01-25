@@ -39,5 +39,6 @@ tsconfig.tsbuildinfo
 # Local data (DO NOT COMMIT)
 data/uploads/
 data/extracted/
+data/runs/
 data/**/*.zip
 data/comparisons/

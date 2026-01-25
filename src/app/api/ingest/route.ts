@@ -1,21 +1,24 @@
 /**
  * Ingest API Route
- * Extracts a ZIP file and detects run folders
+ * Extracts a ZIP file and detects run folders with deduplication
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { ingestZip } from "@/lib/services/ingest";
-import { IngestResponse } from "@/lib/types";
+import { extractZip, detectRunFolders } from "@/lib/services/ingest";
+import { registerRun, RunManifest } from "@/lib/services/run-registry";
+import { IngestResponseV2 } from "@/lib/types";
+import { shortId } from "@/lib/utils/hash";
 import * as fs from "fs";
 
 interface IngestRequestBody {
   zipPath: string;
+  network?: string;
 }
 
-export async function POST(request: NextRequest): Promise<NextResponse<IngestResponse>> {
+export async function POST(request: NextRequest): Promise<NextResponse<IngestResponseV2>> {
   try {
     const body: IngestRequestBody = await request.json();
-    const { zipPath } = body;
+    const { zipPath, network } = body;
 
     if (!zipPath) {
       return NextResponse.json(
@@ -32,19 +35,37 @@ export async function POST(request: NextRequest): Promise<NextResponse<IngestRes
       );
     }
 
-    // Extract and detect runs
-    const { extractedPath, runs } = ingestZip(zipPath);
+    // Generate extraction ID
+    const extractionId = shortId();
 
-    // Convert Date objects to ISO strings for JSON serialization
-    const serializedRuns = runs.map(run => ({
-      ...run,
-      timestamp: run.timestamp ? run.timestamp.toISOString() : null,
-    }));
+    // Extract ZIP
+    const extractedPath = extractZip(zipPath);
+
+    // Detect run folders
+    const runFolders = detectRunFolders(extractedPath);
+
+    // Register each run with deduplication
+    const registeredRuns: RunManifest[] = [];
+    let newRunCount = 0;
+    let duplicateCount = 0;
+
+    for (const runFolder of runFolders) {
+      const { manifest, isNew } = registerRun(runFolder, extractionId, network);
+      registeredRuns.push(manifest);
+
+      if (isNew) {
+        newRunCount++;
+      } else {
+        duplicateCount++;
+      }
+    }
 
     return NextResponse.json({
       success: true,
       extractedPath,
-      runs: serializedRuns as IngestResponse["runs"],
+      runs: registeredRuns,
+      newRuns: newRunCount,
+      duplicateRuns: duplicateCount,
     });
   } catch (error) {
     console.error("Ingest error:", error);

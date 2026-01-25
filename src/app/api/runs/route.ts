@@ -1,25 +1,50 @@
 /**
  * Runs List API Route
- * Returns metadata for all detected runs
+ * Returns metadata for all registered runs with deduplication
  */
 
-import { NextResponse } from "next/server";
-import { listAllRuns } from "@/lib/services/ingest";
-import { RunsListResponse } from "@/lib/types";
+import { NextRequest, NextResponse } from "next/server";
+import {
+  listRegisteredRuns,
+  listRunsByNetwork,
+  getRegistryStats,
+} from "@/lib/services/run-registry";
+import { RunsListResponseV2 } from "@/lib/types";
 
-export async function GET(): Promise<NextResponse<RunsListResponse>> {
+export async function GET(request: NextRequest): Promise<NextResponse<RunsListResponseV2>> {
   try {
-    const runs = listAllRuns();
+    // Get query parameters
+    const { searchParams } = new URL(request.url);
+    const network = searchParams.get("network");
+    const limit = searchParams.get("limit");
+    const offset = searchParams.get("offset");
 
-    // Convert Date objects to ISO strings for JSON serialization
-    const serializedRuns = runs.map(run => ({
-      ...run,
-      timestamp: run.timestamp ? run.timestamp.toISOString() : null,
-    }));
+    // Get runs (filtered by network if specified)
+    let runs = network
+      ? listRunsByNetwork(network)
+      : listRegisteredRuns();
+
+    // Apply pagination
+    const offsetNum = offset ? parseInt(offset, 10) : 0;
+    const limitNum = limit ? parseInt(limit, 10) : undefined;
+
+    if (offsetNum > 0) {
+      runs = runs.slice(offsetNum);
+    }
+    if (limitNum) {
+      runs = runs.slice(0, limitNum);
+    }
+
+    // Get stats
+    const stats = getRegistryStats();
 
     return NextResponse.json({
       success: true,
-      runs: serializedRuns as RunsListResponse["runs"],
+      runs,
+      stats: {
+        totalRuns: stats.totalRuns,
+        networks: stats.networks,
+      },
     });
   } catch (error) {
     console.error("List runs error:", error);
