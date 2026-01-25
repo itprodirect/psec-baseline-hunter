@@ -1,71 +1,129 @@
 # PSEC Baseline Hunter - Project Status
 
 **Last Updated:** 2026-01-25
-**Current Branch:** `feature/nextjs-migration`
-**Phase:** 0 Complete, Phase 1 Ready to Start
+**Current Branch:** `feature/phase2-run-registry`
+**Phase:** Phase 1 Complete, Phase 2 In Progress
 
 ---
 
-## Repository Overview
+## Quick Status
 
-| Repo | Location | Purpose |
-|------|----------|---------|
-| **psec-baseline-hunter** | `C:\Users\user\Desktop\psec-baseline-hunter` | Main repo - Streamlit → Next.js migration |
-| **psec-nextjs** | `C:\Users\user\Desktop\psec-nextjs` | Secondary Next.js workspace (referenced in CLAUDE.md) |
+| Metric | Value |
+|--------|-------|
+| **Current Phase** | Phase 2: Run Registry |
+| **Last Completed** | Phase 1: Upload + Business Logic |
+| **Next Milestone** | Phase 3: Scorecard Enhancement |
+| **Tech Stack** | Next.js 16 + TypeScript 5 |
 
 ---
 
-## Current State
+## Phase Completion Status
 
-### Branch Structure
+| Phase | Description | Status | Date |
+|-------|-------------|--------|------|
+| **Phase 0** | Scaffolding, CI, UI shell | ✅ Complete | 2026-01-25 |
+| **Phase 1** | Upload, extraction, parsing | ✅ Complete | 2026-01-25 |
+| **Phase 2** | Run registry, deduplication | 🔄 In Progress | — |
+| **Phase 3** | Enhanced scorecard | 🔲 Not started | — |
+| **Phase 4** | Diff, risk flags, exports | 🔲 Not started | — |
+| **Phase 5** | Custom rules, history | 🔲 Not started | — |
+| **Phase 6** | Hardening, production | 🔲 Not started | — |
 
-```
-main                          # Original Streamlit app (stable)
-└── feature/nextjs-migration  # Next.js migration (active development)
-```
+---
 
-### Commits on `feature/nextjs-migration`
+## What Works Now
 
-| Commit | Message | Status |
-|--------|---------|--------|
-| `70f38f1` | feat: add Next.js scaffolding with shadcn/ui dashboard (Phase 0) | ✅ Complete |
+### Functional Features
 
-### What Exists Now
+| Feature | Status | Description |
+|---------|--------|-------------|
+| ZIP Upload | ✅ Working | Drag-and-drop with validation |
+| ZIP Extraction | ✅ Working | Extracts to `data/extracted/` |
+| Run Detection | ✅ Working | Finds `YYYY-MM-DD_HHMM_*` folders |
+| Key File Detection | ✅ Working | Identifies ports, discovery, hosts files |
+| Nmap XML Parsing | ✅ Working | Extracts host/port/service data |
+| Top Ports | ✅ Working | Aggregates by port/service |
+| Run List UI | ✅ Working | Displays detected runs |
 
-#### Legacy Python/Streamlit (still in repo, will be removed later)
-```
-app/                    # Streamlit pages (Home.py, pages/2_Scorecard.py, pages/3_Diff.py)
-core/                   # Business logic (ingest.py, nmap_parse.py, diff.py)
-.venv/                  # Python virtual environment
-requirements.txt        # Python dependencies
-```
+### API Endpoints
 
-#### New Next.js Structure (Phase 0 complete)
+| Endpoint | Method | Purpose | Status |
+|----------|--------|---------|--------|
+| `/api/upload` | POST | Upload ZIP file | ✅ Working |
+| `/api/ingest` | POST | Extract and detect | ✅ Working |
+| `/api/runs` | GET | List all runs | ✅ Working |
+| `/api/parse` | POST | Parse Nmap XML | ✅ Working |
+
+### Pages
+
+| Page | Status | Features |
+|------|--------|----------|
+| `/upload` | ✅ Working | Dropzone, run list, extract button |
+| `/scorecard` | 🔲 Stub | Placeholder only |
+| `/diff` | 🔲 Stub | Placeholder with tabs |
+
+---
+
+## Current Architecture
+
 ```
 src/
 ├── app/
 │   ├── (dashboard)/
-│   │   ├── layout.tsx          # Dashboard shell with nav sidebar
-│   │   ├── upload/page.tsx     # Upload page stub
-│   │   ├── scorecard/page.tsx  # Scorecard page stub
-│   │   └── diff/page.tsx       # Diff page stub (with tabs)
-│   ├── layout.tsx              # Root layout with metadata
-│   ├── page.tsx                # Redirects to /upload
-│   └── globals.css             # Tailwind + shadcn styles
+│   │   ├── layout.tsx              # Dashboard shell
+│   │   ├── upload/page.tsx         # ✅ Full implementation
+│   │   ├── scorecard/page.tsx      # 🔲 Placeholder
+│   │   └── diff/page.tsx           # 🔲 Placeholder with tabs
+│   └── api/
+│       ├── upload/route.ts         # ✅ File upload
+│       ├── ingest/route.ts         # ✅ ZIP extraction
+│       ├── runs/route.ts           # ✅ Run listing
+│       └── parse/route.ts          # ✅ XML parsing
 ├── components/
+│   ├── upload/
+│   │   ├── dropzone.tsx            # ✅ Drag-and-drop
+│   │   └── run-list.tsx            # ✅ Run display
 │   ├── layout/
-│   │   └── nav-sidebar.tsx     # Navigation sidebar component
-│   └── ui/                     # shadcn/ui components
-│       ├── button.tsx, card.tsx, tabs.tsx, badge.tsx, separator.tsx, sheet.tsx
+│   │   └── nav-sidebar.tsx         # ✅ Navigation
+│   └── ui/                         # ✅ shadcn components
 └── lib/
-    └── utils.ts                # cn() utility for class merging
+    ├── types/index.ts              # ✅ TypeScript interfaces
+    ├── constants/file-patterns.ts  # ✅ Configuration
+    └── services/
+        ├── ingest.ts               # ✅ Run detection
+        └── nmap-parser.ts          # ✅ XML parsing
+```
+
+---
+
+## What's Next (Phase 2)
+
+### Run Registry
+
+The current implementation has a limitation: re-uploading the same ZIP creates duplicate runs. Phase 2 adds:
+
+| Feature | Description |
+|---------|-------------|
+| **Run Manifest** | JSON file storing run metadata |
+| **Content Hashing** | SHA256 hash of key files |
+| **Deduplication** | Skip duplicate runs on re-upload |
+| **Run UID** | Unique identifier for each run |
+
+### Files to Create
+
+```
+src/lib/
+├── services/
+│   └── run-registry.ts       # Run manifest CRUD
+└── utils/
+    └── hash.ts               # Content hashing
 ```
 
 ---
 
 ## Technology Stack
 
-### Current (Next.js)
+### Current
 
 | Category | Technology | Version |
 |----------|------------|---------|
@@ -74,51 +132,57 @@ src/
 | Runtime | Node.js | 22.14.0 |
 | Styling | Tailwind CSS | ^4 |
 | Components | shadcn/ui | Latest |
-| State (planned) | SWR + Zustand | — |
-| Hosting | Vercel | — |
-| Storage | AWS S3 | — |
+| XML Parsing | fast-xml-parser | ^5.1.0 |
+| ZIP Handling | adm-zip | ^0.5.16 |
+| File Upload | react-dropzone | ^14.3.8 |
 
-### Legacy (Streamlit)
+### Planned
 
-| Category | Technology |
-|----------|------------|
-| Framework | Streamlit 1.52.2 |
-| Language | Python 3.x |
-| Data | Pandas 2.3.3 |
-| XML Parsing | lxml 6.0.2 |
-
----
-
-## Phase Completion Status
-
-| Phase | Description | Status |
-|-------|-------------|--------|
-| **Phase 0** | Scaffolding, CI, UI shell | ✅ Complete |
-| **Phase 1** | Upload, validate, store, show status | 🔲 Not started |
-| **Phase 2** | Run detection, registry, dedupe | 🔲 Not started |
-| **Phase 3** | Parse Nmap XML, scorecard | 🔲 Not started |
-| **Phase 4** | Diff, risk flags, exports | 🔲 Not started |
-| **Phase 5** | Configs, improved reporting | 🔲 Not started |
-| **Phase 6** | Hardening (rate limits, audit logs) | 🔲 Not started |
+| Category | Technology | Phase |
+|----------|------------|-------|
+| State Management | SWR + Zustand | Phase 3 |
+| Tables | TanStack Table | Phase 3 |
+| Cloud Storage | AWS S3 | Phase 5 |
+| Monitoring | Sentry | Phase 6 |
 
 ---
 
-## Key Decisions Made
+## Key Decisions
 
-1. **Full TypeScript rewrite** (not Python worker) - simpler deployment, single codebase
-2. **No authentication needed** - internal tool
-3. **AWS S3 for storage** - user has AWS account ready
-4. **All three pages** in MVP - full feature parity with Streamlit
-5. **shadcn/ui** for components - modern, accessible, customizable
-6. **SWR** for server state, **Zustand** for client state
+| Decision | Rationale | Date |
+|----------|-----------|------|
+| TypeScript rewrite | Single codebase, type safety | 2026-01-25 |
+| Local storage first | Faster iteration, add S3 later | 2026-01-25 |
+| No auth needed | Internal tool | 2026-01-25 |
+| shadcn/ui | Modern, accessible, customizable | 2026-01-25 |
 
 ---
 
 ## Known Issues
 
-1. **Workspace root warning** in Next.js build - caused by multiple package-lock.json files (user home + project). Harmless but can be silenced in next.config.ts
-2. **Legacy Python files** still in repo - will be removed after migration complete
-3. **ESLint Babel warnings** - eslint scans .venv folder; config updated to ignore it
+| Issue | Severity | Status | Fix Plan |
+|-------|----------|--------|----------|
+| Duplicate runs on re-upload | Medium | Fixing in Phase 2 | Add run registry |
+| No scorecard UI | Low | Planned Phase 3 | Build scorecard page |
+| No diff comparison | Low | Planned Phase 4 | Port diff engine |
+| Local storage only | Low | Planned Phase 5 | Add S3 support |
+
+---
+
+## Files Changed Recently
+
+### Phase 1 (2026-01-25)
+
+| File | Change |
+|------|--------|
+| `src/lib/services/ingest.ts` | Created - run detection |
+| `src/lib/services/nmap-parser.ts` | Created - XML parsing |
+| `src/lib/types/index.ts` | Created - TypeScript types |
+| `src/app/api/*` | Created - all API routes |
+| `src/components/upload/*` | Created - upload UI |
+| `src/app/(dashboard)/upload/page.tsx` | Updated - full implementation |
+| `docs/ROADMAP.md` | Created - feature guide |
+| `docs/SCANNING_GUIDE.md` | Created - Nmap guide |
 
 ---
 
@@ -136,16 +200,26 @@ npm run lint
 
 # Type check
 npx tsc --noEmit
+
+# Test upload flow
+# 1. Open http://localhost:3000/upload
+# 2. Upload a baselinekit ZIP
+# 3. Click "Extract + Detect"
+# 4. Verify runs appear in list
 ```
 
 ---
 
-## Files to Reference
+## Documentation Index
 
 | File | Purpose |
 |------|---------|
-| `docs/MIGRATION_PLAN.md` | Full 6-phase migration plan |
-| `docs/RESOURCES_NEEDED.md` | AWS setup, dependencies, tools needed |
-| `docs/SESSION_NOTES.md` | Detailed session history |
-| `CLAUDE.md` | Claude Code onboarding (original) |
-| `.env.example` | Environment variables template |
+| `README.md` | Project overview and quick start |
+| `CHANGELOG.md` | Version history |
+| `CONTRIBUTING.md` | Development guidelines |
+| `CLAUDE.md` | Claude Code reference |
+| `docs/ROADMAP.md` | Feature roadmap |
+| `docs/SCANNING_GUIDE.md` | Nmap usage guide |
+| `docs/MIGRATION_PLAN.md` | Technical architecture |
+| `docs/RESOURCES_NEEDED.md` | Setup requirements |
+| `docs/SESSION_NOTES.md` | Development history |
