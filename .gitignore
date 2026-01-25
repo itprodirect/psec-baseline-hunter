@@ -26,6 +26,13 @@ Thumbs.db
 .vscode/
 .idea/
 
+# Claude Code
+.claude/
+
+# Build artifacts
+tsconfig.tsbuildinfo
+*.log
+
 # Streamlit (legacy)
 .streamlit/
 
