@@ -9,16 +9,35 @@ build/
 .venv/
 venv/
 
+# Node.js
+node_modules/
+.next/
+out/
+.vercel
+
+# Environment
+.env
+.env.local
+.env.*.local
+
 # OS / editor
 .DS_Store
 Thumbs.db
 .vscode/
 .idea/
 
-# Streamlit
+# Claude Code
+.claude/
+
+# Build artifacts
+tsconfig.tsbuildinfo
+*.log
+
+# Streamlit (legacy)
 .streamlit/
 
 # Local data (DO NOT COMMIT)
 data/uploads/
 data/extracted/
 data/**/*.zip
+data/comparisons/

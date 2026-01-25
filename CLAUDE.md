@@ -4,76 +4,131 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-PSEC Baseline Hunter is a Streamlit-based network security baseline comparison tool. It ingests baselinekit (Nmap-based) scan results, analyzes them, and compares runs to detect new security exposures.
+PSEC Baseline Hunter is a network security baseline comparison tool. It ingests baselinekit (Nmap-based) scan results, analyzes them, and compares runs to detect new security exposures.
+
+**Currently migrating from Streamlit (Python) to Next.js (TypeScript).**
+
+## Quick Reference
+
+| Documentation | Purpose |
+|--------------|---------|
+| [docs/ROADMAP.md](docs/ROADMAP.md) | Full feature roadmap and security concepts |
+| [docs/SCANNING_GUIDE.md](docs/SCANNING_GUIDE.md) | How to create scan files with Nmap |
+| [docs/MIGRATION_PLAN.md](docs/MIGRATION_PLAN.md) | Technical migration plan |
+| [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md) | Current implementation status |
 
 ## Commands
 
-**Run the application:**
+### Next.js (Current)
 ```bash
-streamlit run app/Home.py
+npm run dev          # Start development server
+npm run build        # Production build
+npm run lint         # Run ESLint
+npx tsc --noEmit     # Type check
 ```
 
-**Install dependencies:**
+### Legacy Streamlit (Deprecated)
 ```bash
-pip install -r requirements.txt
+streamlit run streamlit_app/Home.py    # Original Python app
+pip install -r requirements.txt         # Python dependencies
 ```
-
-No test framework or linting tools are currently configured.
 
 ## Architecture
 
-Three-tier structure: UI Layer (Streamlit) → Business Logic (core/) → Data/File Layer (data/)
-
+### Next.js Structure (Active Development)
 ```
-app/                    # Streamlit pages
-├── Home.py             # Main entry point (upload & ingest)
-└── pages/
-    ├── 2_Scorecard.py  # Parse Nmap XML, top ports summary
-    └── 3_Diff.py       # Compare runs, detect deltas, risk flags
-
-core/                   # Business logic modules
-├── ingest.py           # Upload, extract zip, detect runs, parse metadata
-├── nmap_parse.py       # Parse Nmap XML → DataFrames
-└── diff.py             # Run comparison, risk flagging, markdown export
-
-data/                   # Data storage (gitignored)
-├── uploads/            # Uploaded zip files
-├── extracted/          # Extracted zip contents
-└── comparisons/        # Markdown exports
+src/
+├── app/
+│   ├── (dashboard)/              # Dashboard layout group
+│   │   ├── upload/page.tsx       # ZIP upload & run detection
+│   │   ├── scorecard/page.tsx    # Single-run analysis
+│   │   └── diff/page.tsx         # Run comparison
+│   └── api/
+│       ├── upload/route.ts       # File upload endpoint
+│       ├── ingest/route.ts       # ZIP extraction endpoint
+│       ├── runs/route.ts         # List runs endpoint
+│       └── parse/route.ts        # XML parsing endpoint
+├── components/
+│   ├── upload/
+│   │   ├── dropzone.tsx          # Drag-and-drop upload
+│   │   └── run-list.tsx          # Detected runs display
+│   └── ui/                       # shadcn/ui components
+└── lib/
+    ├── types/index.ts            # TypeScript interfaces
+    ├── constants/file-patterns.ts # File detection patterns
+    └── services/
+        ├── ingest.ts             # Run detection logic
+        └── nmap-parser.ts        # XML parsing logic
 ```
 
-**Key data flows:**
+### Legacy Python Structure
+```
+core/                   # Business logic modules (reference for porting)
+├── ingest.py           # Upload, extract zip, detect runs
+├── nmap_parse.py       # Parse Nmap XML
+└── diff.py             # Run comparison, risk flagging
+
+streamlit_app/          # Original Streamlit pages (deprecated)
+```
+
+## Key Data Flows
+
 1. **Ingest:** ZIP upload → extract → detect run folders → build metadata
 2. **Scorecard:** Select run → parse Nmap XML → aggregate top ports
-3. **Diff:** Compare two runs → set difference on hosts/ports → apply risk rules → export markdown
+3. **Diff:** Compare two runs → set difference on hosts/ports → apply risk rules
 
-## Key Modules
+## Input File Requirements
 
-**core/ingest.py:** Run detection parses folder names formatted as `YYYY-MM-DD_HHMM_<type>`. Key files include discovery, ports, hosts_up, http_titles, infra_services, gateway_smoke, and snapshots.
+### Expected ZIP Structure
+```
+{network-name}/
+└── rawscans/
+    └── YYYY-MM-DD_HHMM_{run-type}/
+        ├── ports_top200_open.xml    # Main port scan (required)
+        ├── hosts_up.txt             # Live hosts list
+        ├── discovery_ping_sweep.xml # Discovery scan
+        └── [other scan files]
+```
 
-**core/diff.py:** Risk flagging uses static port rules:
-- P0 (critical): 23, 445, 3389, 5900, 135, 139, 1080
-- P1 (admin/dev): 8080, 8443, 8888
-- P2 (context-dependent): 22, 80, 443
+### Folder Naming Pattern
+```
+2025-12-31_2044_baselinekit_v0
+│          │    │
+│          │    └── Run type identifier
+│          └── Time (24hr format)
+└── Date (YYYY-MM-DD)
+```
 
-Modify `RISK_PORTS` and `PORT_NOTES` dicts to adjust risk rules.
+## Risk Classification
 
-**app/_bootstrap.py:** Adds repo root to sys.path for cross-directory imports.
+| Priority | Ports | Risk Level |
+|----------|-------|------------|
+| **P0** | 23, 445, 3389, 5900, 135, 139, 1080 | Critical |
+| **P1** | 8080, 8443, 8888 | Admin/Dev |
+| **P2** | 22, 80, 443 | Context-dependent |
 
-## Adding New Features
+Risk rules defined in: `src/lib/constants/file-patterns.ts` (to be moved to `risk-ports.ts`)
 
-- New Streamlit pages: `app/pages/{N}_{Name}.py` (Streamlit convention)
-- New key file patterns: `core/ingest.py` → `find_key_files()`
-- New risk rules: `core/diff.py` → `RISK_PORTS`, `PORT_NOTES`
+## Development Status
 
-## Known Issues
-
-From NOTES_SESSION3.md:
-- Run identity collisions when ingesting the same underlying run multiple times
-- Minute-granular naming (HHMM) can create same-minute collisions
-- Recommended: implement canonical run registry with deduping (data/runs/ with manifest)
+| Feature | Status |
+|---------|--------|
+| ZIP upload | ✅ Working |
+| ZIP extraction | ✅ Working |
+| Run detection | ✅ Working |
+| Nmap XML parsing | ✅ Working |
+| Run comparison | 🔲 Not started |
+| Risk flagging UI | 🔲 Not started |
+| Export functionality | 🔲 Not started |
 
 ## Git Workflow
 
-Feature branches: `feature/sessionN-*`
-Commit style: conventional commits (feat:, fix:, docs:, chore:)
+- **Main branch:** `main` (stable Streamlit version)
+- **Active branch:** `feature/nextjs-migration`
+- **Commit style:** conventional commits (feat:, fix:, docs:, chore:)
+
+## Known Issues
+
+- Run identity can collide when re-uploading same ZIP
+- Local filesystem storage only (S3 integration planned)
+- Minute-granular naming (HHMM) can cause same-minute collisions
