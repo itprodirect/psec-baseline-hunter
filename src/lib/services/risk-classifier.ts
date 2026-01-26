@@ -3,12 +3,11 @@
  * Analyzes port findings and classifies them by risk level
  */
 
-import { PortFinding, TopPort, RiskPort, RiskLevel, ScorecardData } from "@/lib/types";
-import { getPortRisk, P0_ACTIONS, RISK_DESCRIPTIONS } from "@/lib/constants/risk-ports";
+import { PortFinding, RiskPort, RiskLevel, ScorecardData } from "@/lib/types";
+import { getPortRisk, P0_ACTIONS } from "@/lib/constants/risk-ports";
 import { parsePorts, topPorts } from "./nmap-parser";
 import { getRunByUid } from "./run-registry";
 import * as fs from "fs";
-import * as path from "path";
 
 /**
  * Classify a list of port findings by risk level

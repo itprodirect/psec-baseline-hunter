@@ -286,27 +286,27 @@ function mergeDevices(existing: InventoryDevice[], incoming: InventoryDevice[]):
     if (d.ip) byIp.set(d.ip, d);
   }
 
-  // Process incoming
+  // Process incoming devices
   const result: InventoryDevice[] = [...existing];
 
-  for (const incoming of incoming) {
-    const existingByMac = incoming.mac ? byMac.get(incoming.mac.toUpperCase()) : null;
-    const existingByIp = incoming.ip ? byIp.get(incoming.ip) : null;
-    const existing = existingByMac || existingByIp;
+  for (const newDevice of incoming) {
+    const existingByMac = newDevice.mac ? byMac.get(newDevice.mac.toUpperCase()) : null;
+    const existingByIp = newDevice.ip ? byIp.get(newDevice.ip) : null;
+    const existingDevice = existingByMac || existingByIp;
 
-    if (existing) {
+    if (existingDevice) {
       // Update existing record
-      Object.assign(existing, {
-        ...incoming,
-        id: existing.id,
-        addedAt: existing.addedAt,
+      Object.assign(existingDevice, {
+        ...newDevice,
+        id: existingDevice.id,
+        addedAt: existingDevice.addedAt,
         updatedAt: new Date().toISOString(),
       });
     } else {
       // Add new record
-      result.push(incoming);
-      if (incoming.mac) byMac.set(incoming.mac.toUpperCase(), incoming);
-      if (incoming.ip) byIp.set(incoming.ip, incoming);
+      result.push(newDevice);
+      if (newDevice.mac) byMac.set(newDevice.mac.toUpperCase(), newDevice);
+      if (newDevice.ip) byIp.set(newDevice.ip, newDevice);
     }
   }
 

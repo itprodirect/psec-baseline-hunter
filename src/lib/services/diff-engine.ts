@@ -3,7 +3,7 @@
  */
 
 import * as fs from "fs";
-import { PortFinding, DiffData, HostChange, PortChange, RiskLevel } from "@/lib/types";
+import { PortFinding, DiffData, HostChange, PortChange } from "@/lib/types";
 import { getRunByUid } from "./run-registry";
 import { parsePorts } from "./nmap-parser";
 import { getPortRisk } from "@/lib/constants/risk-ports";

@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
-import { LayoutDashboard, Upload, BarChart3, GitCompare, Shield, FileSpreadsheet, Settings } from "lucide-react";
+import { LayoutDashboard, Upload, BarChart3, GitCompare, Shield, FileSpreadsheet } from "lucide-react";
 
 const navItems = [
   {

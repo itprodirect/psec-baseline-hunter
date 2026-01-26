@@ -12,7 +12,6 @@ import {
   AlertTriangle,
   Plus,
   Minus,
-  RefreshCw,
   ChevronDown,
   Loader2,
   Server,
@@ -31,7 +30,6 @@ import {
   IngestResponseV2,
   RunsListResponseV2,
   DiffData,
-  ScorecardData,
   PortChange,
   HostChange,
 } from "@/lib/types";
@@ -102,14 +100,12 @@ export default function DashboardPage() {
 
   // Upload state
   const [uploadedFile, setUploadedFile] = useState<{ name: string; size: number } | null>(null);
-  const [uploadPath, setUploadPath] = useState<string | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [isIngesting, setIsIngesting] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
 
   // Runs state
   const [runs, setRuns] = useState<RunManifestInfo[]>([]);
-  const [isLoadingRuns, setIsLoadingRuns] = useState(true);
 
   // Selection state
   const [baselineRunUid, setBaselineRunUid] = useState<string | null>(null);
@@ -148,7 +144,6 @@ export default function DashboardPage() {
   }, [baselineRunUid, currentRunUid, isDemoMode]);
 
   const loadRuns = async () => {
-    setIsLoadingRuns(true);
     try {
       const response = await fetch("/api/runs");
       const data: RunsListResponseV2 = await response.json();
@@ -157,8 +152,6 @@ export default function DashboardPage() {
       }
     } catch (error) {
       console.error("Failed to load runs:", error);
-    } finally {
-      setIsLoadingRuns(false);
     }
   };
 
@@ -212,12 +205,9 @@ export default function DashboardPage() {
       if (!data.success) {
         setUploadError(data.error || "Upload failed");
         setUploadedFile(null);
-      } else {
-        setUploadPath(data.uploadPath || null);
+      } else if (data.uploadPath) {
         // Auto-extract after upload
-        if (data.uploadPath) {
-          await handleExtract(data.uploadPath);
-        }
+        await handleExtract(data.uploadPath);
       }
     } catch (error) {
       setUploadError(error instanceof Error ? error.message : "Upload failed");
@@ -343,7 +333,7 @@ export default function DashboardPage() {
         <Card>
           <CardHeader className="pb-3">
             <CardTitle className="text-lg">Baseline Scan</CardTitle>
-            <CardDescription>The "before" snapshot</CardDescription>
+            <CardDescription>The &ldquo;before&rdquo; snapshot</CardDescription>
           </CardHeader>
           <CardContent>
             {isDemoMode ? (
@@ -392,7 +382,7 @@ export default function DashboardPage() {
         <Card>
           <CardHeader className="pb-3">
             <CardTitle className="text-lg">Current Scan</CardTitle>
-            <CardDescription>The "after" snapshot</CardDescription>
+            <CardDescription>The &ldquo;after&rdquo; snapshot</CardDescription>
           </CardHeader>
           <CardContent>
             {isDemoMode ? (
