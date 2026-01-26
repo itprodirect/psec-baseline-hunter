@@ -1,0 +1,173 @@
+{
+  "baseline": {
+    "runUid": "demo-network_2025-01-15T09-00-00_baselinekit-v0_demo-baseline",
+    "network": "demo-network",
+    "runFolder": "data/demo/baseline",
+    "folderName": "2025-01-15_0900_baselinekit_v0",
+    "timestamp": "2025-01-15T09:00:00.000Z",
+    "runType": "baselinekit_v0",
+    "keyFiles": {
+      "discovery": ["discovery_ping_sweep.xml"],
+      "hosts_up": ["hosts_up.txt"],
+      "ports": ["ports_top200_open.xml"]
+    },
+    "contentHash": "demo-baseline-hash",
+    "stats": {
+      "keyFileCount": 3,
+      "hasPortsScan": true,
+      "hasHostsUp": true,
+      "hasDiscovery": true
+    },
+    "createdAt": "2025-01-15T09:30:00.000Z",
+    "extractionId": "demo-extract-001"
+  },
+  "current": {
+    "runUid": "demo-network_2025-01-22T09-00-00_baselinekit-v0_demo-current",
+    "network": "demo-network",
+    "runFolder": "data/demo/current",
+    "folderName": "2025-01-22_0900_baselinekit_v0",
+    "timestamp": "2025-01-22T09:00:00.000Z",
+    "runType": "baselinekit_v0",
+    "keyFiles": {
+      "discovery": ["discovery_ping_sweep.xml"],
+      "hosts_up": ["hosts_up.txt"],
+      "ports": ["ports_top200_open.xml"]
+    },
+    "contentHash": "demo-current-hash",
+    "stats": {
+      "keyFileCount": 3,
+      "hasPortsScan": true,
+      "hasHostsUp": true,
+      "hasDiscovery": true
+    },
+    "createdAt": "2025-01-22T09:30:00.000Z",
+    "extractionId": "demo-extract-002"
+  },
+  "baselineScorecard": {
+    "runUid": "demo-network_2025-01-15T09-00-00_baselinekit-v0_demo-baseline",
+    "network": "demo-network",
+    "timestamp": "2025-01-15T09:00:00.000Z",
+    "totalHosts": 47,
+    "openPorts": 156,
+    "uniqueServices": 12,
+    "riskPorts": 2,
+    "topPorts": [
+      { "protocol": "tcp", "port": 443, "service": "https", "hostsAffected": 38 },
+      { "protocol": "tcp", "port": 80, "service": "http", "hostsAffected": 35 },
+      { "protocol": "tcp", "port": 22, "service": "ssh", "hostsAffected": 28 },
+      { "protocol": "tcp", "port": 53, "service": "domain", "hostsAffected": 4 },
+      { "protocol": "tcp", "port": 25, "service": "smtp", "hostsAffected": 2 },
+      { "protocol": "tcp", "port": 3306, "service": "mysql", "hostsAffected": 3 },
+      { "protocol": "tcp", "port": 5432, "service": "postgresql", "hostsAffected": 2 },
+      { "protocol": "tcp", "port": 8080, "service": "http-proxy", "hostsAffected": 5 },
+      { "protocol": "tcp", "port": 445, "service": "microsoft-ds", "hostsAffected": 1 },
+      { "protocol": "tcp", "port": 139, "service": "netbios-ssn", "hostsAffected": 1 }
+    ],
+    "riskPortsDetail": [
+      {
+        "port": 445,
+        "protocol": "tcp",
+        "service": "microsoft-ds",
+        "risk": "P0",
+        "hostsAffected": 1,
+        "hosts": ["192.168.1.50"]
+      },
+      {
+        "port": 8080,
+        "protocol": "tcp",
+        "service": "http-proxy",
+        "risk": "P1",
+        "hostsAffected": 5,
+        "hosts": ["192.168.1.10", "192.168.1.11", "192.168.1.12", "192.168.1.20", "192.168.1.21"]
+      }
+    ],
+    "summary": "Baseline scan shows 47 hosts with standard web services. One legacy file server (192.168.1.50) exposes SMB (port 445) - recommend isolating to internal VLAN."
+  },
+  "currentScorecard": {
+    "runUid": "demo-network_2025-01-22T09-00-00_baselinekit-v0_demo-current",
+    "network": "demo-network",
+    "timestamp": "2025-01-22T09:00:00.000Z",
+    "totalHosts": 52,
+    "openPorts": 189,
+    "uniqueServices": 15,
+    "riskPorts": 5,
+    "topPorts": [
+      { "protocol": "tcp", "port": 443, "service": "https", "hostsAffected": 42 },
+      { "protocol": "tcp", "port": 80, "service": "http", "hostsAffected": 38 },
+      { "protocol": "tcp", "port": 22, "service": "ssh", "hostsAffected": 31 },
+      { "protocol": "tcp", "port": 3389, "service": "ms-wbt-server", "hostsAffected": 3 },
+      { "protocol": "tcp", "port": 53, "service": "domain", "hostsAffected": 4 },
+      { "protocol": "tcp", "port": 25, "service": "smtp", "hostsAffected": 2 },
+      { "protocol": "tcp", "port": 3306, "service": "mysql", "hostsAffected": 5 },
+      { "protocol": "tcp", "port": 5432, "service": "postgresql", "hostsAffected": 2 },
+      { "protocol": "tcp", "port": 8080, "service": "http-proxy", "hostsAffected": 7 },
+      { "protocol": "tcp", "port": 445, "service": "microsoft-ds", "hostsAffected": 2 }
+    ],
+    "riskPortsDetail": [
+      {
+        "port": 3389,
+        "protocol": "tcp",
+        "service": "ms-wbt-server",
+        "risk": "P0",
+        "hostsAffected": 3,
+        "hosts": ["192.168.1.100", "192.168.1.101", "192.168.1.102"]
+      },
+      {
+        "port": 445,
+        "protocol": "tcp",
+        "service": "microsoft-ds",
+        "risk": "P0",
+        "hostsAffected": 2,
+        "hosts": ["192.168.1.50", "192.168.1.103"]
+      },
+      {
+        "port": 8080,
+        "protocol": "tcp",
+        "service": "http-proxy",
+        "risk": "P1",
+        "hostsAffected": 7,
+        "hosts": ["192.168.1.10", "192.168.1.11", "192.168.1.12", "192.168.1.20", "192.168.1.21", "192.168.1.104", "192.168.1.105"]
+      }
+    ],
+    "summary": "Current scan shows 52 hosts (+5 from baseline). Critical: RDP exposed on 3 new hosts. SMB exposure increased. Immediate action required on perimeter firewall rules."
+  },
+  "diff": {
+    "baselineRunUid": "demo-network_2025-01-15T09-00-00_baselinekit-v0_demo-baseline",
+    "currentRunUid": "demo-network_2025-01-22T09-00-00_baselinekit-v0_demo-current",
+    "baselineTimestamp": "2025-01-15T09:00:00.000Z",
+    "currentTimestamp": "2025-01-22T09:00:00.000Z",
+    "network": "demo-network",
+    "newHosts": [
+      { "ip": "192.168.1.100", "hostname": "workstation-100", "changeType": "added" },
+      { "ip": "192.168.1.101", "hostname": "workstation-101", "changeType": "added" },
+      { "ip": "192.168.1.102", "hostname": "workstation-102", "changeType": "added" },
+      { "ip": "192.168.1.103", "hostname": "fileserver-02", "changeType": "added" },
+      { "ip": "192.168.1.104", "hostname": "devbox-01", "changeType": "added" },
+      { "ip": "192.168.1.105", "hostname": "devbox-02", "changeType": "added" }
+    ],
+    "removedHosts": [
+      { "ip": "192.168.1.45", "hostname": "printer-old", "changeType": "removed" }
+    ],
+    "portsOpened": [
+      { "ip": "192.168.1.100", "hostname": "workstation-100", "port": 3389, "protocol": "tcp", "service": "ms-wbt-server", "changeType": "opened", "risk": "P0" },
+      { "ip": "192.168.1.101", "hostname": "workstation-101", "port": 3389, "protocol": "tcp", "service": "ms-wbt-server", "changeType": "opened", "risk": "P0" },
+      { "ip": "192.168.1.102", "hostname": "workstation-102", "port": 3389, "protocol": "tcp", "service": "ms-wbt-server", "changeType": "opened", "risk": "P0" },
+      { "ip": "192.168.1.103", "hostname": "fileserver-02", "port": 445, "protocol": "tcp", "service": "microsoft-ds", "changeType": "opened", "risk": "P0" },
+      { "ip": "192.168.1.104", "hostname": "devbox-01", "port": 8080, "protocol": "tcp", "service": "http-proxy", "changeType": "opened", "risk": "P1" },
+      { "ip": "192.168.1.105", "hostname": "devbox-02", "port": 8080, "protocol": "tcp", "service": "http-proxy", "changeType": "opened", "risk": "P1" },
+      { "ip": "192.168.1.104", "hostname": "devbox-01", "port": 3306, "protocol": "tcp", "service": "mysql", "changeType": "opened" },
+      { "ip": "192.168.1.105", "hostname": "devbox-02", "port": 3306, "protocol": "tcp", "service": "mysql", "changeType": "opened" }
+    ],
+    "portsClosed": [
+      { "ip": "192.168.1.45", "hostname": "printer-old", "port": 631, "protocol": "tcp", "service": "ipp", "changeType": "closed" },
+      { "ip": "192.168.1.45", "hostname": "printer-old", "port": 9100, "protocol": "tcp", "service": "jetdirect", "changeType": "closed" }
+    ],
+    "riskyExposures": [
+      { "ip": "192.168.1.100", "hostname": "workstation-100", "port": 3389, "protocol": "tcp", "service": "ms-wbt-server", "changeType": "opened", "risk": "P0" },
+      { "ip": "192.168.1.101", "hostname": "workstation-101", "port": 3389, "protocol": "tcp", "service": "ms-wbt-server", "changeType": "opened", "risk": "P0" },
+      { "ip": "192.168.1.102", "hostname": "workstation-102", "port": 3389, "protocol": "tcp", "service": "ms-wbt-server", "changeType": "opened", "risk": "P0" },
+      { "ip": "192.168.1.103", "hostname": "fileserver-02", "port": 445, "protocol": "tcp", "service": "microsoft-ds", "changeType": "opened", "risk": "P0" }
+    ],
+    "summary": "4 critical exposures detected. RDP (port 3389) newly exposed on 3 workstations - likely unauthorized remote access enablement. New file server exposing SMB externally. Recommend: (1) Block RDP at perimeter immediately, (2) Isolate fileserver-02 to internal VLAN, (3) Review change management for these hosts."
+  }
+}

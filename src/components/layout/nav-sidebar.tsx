@@ -3,26 +3,32 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
-import { Upload, BarChart3, GitCompare, Shield } from "lucide-react";
+import { LayoutDashboard, Upload, BarChart3, GitCompare, Shield, FileSpreadsheet } from "lucide-react";
 
 const navItems = [
+  {
+    title: "Dashboard",
+    href: "/",
+    icon: LayoutDashboard,
+    description: "Network health overview",
+  },
   {
     title: "Upload",
     href: "/upload",
     icon: Upload,
-    description: "Ingest baseline scans",
+    description: "Import scan files",
   },
   {
     title: "Scorecard",
     href: "/scorecard",
     icon: BarChart3,
-    description: "Analyze single run",
+    description: "Single run analysis",
   },
   {
     title: "Diff",
     href: "/diff",
     icon: GitCompare,
-    description: "Compare baselines",
+    description: "Compare runs",
   },
 ];
 
@@ -34,13 +40,17 @@ export function NavSidebar() {
       {/* Logo / Brand */}
       <div className="flex h-16 items-center gap-2 border-b px-6">
         <Shield className="h-6 w-6 text-primary" />
-        <span className="font-semibold">PSEC Baseline Hunter</span>
+        <div>
+          <div className="font-semibold text-sm">PSEC Baseline Hunter</div>
+          <div className="text-xs text-muted-foreground">Network Security</div>
+        </div>
       </div>
 
       {/* Navigation */}
       <nav className="flex-1 space-y-1 p-4">
         {navItems.map((item) => {
-          const isActive = pathname.startsWith(item.href);
+          const isActive = pathname === item.href ||
+            (item.href !== "/" && pathname.startsWith(item.href));
           return (
             <Link
               key={item.href}
@@ -69,10 +79,18 @@ export function NavSidebar() {
         })}
       </nav>
 
-      {/* Footer */}
-      <div className="border-t p-4">
+      {/* Help Section */}
+      <div className="border-t p-4 space-y-2">
+        <a
+          href="/scripts/network-scan.ps1"
+          download
+          className="flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground transition-colors"
+        >
+          <FileSpreadsheet className="h-3 w-3" />
+          Download Scan Script
+        </a>
         <div className="text-xs text-muted-foreground">
-          Network Security Baseline Tool
+          v0.2.0 - Demo Ready
         </div>
       </div>
     </aside>

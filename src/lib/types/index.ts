@@ -135,3 +135,95 @@ export interface RunsListQuery {
   limit?: number;
   offset?: number;
 }
+
+/**
+ * Risk classification for ports
+ */
+export type RiskLevel = "P0" | "P1" | "P2";
+
+/**
+ * A port with risk classification
+ */
+export interface RiskPort {
+  port: number;
+  protocol: string;
+  service: string;
+  risk: RiskLevel;
+  hostsAffected: number;
+  hosts: string[];
+}
+
+/**
+ * Scorecard data for a single run
+ */
+export interface ScorecardData {
+  runUid: string;
+  network: string;
+  timestamp: string;
+  totalHosts: number;
+  openPorts: number;
+  uniqueServices: number;
+  riskPorts: number;
+  topPorts: TopPort[];
+  riskPortsDetail: RiskPort[];
+  summary: string;
+}
+
+/**
+ * Host change in diff
+ */
+export interface HostChange {
+  ip: string;
+  hostname?: string;
+  changeType: "added" | "removed";
+}
+
+/**
+ * Port change in diff
+ */
+export interface PortChange {
+  ip: string;
+  hostname?: string;
+  port: number;
+  protocol: string;
+  service: string;
+  changeType: "opened" | "closed";
+  risk?: RiskLevel;
+}
+
+/**
+ * Diff data comparing two runs
+ */
+export interface DiffData {
+  baselineRunUid: string;
+  currentRunUid: string;
+  baselineTimestamp: string;
+  currentTimestamp: string;
+  network: string;
+  newHosts: HostChange[];
+  removedHosts: HostChange[];
+  portsOpened: PortChange[];
+  portsClosed: PortChange[];
+  riskyExposures: PortChange[];
+  summary: string;
+}
+
+/**
+ * Complete demo data package
+ */
+export interface DemoData {
+  baseline: RunManifestInfo;
+  current: RunManifestInfo;
+  baselineScorecard: ScorecardData;
+  currentScorecard: ScorecardData;
+  diff: DiffData;
+}
+
+/**
+ * Response from demo API
+ */
+export interface DemoResponse {
+  success: boolean;
+  data?: DemoData;
+  error?: string;
+}

@@ -11,6 +11,7 @@ interface DropzoneProps {
   uploadProgress?: number;
   uploadedFile?: { name: string; size: number } | null;
   error?: string | null;
+  compact?: boolean;
 }
 
 export function Dropzone({
@@ -19,6 +20,7 @@ export function Dropzone({
   uploadProgress = 0,
   uploadedFile = null,
   error = null,
+  compact = false,
 }: DropzoneProps) {
   const onDrop = useCallback(
     (acceptedFiles: File[]) => {
@@ -45,11 +47,15 @@ export function Dropzone({
     : null;
   const displayError = error || rejectionError;
 
+  const iconSize = compact ? "h-6 w-6" : "h-12 w-12";
+  const containerHeight = compact ? "h-24" : "h-64";
+  const padding = compact ? "p-3" : "p-6";
+
   return (
     <div
       {...getRootProps()}
       className={cn(
-        "flex h-64 cursor-pointer items-center justify-center rounded-lg border-2 border-dashed transition-colors",
+        `flex ${containerHeight} cursor-pointer items-center justify-center rounded-lg border-2 border-dashed transition-colors`,
         isDragActive
           ? "border-primary bg-primary/5"
           : "border-muted-foreground/25 bg-muted/50 hover:border-muted-foreground/50",
@@ -59,14 +65,14 @@ export function Dropzone({
     >
       <input {...getInputProps()} />
 
-      <div className="text-center p-6">
+      <div className={`text-center ${padding}`}>
         {isUploading ? (
           <>
-            <Loader2 className="mx-auto h-12 w-12 text-primary animate-spin" />
+            <Loader2 className={`mx-auto ${iconSize} text-primary animate-spin`} />
             <p className="mt-2 text-sm font-medium">
-              Uploading... {uploadProgress > 0 && `${uploadProgress}%`}
+              {compact ? "Uploading..." : `Uploading... ${uploadProgress > 0 ? `${uploadProgress}%` : ""}`}
             </p>
-            {uploadedFile && (
+            {uploadedFile && !compact && (
               <p className="text-xs text-muted-foreground mt-1">
                 {uploadedFile.name}
               </p>
@@ -74,49 +80,61 @@ export function Dropzone({
           </>
         ) : uploadedFile && !displayError ? (
           <>
-            <CheckCircle2 className="mx-auto h-12 w-12 text-green-500" />
-            <p className="mt-2 text-sm font-medium text-green-600">
-              File ready for processing
+            <CheckCircle2 className={`mx-auto ${iconSize} text-green-500`} />
+            <p className={`mt-1 text-sm font-medium text-green-600 ${compact ? "text-xs" : ""}`}>
+              {compact ? "Ready" : "File ready for processing"}
             </p>
-            <div className="flex items-center justify-center gap-2 mt-1">
-              <FileArchive className="h-4 w-4 text-muted-foreground" />
-              <p className="text-xs text-muted-foreground">
-                {uploadedFile.name} ({formatFileSize(uploadedFile.size)})
-              </p>
-            </div>
-            <p className="text-xs text-muted-foreground mt-2">
-              Drop a new file to replace
-            </p>
+            {!compact && (
+              <>
+                <div className="flex items-center justify-center gap-2 mt-1">
+                  <FileArchive className="h-4 w-4 text-muted-foreground" />
+                  <p className="text-xs text-muted-foreground">
+                    {uploadedFile.name} ({formatFileSize(uploadedFile.size)})
+                  </p>
+                </div>
+                <p className="text-xs text-muted-foreground mt-2">
+                  Drop a new file to replace
+                </p>
+              </>
+            )}
           </>
         ) : displayError ? (
           <>
-            <AlertCircle className="mx-auto h-12 w-12 text-destructive" />
-            <p className="mt-2 text-sm font-medium text-destructive">
-              Upload failed
+            <AlertCircle className={`mx-auto ${iconSize} text-destructive`} />
+            <p className={`mt-1 text-sm font-medium text-destructive ${compact ? "text-xs" : ""}`}>
+              {compact ? "Failed" : "Upload failed"}
             </p>
-            <p className="text-xs text-muted-foreground mt-1">
-              {displayError}
-            </p>
-            <p className="text-xs text-muted-foreground mt-2">
-              Click or drop to try again
-            </p>
+            {!compact && (
+              <>
+                <p className="text-xs text-muted-foreground mt-1">
+                  {displayError}
+                </p>
+                <p className="text-xs text-muted-foreground mt-2">
+                  Click or drop to try again
+                </p>
+              </>
+            )}
           </>
         ) : (
           <>
             <Upload
               className={cn(
-                "mx-auto h-12 w-12",
+                `mx-auto ${iconSize}`,
                 isDragActive ? "text-primary" : "text-muted-foreground"
               )}
             />
-            <p className="mt-2 text-sm text-muted-foreground">
+            <p className={`mt-1 ${compact ? "text-xs" : "text-sm"} text-muted-foreground`}>
               {isDragActive
-                ? "Drop ZIP file here..."
+                ? "Drop here..."
+                : compact
+                ? "Drop ZIP or click"
                 : "Drop ZIP file here or click to upload"}
             </p>
-            <p className="text-xs text-muted-foreground">
-              Supports baselinekit scan exports (max 500MB)
-            </p>
+            {!compact && (
+              <p className="text-xs text-muted-foreground">
+                Supports baselinekit scan exports (max 500MB)
+              </p>
+            )}
           </>
         )}
       </div>
