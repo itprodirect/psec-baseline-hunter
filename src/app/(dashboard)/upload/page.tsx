@@ -3,10 +3,12 @@
 import { useState, useEffect, useCallback } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Upload, FolderSearch, RefreshCw } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { Upload, FolderSearch, RefreshCw, Play, X } from "lucide-react";
 import { Dropzone } from "@/components/upload/dropzone";
 import { RunList } from "@/components/upload/run-list";
 import { RunManifestInfo, UploadResponse, IngestResponseV2, RunsListResponseV2 } from "@/lib/types";
+import { useDemo } from "@/lib/context/demo-context";
 
 export default function UploadPage() {
   const [uploadedFile, setUploadedFile] = useState<{ name: string; size: number } | null>(null);
@@ -18,6 +20,13 @@ export default function UploadPage() {
   const [runs, setRuns] = useState<RunManifestInfo[]>([]);
   const [ingestStats, setIngestStats] = useState<{ newRuns: number; duplicateRuns: number } | null>(null);
   const [isLoadingRuns, setIsLoadingRuns] = useState(true);
+
+  const { isDemoMode, demoData, isLoadingDemo, demoError, loadDemoData, clearDemoData } = useDemo();
+
+  // Combine real runs with demo runs when in demo mode
+  const displayRuns = isDemoMode && demoData
+    ? [demoData.current, demoData.baseline, ...runs]
+    : runs;
 
   // Load existing runs on mount
   useEffect(() => {
@@ -115,12 +124,68 @@ export default function UploadPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold tracking-tight">Upload</h1>
-        <p className="text-muted-foreground">
-          Ingest baselinekit scan results for analysis
-        </p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight">Upload</h1>
+          <p className="text-muted-foreground">
+            Ingest baselinekit scan results for analysis
+          </p>
+        </div>
+        {!isDemoMode ? (
+          <Button
+            variant="outline"
+            onClick={loadDemoData}
+            disabled={isLoadingDemo}
+            className="gap-2"
+          >
+            <Play className="h-4 w-4" />
+            {isLoadingDemo ? "Loading..." : "Load Demo Data"}
+          </Button>
+        ) : (
+          <div className="flex items-center gap-2">
+            <Badge variant="secondary" className="gap-1">
+              Demo Mode Active
+            </Badge>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={clearDemoData}
+              className="gap-1"
+            >
+              <X className="h-4 w-4" />
+              Exit Demo
+            </Button>
+          </div>
+        )}
       </div>
+
+      {demoError && (
+        <div className="p-4 bg-destructive/10 text-destructive rounded-lg text-sm">
+          {demoError}
+        </div>
+      )}
+
+      {isDemoMode && demoData && (
+        <Card className="border-blue-200 bg-blue-50/50 dark:border-blue-900 dark:bg-blue-950/20">
+          <CardContent className="pt-6">
+            <div className="flex items-start gap-4">
+              <div className="p-2 rounded-full bg-blue-100 dark:bg-blue-900">
+                <Play className="h-5 w-5 text-blue-600 dark:text-blue-400" />
+              </div>
+              <div className="flex-1">
+                <h3 className="font-semibold text-blue-900 dark:text-blue-100">
+                  Demo Mode Active
+                </h3>
+                <p className="text-sm text-blue-700 dark:text-blue-300 mt-1">
+                  Viewing sample data from <strong>demo-network</strong>. Two runs loaded:
+                  a baseline from Jan 15 and a current scan from Jan 22.
+                  Navigate to <strong>Scorecard</strong> or <strong>Diff</strong> to see analysis.
+                </p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       <Card>
         <CardHeader>
@@ -208,7 +273,7 @@ export default function UploadPage() {
           </div>
         </CardHeader>
         <CardContent>
-          <RunList runs={runs} loading={isLoadingRuns} />
+          <RunList runs={displayRuns} loading={isLoadingRuns && !isDemoMode} />
         </CardContent>
       </Card>
     </div>
