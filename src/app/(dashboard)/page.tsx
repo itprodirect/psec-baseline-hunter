@@ -188,7 +188,6 @@ export default function DashboardPage() {
   const handleFileAccepted = useCallback(async (file: File) => {
     setUploadedFile({ name: file.name, size: file.size });
     setUploadError(null);
-    setUploadPath(null);
     setIsUploading(true);
 
     try {
@@ -234,7 +233,6 @@ export default function DashboardPage() {
         await loadRuns();
         // Clear upload state
         setUploadedFile(null);
-        setUploadPath(null);
       }
     } catch (error) {
       setUploadError(error instanceof Error ? error.message : "Extraction failed");
