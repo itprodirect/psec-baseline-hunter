@@ -10,7 +10,6 @@ import {
   SavedComparison,
   ComparisonRegistry,
   SaveComparisonRequest,
-  DiffData,
 } from "@/lib/types";
 import { getDataDir, ensureDir } from "./ingest";
 import { computeDiff, computeRiskScore, getRiskScoreLabel } from "./diff-engine";

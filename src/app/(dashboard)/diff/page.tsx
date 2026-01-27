@@ -559,7 +559,7 @@ export default function DiffPage() {
         if (data.success && data.runs) {
           // Sort by timestamp descending (newest first)
           const sortedRuns = [...data.runs].sort((a, b) =>
-            new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+            new Date(b.timestamp || 0).getTime() - new Date(a.timestamp || 0).getTime()
           );
           setRuns(sortedRuns);
         }

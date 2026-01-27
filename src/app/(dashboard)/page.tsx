@@ -121,10 +121,22 @@ export default function DashboardPage() {
   const [isLoadingDiff, setIsLoadingDiff] = useState(false);
   const [diffError, setDiffError] = useState<string | null>(null);
 
+  const loadRuns = useCallback(async () => {
+    try {
+      const response = await fetch("/api/runs");
+      const data: RunsListResponseV2 = await response.json();
+      if (data.success && data.runs) {
+        setRuns(data.runs);
+      }
+    } catch (error) {
+      console.error("Failed to load runs:", error);
+    }
+  }, []);
+
   // Load runs on mount
   useEffect(() => {
     loadRuns();
-  }, []);
+  }, [loadRuns]);
 
   // Auto-select runs when available
   useEffect(() => {
@@ -136,26 +148,7 @@ export default function DashboardPage() {
     }
   }, [runs, baselineRunUid, currentRunUid]);
 
-  // Load diff when both runs are selected
-  useEffect(() => {
-    if (baselineRunUid && currentRunUid && !isDemoMode) {
-      loadDiff();
-    }
-  }, [baselineRunUid, currentRunUid, isDemoMode]);
-
-  const loadRuns = async () => {
-    try {
-      const response = await fetch("/api/runs");
-      const data: RunsListResponseV2 = await response.json();
-      if (data.success && data.runs) {
-        setRuns(data.runs);
-      }
-    } catch (error) {
-      console.error("Failed to load runs:", error);
-    }
-  };
-
-  const loadDiff = async () => {
+  const loadDiff = useCallback(async () => {
     if (!baselineRunUid || !currentRunUid) return;
 
     setIsLoadingDiff(true);
@@ -183,7 +176,39 @@ export default function DashboardPage() {
     } finally {
       setIsLoadingDiff(false);
     }
-  };
+  }, [baselineRunUid, currentRunUid]);
+
+  // Load diff when both runs are selected
+  useEffect(() => {
+    if (baselineRunUid && currentRunUid && !isDemoMode) {
+      loadDiff();
+    }
+  }, [baselineRunUid, currentRunUid, isDemoMode, loadDiff]);
+
+  const handleExtract = useCallback(async (zipPath: string) => {
+    setIsIngesting(true);
+
+    try {
+      const response = await fetch("/api/ingest", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ zipPath }),
+      });
+
+      const data: IngestResponseV2 = await response.json();
+
+      if (data.success && data.runs && data.runs.length > 0) {
+        // Refresh runs list
+        await loadRuns();
+        // Clear upload state
+        setUploadedFile(null);
+      }
+    } catch (error) {
+      setUploadError(error instanceof Error ? error.message : "Extraction failed");
+    } finally {
+      setIsIngesting(false);
+    }
+  }, [loadRuns]);
 
   const handleFileAccepted = useCallback(async (file: File) => {
     setUploadedFile({ name: file.name, size: file.size });
@@ -214,32 +239,7 @@ export default function DashboardPage() {
     } finally {
       setIsUploading(false);
     }
-  }, []);
-
-  const handleExtract = async (zipPath: string) => {
-    setIsIngesting(true);
-
-    try {
-      const response = await fetch("/api/ingest", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ zipPath }),
-      });
-
-      const data: IngestResponseV2 = await response.json();
-
-      if (data.success && data.runs && data.runs.length > 0) {
-        // Refresh runs list
-        await loadRuns();
-        // Clear upload state
-        setUploadedFile(null);
-      }
-    } catch (error) {
-      setUploadError(error instanceof Error ? error.message : "Extraction failed");
-    } finally {
-      setIsIngesting(false);
-    }
-  };
+  }, [handleExtract]);
 
   // Use demo data when in demo mode
   const displayDiff = isDemoMode && demoData ? demoData.diff : diffData;

@@ -19,7 +19,7 @@ function escapeCSV(value: string | number | undefined | null): string {
 /**
  * Convert array of objects to CSV string
  */
-export function toCSV<T extends Record<string, unknown>>(
+export function toCSV<T extends object>(
   data: T[],
   columns: { key: keyof T; header: string }[]
 ): string {

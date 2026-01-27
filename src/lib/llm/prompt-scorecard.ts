@@ -211,7 +211,7 @@ export function generateRuleBasedSummary(
   summary += `\n\n`;
 
   summary += `## Questions I Have for You\n\n`;
-  summary += getQuestions(data, profile);
+  summary += getQuestions(data);
   summary += `\n`;
 
   summary += `## Notes / Limitations\n\n`;
@@ -327,7 +327,7 @@ function getConsequences(profile: UserProfile, p0Ports: RiskPort[]): string {
 /**
  * Generate clarifying questions
  */
-function getQuestions(data: ScorecardData, _profile: UserProfile): string {
+function getQuestions(data: ScorecardData): string {
   const questions: string[] = [];
   const riskPorts = data.riskPortsDetail;
 

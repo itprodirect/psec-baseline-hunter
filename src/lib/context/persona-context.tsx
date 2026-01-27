@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useContext, useState, useCallback, useEffect, ReactNode } from "react";
+import { createContext, useContext, useState, useCallback, useEffect, useRef, ReactNode } from "react";
 import {
   UserProfile,
   DEFAULT_USER_PROFILE,
@@ -23,12 +23,18 @@ export function PersonaProvider({ children }: { children: ReactNode }) {
     hasProfile: boolean;
   }>({ profile: DEFAULT_USER_PROFILE, hasProfile: false });
 
+  const hasLoadedRef = useRef(false);
+
   // Load from localStorage after hydration
   useEffect(() => {
+    if (hasLoadedRef.current) return;
+    hasLoadedRef.current = true;
+
     const saved = localStorage.getItem(USER_PROFILE_STORAGE_KEY);
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
+        // eslint-disable-next-line react-hooks/set-state-in-effect
         setProfileData({
           profile: { ...DEFAULT_USER_PROFILE, ...parsed },
           hasProfile: true,
