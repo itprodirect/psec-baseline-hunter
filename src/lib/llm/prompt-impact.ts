@@ -4,6 +4,7 @@
  */
 
 import { PortImpactData, BreachExample } from "@/lib/types";
+import type { UserProfile } from "@/lib/types/userProfile";
 import { PORT_SERVICE_NAMES } from "@/lib/constants/risk-ports";
 
 /**
@@ -55,7 +56,7 @@ export function buildPortImpactUserPrompt(
   port: number,
   protocol: string,
   service: string,
-  userProfile?: any
+  userProfile?: UserProfile
 ): string {
   const serviceName = PORT_SERVICE_NAMES[port] || service || `Port ${port}`;
 
