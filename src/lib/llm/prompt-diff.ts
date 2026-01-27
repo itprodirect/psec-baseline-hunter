@@ -3,7 +3,7 @@
  * Generates personalized explanations of what changed between two scans
  */
 
-import { DiffData, PortChange } from "@/lib/types";
+import { DiffData } from "@/lib/types";
 import {
   UserProfile,
   REDACTED_PLACEHOLDER,

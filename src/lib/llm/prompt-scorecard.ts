@@ -7,9 +7,6 @@ import { ScorecardData, RiskPort } from "@/lib/types";
 import {
   UserProfile,
   TechnicalLevel,
-  Profession,
-  ContextFactor,
-  ExplanationTone,
   REDACTED_PLACEHOLDER,
   TECHNICAL_LEVEL_LABELS,
   PROFESSION_LABELS,
@@ -177,7 +174,6 @@ export function generateRuleBasedSummary(
   data: ScorecardData,
   profile: UserProfile
 ): string {
-  const profession = PROFESSION_LABELS[profile.profession].label;
   const p0Ports = data.riskPortsDetail.filter((r) => r.risk === "P0");
   const p1Ports = data.riskPortsDetail.filter((r) => r.risk === "P1");
 
@@ -331,7 +327,7 @@ function getConsequences(profile: UserProfile, p0Ports: RiskPort[]): string {
 /**
  * Generate clarifying questions
  */
-function getQuestions(data: ScorecardData, profile: UserProfile): string {
+function getQuestions(data: ScorecardData, _profile: UserProfile): string {
   const questions: string[] = [];
   const riskPorts = data.riskPortsDetail;
 

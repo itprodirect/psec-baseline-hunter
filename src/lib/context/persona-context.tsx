@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useContext, useState, useEffect, useCallback, ReactNode } from "react";
+import { createContext, useContext, useState, useCallback, ReactNode } from "react";
 import {
   UserProfile,
   DEFAULT_USER_PROFILE,
@@ -16,42 +16,45 @@ interface PersonaContextValue {
 
 const PersonaContext = createContext<PersonaContextValue | undefined>(undefined);
 
-export function PersonaProvider({ children }: { children: ReactNode }) {
-  const [profile, setProfileState] = useState<UserProfile>(DEFAULT_USER_PROFILE);
-  const [hasProfile, setHasProfile] = useState(false);
+// Helper to load profile from localStorage (runs once during initialization)
+function getInitialProfile(): { profile: UserProfile; hasProfile: boolean } {
+  if (typeof window === "undefined") {
+    return { profile: DEFAULT_USER_PROFILE, hasProfile: false };
+  }
 
-  // Load profile from localStorage on mount
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      const saved = localStorage.getItem(USER_PROFILE_STORAGE_KEY);
-      if (saved) {
-        try {
-          const parsed = JSON.parse(saved);
-          setProfileState({ ...DEFAULT_USER_PROFILE, ...parsed });
-          setHasProfile(true);
-        } catch {
-          // Ignore parse errors
-        }
-      }
+  const saved = localStorage.getItem(USER_PROFILE_STORAGE_KEY);
+  if (saved) {
+    try {
+      const parsed = JSON.parse(saved);
+      return {
+        profile: { ...DEFAULT_USER_PROFILE, ...parsed },
+        hasProfile: true
+      };
+    } catch {
+      // Ignore parse errors
     }
-  }, []);
+  }
+  return { profile: DEFAULT_USER_PROFILE, hasProfile: false };
+}
+
+export function PersonaProvider({ children }: { children: ReactNode }) {
+  // Initialize state from localStorage using lazy initialization
+  const [{ profile, hasProfile }, setProfileData] = useState(() => getInitialProfile());
 
   const setProfile = useCallback((newProfile: UserProfile) => {
-    setProfileState(newProfile);
-    setHasProfile(true);
+    setProfileData({ profile: newProfile, hasProfile: true });
     if (typeof window !== "undefined") {
       localStorage.setItem(USER_PROFILE_STORAGE_KEY, JSON.stringify(newProfile));
     }
   }, []);
 
   const updateProfile = useCallback((updates: Partial<UserProfile>) => {
-    setProfileState((prev) => {
-      const updated = { ...prev, ...updates };
+    setProfileData((prev) => {
+      const updated = { ...prev.profile, ...updates };
       if (typeof window !== "undefined") {
         localStorage.setItem(USER_PROFILE_STORAGE_KEY, JSON.stringify(updated));
       }
-      setHasProfile(true);
-      return updated;
+      return { profile: updated, hasProfile: true };
     });
   }, []);
 

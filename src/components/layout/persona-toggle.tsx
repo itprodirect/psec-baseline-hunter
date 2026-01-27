@@ -1,6 +1,5 @@
 "use client";
 
-import { Badge } from "@/components/ui/badge";
 import { User, Sparkles } from "lucide-react";
 import { usePersona } from "@/lib/context/persona-context";
 import {

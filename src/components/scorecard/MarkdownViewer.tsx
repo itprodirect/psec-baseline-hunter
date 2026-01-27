@@ -40,7 +40,7 @@ export function MarkdownViewer({ content, filename = "security-report.md" }: Mar
 
   // Simple markdown to HTML conversion
   const renderMarkdown = (md: string): string => {
-    let html = md
+    const html = md
       // Escape HTML
       .replace(/&/g, "&amp;")
       .replace(/</g, "&lt;")
