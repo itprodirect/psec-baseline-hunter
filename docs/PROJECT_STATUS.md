@@ -1,8 +1,8 @@
 # PSEC Baseline Hunter - Project Status
 
-**Last Updated:** 2026-01-25
-**Current Branch:** `feature/phase2-run-registry`
-**Phase:** Phase 1 Complete, Phase 2 In Progress
+**Last Updated:** 2026-01-26
+**Current Branch:** `main`
+**Version:** v0.3.0 - Personalized Summaries
 
 ---
 
@@ -10,9 +10,9 @@
 
 | Metric | Value |
 |--------|-------|
-| **Current Phase** | Phase 2: Run Registry |
-| **Last Completed** | Phase 1: Upload + Business Logic |
-| **Next Milestone** | Phase 3: Scorecard Enhancement |
+| **Current Version** | v0.3.0 (Personalized Summaries) |
+| **Last Completed** | Phase 3: Personalized Summaries + Persona System |
+| **Next Milestone** | Wire Diff to real data |
 | **Tech Stack** | Next.js 16 + TypeScript 5 |
 
 ---
@@ -23,9 +23,9 @@
 |-------|-------------|--------|------|
 | **Phase 0** | Scaffolding, CI, UI shell | ✅ Complete | 2026-01-25 |
 | **Phase 1** | Upload, extraction, parsing | ✅ Complete | 2026-01-25 |
-| **Phase 2** | Run registry, deduplication | 🔄 In Progress | — |
-| **Phase 3** | Enhanced scorecard | 🔲 Not started | — |
-| **Phase 4** | Diff, risk flags, exports | 🔲 Not started | — |
+| **Phase 2** | Run registry, demo mode, scorecard | ✅ Complete | 2026-01-25 |
+| **Phase 3** | Personalized summaries, persona system | ✅ Complete | 2026-01-26 |
+| **Phase 4** | Diff with real data | 🔲 Not started | — |
 | **Phase 5** | Custom rules, history | 🔲 Not started | — |
 | **Phase 6** | Hardening, production | 🔲 Not started | — |
 
@@ -44,6 +44,13 @@
 | Nmap XML Parsing | ✅ Working | Extracts host/port/service data |
 | Top Ports | ✅ Working | Aggregates by port/service |
 | Run List UI | ✅ Working | Displays detected runs |
+| Demo Mode | ✅ Working | Preloaded sample data |
+| Health Overview | ✅ Working | Single-run analysis with real data |
+| Changes Page | ✅ Working | Comparison view (demo mode) |
+| LLM Integration | ✅ Working | Anthropic Claude / OpenAI support |
+| Personalized Summaries | ✅ Working | On Health Overview + Changes pages |
+| Persona System | ✅ Working | Shared context, localStorage persistence |
+| Export (Demo) | ✅ Working | CHANGES.md, WATCHLIST.md |
 
 ### API Endpoints
 
@@ -53,14 +60,18 @@
 | `/api/ingest` | POST | Extract and detect | ✅ Working |
 | `/api/runs` | GET | List all runs | ✅ Working |
 | `/api/parse` | POST | Parse Nmap XML | ✅ Working |
+| `/api/demo` | GET | Get demo data | ✅ Working |
+| `/api/scorecard/[runUid]` | GET | Get scorecard data | ✅ Working |
+| `/api/llm/scorecard-summary` | POST/GET | Generate/check LLM summary | ✅ Working |
+| `/api/llm/diff-summary` | POST | Generate diff summary | ✅ Working |
 
 ### Pages
 
-| Page | Status | Features |
-|------|--------|----------|
-| `/upload` | ✅ Working | Dropzone, run list, extract button |
-| `/scorecard` | 🔲 Stub | Placeholder only |
-| `/diff` | 🔲 Stub | Placeholder with tabs |
+| Page | Route | Status | Features |
+|------|-------|--------|----------|
+| Start Scan Review | `/upload` | ✅ Working | Dropzone, run list, demo mode button |
+| Health Overview | `/scorecard` | ✅ Working | Metrics, risk ports, personalized summary |
+| Changes | `/diff` | ✅ Working | Comparison tabs, export, personalized summary |
 
 ---
 
@@ -70,54 +81,68 @@
 src/
 ├── app/
 │   ├── (dashboard)/
-│   │   ├── layout.tsx              # Dashboard shell
-│   │   ├── upload/page.tsx         # ✅ Full implementation
-│   │   ├── scorecard/page.tsx      # 🔲 Placeholder
-│   │   └── diff/page.tsx           # 🔲 Placeholder with tabs
+│   │   ├── layout.tsx              # Dashboard shell + PersonaProvider
+│   │   ├── upload/page.tsx         # ✅ Start Scan Review
+│   │   ├── scorecard/page.tsx      # ✅ Health Overview
+│   │   └── diff/page.tsx           # ✅ Changes
 │   └── api/
 │       ├── upload/route.ts         # ✅ File upload
 │       ├── ingest/route.ts         # ✅ ZIP extraction
 │       ├── runs/route.ts           # ✅ Run listing
-│       └── parse/route.ts          # ✅ XML parsing
+│       ├── parse/route.ts          # ✅ XML parsing
+│       ├── demo/route.ts           # ✅ Demo data
+│       ├── scorecard/[runUid]/route.ts  # ✅ Scorecard data
+│       └── llm/
+│           ├── scorecard-summary/route.ts  # ✅ LLM summaries
+│           └── diff-summary/route.ts       # ✅ Diff summaries
 ├── components/
 │   ├── upload/
 │   │   ├── dropzone.tsx            # ✅ Drag-and-drop
 │   │   └── run-list.tsx            # ✅ Run display
+│   ├── scorecard/
+│   │   ├── PersonalizedSummaryCard.tsx   # ✅ Explain button
+│   │   ├── PersonalizedSummaryModal.tsx  # ✅ Profile wizard
+│   │   └── MarkdownViewer.tsx            # ✅ Markdown display
+│   ├── diff/
+│   │   └── PersonalizedDiffCard.tsx      # ✅ Diff explanation
 │   ├── layout/
-│   │   └── nav-sidebar.tsx         # ✅ Navigation
+│   │   ├── nav-sidebar.tsx         # ✅ Navigation
+│   │   └── persona-toggle.tsx      # ✅ Persona viewer
 │   └── ui/                         # ✅ shadcn components
 └── lib/
-    ├── types/index.ts              # ✅ TypeScript interfaces
-    ├── constants/file-patterns.ts  # ✅ Configuration
+    ├── types/
+    │   ├── index.ts                # ✅ Core types
+    │   └── userProfile.ts          # ✅ Persona types
+    ├── constants/
+    │   ├── file-patterns.ts        # ✅ File detection
+    │   └── risk-ports.ts           # ✅ Risk classification
+    ├── context/
+    │   ├── demo-context.tsx        # ✅ Demo state
+    │   └── persona-context.tsx     # ✅ User profile state
+    ├── llm/
+    │   ├── provider.ts             # ✅ LLM abstraction
+    │   ├── prompt-scorecard.ts     # ✅ Scorecard prompts
+    │   └── prompt-diff.ts          # ✅ Diff prompts
     └── services/
         ├── ingest.ts               # ✅ Run detection
-        └── nmap-parser.ts          # ✅ XML parsing
+        ├── nmap-parser.ts          # ✅ XML parsing
+        ├── run-registry.ts         # ✅ Run manifest
+        └── risk-classifier.ts      # ✅ Risk classification
 ```
 
 ---
 
-## What's Next (Phase 2)
+## What's Next
 
-### Run Registry
+### Priority 1: Wire Diff to Real Data
 
-The current implementation has a limitation: re-uploading the same ZIP creates duplicate runs. Phase 2 adds:
+The Changes page currently only works with demo data. Next steps:
 
-| Feature | Description |
-|---------|-------------|
-| **Run Manifest** | JSON file storing run metadata |
-| **Content Hashing** | SHA256 hash of key files |
-| **Deduplication** | Skip duplicate runs on re-upload |
-| **Run UID** | Unique identifier for each run |
-
-### Files to Create
-
-```
-src/lib/
-├── services/
-│   └── run-registry.ts       # Run manifest CRUD
-└── utils/
-    └── hash.ts               # Content hashing
-```
+| Task | Description |
+|------|-------------|
+| **Real data diff** | Connect diff computation to actual run data |
+| **Run selector** | Allow selecting baseline + comparison runs |
+| **Computed diff** | Compute host/port differences from parsed data |
 
 ---
 
@@ -135,13 +160,15 @@ src/lib/
 | XML Parsing | fast-xml-parser | ^5.1.0 |
 | ZIP Handling | adm-zip | ^0.5.16 |
 | File Upload | react-dropzone | ^14.3.8 |
+| LLM (Anthropic) | @anthropic-ai/sdk | ^0.39.0 |
+| LLM (OpenAI) | openai | ^4.77.3 |
 
 ### Planned
 
 | Category | Technology | Phase |
 |----------|------------|-------|
-| State Management | SWR + Zustand | Phase 3 |
-| Tables | TanStack Table | Phase 3 |
+| State Management | SWR + Zustand | Phase 4 |
+| Tables | TanStack Table | Phase 4 |
 | Cloud Storage | AWS S3 | Phase 5 |
 | Monitoring | Sentry | Phase 6 |
 
@@ -155,6 +182,9 @@ src/lib/
 | Local storage first | Faster iteration, add S3 later | 2026-01-25 |
 | No auth needed | Internal tool | 2026-01-25 |
 | shadcn/ui | Modern, accessible, customizable | 2026-01-25 |
+| Dual LLM support | Anthropic + OpenAI with auto-fallback | 2026-01-26 |
+| Rule-based fallback | Works without API key | 2026-01-26 |
+| Context-based persona | Shared state across all pages | 2026-01-26 |
 
 ---
 
@@ -162,27 +192,34 @@ src/lib/
 
 | Issue | Severity | Status | Fix Plan |
 |-------|----------|--------|----------|
-| Duplicate runs on re-upload | Medium | Fixing in Phase 2 | Add run registry |
-| No scorecard UI | Low | Planned Phase 3 | Build scorecard page |
-| No diff comparison | Low | Planned Phase 4 | Port diff engine |
+| Diff only works in demo mode | Medium | Planned Phase 4 | Wire to real data |
 | Local storage only | Low | Planned Phase 5 | Add S3 support |
+| Minute-granular naming | Low | Documented | HHMM collisions possible |
 
 ---
 
 ## Files Changed Recently
 
-### Phase 1 (2026-01-25)
+### Phase 3 (2026-01-26)
 
 | File | Change |
 |------|--------|
-| `src/lib/services/ingest.ts` | Created - run detection |
-| `src/lib/services/nmap-parser.ts` | Created - XML parsing |
-| `src/lib/types/index.ts` | Created - TypeScript types |
-| `src/app/api/*` | Created - all API routes |
-| `src/components/upload/*` | Created - upload UI |
-| `src/app/(dashboard)/upload/page.tsx` | Updated - full implementation |
-| `docs/ROADMAP.md` | Created - feature guide |
-| `docs/SCANNING_GUIDE.md` | Created - Nmap guide |
+| `src/lib/types/userProfile.ts` | Created - User profile types |
+| `src/lib/llm/provider.ts` | Created - LLM abstraction |
+| `src/lib/llm/prompt-scorecard.ts` | Created - Scorecard prompts |
+| `src/lib/llm/prompt-diff.ts` | Created - Diff prompts |
+| `src/lib/context/persona-context.tsx` | Created - Shared persona state |
+| `src/app/api/llm/scorecard-summary/route.ts` | Created - LLM API |
+| `src/app/api/llm/diff-summary/route.ts` | Created - Diff LLM API |
+| `src/components/scorecard/PersonalizedSummaryCard.tsx` | Created |
+| `src/components/scorecard/PersonalizedSummaryModal.tsx` | Created |
+| `src/components/scorecard/MarkdownViewer.tsx` | Created |
+| `src/components/diff/PersonalizedDiffCard.tsx` | Created |
+| `src/components/layout/persona-toggle.tsx` | Created |
+| `src/components/layout/nav-sidebar.tsx` | Updated - Page renames |
+| `src/app/(dashboard)/layout.tsx` | Updated - Added PersonaProvider |
+| `src/app/(dashboard)/scorecard/page.tsx` | Updated - Added summary card |
+| `src/app/(dashboard)/diff/page.tsx` | Updated - Added summary card |
 
 ---
 
@@ -201,11 +238,14 @@ npm run lint
 # Type check
 npx tsc --noEmit
 
-# Test upload flow
+# Test personalized summary flow
 # 1. Open http://localhost:3000/upload
-# 2. Upload a baselinekit ZIP
-# 3. Click "Extract + Detect"
-# 4. Verify runs appear in list
+# 2. Click "Load Demo Data"
+# 3. Go to Health Overview
+# 4. Click "Explain This for My Situation"
+# 5. Complete the wizard
+# 6. Verify summary appears
+# 7. Check sidebar shows persona
 ```
 
 ---

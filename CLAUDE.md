@@ -19,33 +19,33 @@ PSEC Baseline Hunter is a network security baseline comparison tool. It ingests 
 
 ---
 
-## Demo-Ready Sprint (Current Focus)
+## Current Sprint: Personalized Summaries (v0.3.0 - Complete)
 
-### Priority 1: Connect Scorecard to Real Data
+### Personalized Plain-English Summaries
+- [x] LLM integration (Anthropic Claude / OpenAI with automatic fallback)
+- [x] User profile capture (technical level, profession, context, tone)
+- [x] Privacy-first design (IP redaction by default, opt-in to include)
+- [x] Rule-based fallback when no API key configured
+- [x] Markdown viewer with copy/download functionality
+- [x] Personalized summaries on Health Overview page
+- [x] Personalized summaries on Changes page
+
+### Persona System
+- [x] Shared persona state via React Context (PersonaProvider)
+- [x] Profile persisted to localStorage
+- [x] Sidebar displays current persona (viewer-only with guidance)
+- [x] Profile captured via "Explain This for My Situation" wizard
+
+### Page Renames (UX Improvement)
+- [x] Upload → "Start Scan Review"
+- [x] Scorecard → "Health Overview"
+- [x] Diff → "Changes"
+
+### Previous Sprint: Demo Mode (Complete)
 - [x] Wire up selected run to display actual parsed metrics
 - [x] Add P0/P1/P2 risk classification display
-- [x] Show top 3 recommended actions
-- [x] Human-readable summary at top
-
-### Priority 2: Demo Mode
-- [x] Create preloaded sample run pair (baseline vs current)
-- [x] Precomputed results that populate immediately
-- [x] "Load Demo Data" button on upload page
-- [x] Populates Scorecard and Diff with realistic numbers
-- Location: `data/demo/` for fixtures
-
-### Priority 3: Diff Page (Partially Complete)
-- [x] Display comparison metrics (new/removed hosts, ports opened/closed)
-- [x] Risky exposures with P0/P1/P2 badges
-- [x] Export CHANGES.md and WATCHLIST.md
-- [ ] Wire to real data (currently demo-only)
-
-### Definition of Done (Demo-Ready v1)
-- [x] Upload (or Demo Mode) produces a clear Overview status
-- [x] Scorecard shows real counts + top 3 actions
-- [x] Diff shows a one-paragraph narrative + top changes
-- [ ] Persona toggle instantly changes explanation style
-- [x] No "blank" screens after upload
+- [x] Demo mode with preloaded sample data
+- [x] Export CHANGES.md and WATCHLIST.md (demo mode)
 
 ---
 
@@ -72,28 +72,48 @@ pip install -r requirements.txt         # Python dependencies
 src/
 ├── app/
 │   ├── (dashboard)/              # Dashboard layout group
-│   │   ├── upload/page.tsx       # ZIP upload & run detection
-│   │   ├── scorecard/page.tsx    # Single-run analysis
-│   │   └── diff/page.tsx         # Run comparison
+│   │   ├── layout.tsx            # Dashboard layout with PersonaProvider
+│   │   ├── upload/page.tsx       # "Start Scan Review" - ZIP upload
+│   │   ├── scorecard/page.tsx    # "Health Overview" - single-run analysis
+│   │   └── diff/page.tsx         # "Changes" - run comparison
 │   └── api/
 │       ├── upload/route.ts       # File upload endpoint
 │       ├── ingest/route.ts       # ZIP extraction endpoint
 │       ├── runs/route.ts         # List runs endpoint
 │       ├── parse/route.ts        # XML parsing endpoint
 │       ├── demo/route.ts         # Demo data endpoint
-│       └── scorecard/[runUid]/route.ts  # Scorecard data for a run
+│       ├── scorecard/[runUid]/route.ts  # Scorecard data for a run
+│       └── llm/
+│           ├── scorecard-summary/route.ts  # LLM-powered scorecard explanations
+│           └── diff-summary/route.ts       # LLM-powered diff explanations
 ├── components/
 │   ├── upload/
 │   │   ├── dropzone.tsx          # Drag-and-drop upload
 │   │   └── run-list.tsx          # Detected runs display
+│   ├── scorecard/
+│   │   ├── PersonalizedSummaryCard.tsx   # "Explain This" card
+│   │   ├── PersonalizedSummaryModal.tsx  # Profile capture wizard
+│   │   └── MarkdownViewer.tsx            # Markdown display with copy/download
+│   ├── diff/
+│   │   └── PersonalizedDiffCard.tsx      # "Explain This" card for diff
+│   ├── layout/
+│   │   ├── nav-sidebar.tsx       # Navigation with persona display
+│   │   └── persona-toggle.tsx    # Persona viewer in sidebar
 │   └── ui/                       # shadcn/ui components
 └── lib/
-    ├── types/index.ts            # TypeScript interfaces
+    ├── types/
+    │   ├── index.ts              # TypeScript interfaces
+    │   └── userProfile.ts        # User profile types for personalization
     ├── constants/
     │   ├── file-patterns.ts      # File detection patterns
     │   └── risk-ports.ts         # P0/P1/P2 risk classification
     ├── context/
-    │   └── demo-context.tsx      # Demo mode state management
+    │   ├── demo-context.tsx      # Demo mode state management
+    │   └── persona-context.tsx   # User profile state (shared across app)
+    ├── llm/
+    │   ├── provider.ts           # LLM abstraction (Anthropic/OpenAI)
+    │   ├── prompt-scorecard.ts   # Scorecard prompt templates + fallback
+    │   └── prompt-diff.ts        # Diff prompt templates + fallback
     └── services/
         ├── ingest.ts             # Run detection logic
         ├── nmap-parser.ts        # XML parsing logic
@@ -169,11 +189,13 @@ Risk rules defined in: `src/lib/constants/risk-ports.ts`
 | Run registry | ✅ Working |
 | Nmap XML parsing | ✅ Working |
 | Demo mode | ✅ Working |
-| Scorecard (demo) | ✅ Working |
-| Scorecard (real data) | ✅ Working |
-| Diff (demo) | ✅ Working |
+| Health Overview (Scorecard) | ✅ Working (demo + real data) |
+| Changes (Diff) | ✅ Working (demo mode) |
 | Diff (real data) | 🔲 Not started |
-| Persona toggle | 🔲 Not started |
+| LLM Integration | ✅ Working (Anthropic/OpenAI) |
+| Personalized Summaries | ✅ Working (Health Overview + Changes) |
+| Persona System | ✅ Working (shared context, localStorage) |
+| Page Renames | ✅ Complete |
 | Export functionality | ✅ Working (demo mode) |
 
 ## Git Workflow
@@ -192,14 +214,32 @@ Risk rules defined in: `src/lib/constants/risk-ports.ts`
 
 ## Future Enhancements
 
-### UX Improvements (Quick Wins)
-- Page Renames: Upload → "Start Scan Review", Scorecard → "Health Overview", Diff → "Changes"
-- Persona Toggle: Security / Executive / Legal / Operations views
-- Plain-Language Summaries on every major view
+### Next Priority: Wire Diff to Real Data
+- [ ] Connect Changes page to actual parsed run data
+- [ ] Remove demo-only limitation from comparison
 
-### Hardening + Scalability
+### UX Improvements (Completed)
+- ~~Page Renames: Upload → "Start Scan Review", Scorecard → "Health Overview", Diff → "Changes"~~ ✅
+- ~~Persona Toggle: Profile-based explanation customization~~ ✅
+- ~~Plain-Language Summaries on every major view~~ ✅
+
+### Hardening + Scalability (Planned)
 - Replace client-supplied paths with runId-based APIs
 - Add zip-slip + extraction guardrails
 - Refactor recursive run detection into testable units
 - Convert sync fs hotspots to async
 - Surface filesystem errors in UI
+
+## Environment Variables
+
+For LLM-powered personalized summaries, configure one of:
+
+```env
+# Anthropic Claude (preferred)
+ANTHROPIC_API_KEY=sk-ant-...
+
+# OpenAI (fallback)
+OPENAI_API_KEY=sk-...
+```
+
+If neither is configured, the app falls back to rule-based summaries.

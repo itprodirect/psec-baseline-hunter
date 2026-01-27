@@ -1,6 +1,6 @@
 # PSEC Baseline Hunter - Project Roadmap & Feature Guide
 
-**Last Updated:** 2026-01-25
+**Last Updated:** 2026-01-26
 **Purpose:** Comprehensive guide to understanding, using, and extending PSEC Baseline Hunter
 
 ---
@@ -435,68 +435,86 @@ nikto -h http://192.168.1.105:8080
 | Nmap XML Parsing | ✅ Working | Extracts host/port/service information |
 | Top Ports Aggregation | ✅ Working | Summarizes most common ports |
 | Run List Display | ✅ Working | Shows all detected runs with metadata |
+| Demo Mode | ✅ Working | Preloaded sample data for testing |
+| Health Overview | ✅ Working | Single-run analysis with real data |
+| Changes Page | ✅ Working | Run comparison (demo mode) |
+| Risk Flagging | ✅ Working | P0/P1/P2 badges on risk ports |
+| Export (Demo) | ✅ Working | CHANGES.md, WATCHLIST.md download |
+| **LLM Integration** | ✅ Working | Anthropic Claude / OpenAI support |
+| **Personalized Summaries** | ✅ Working | Plain-English explanations tailored to user |
+| **Persona System** | ✅ Working | Profile saved, shared across pages |
+
+### Personalized Summaries Feature (New in v0.3.0)
+
+The tool now generates personalized security explanations based on your profile:
+
+| Profile Setting | Options |
+|----------------|---------|
+| **Technical Level** | Non-technical, Some technical, Technical, Security professional |
+| **Profession** | Small business owner, IT administrator, Executive, Home user, etc. |
+| **Context** | Handles client data, Accepts payments, Has health records, etc. |
+| **Tone** | Direct, Friendly, Formal, Casual |
+
+**Privacy Features:**
+- IP addresses are redacted by default
+- Opt-in to include network details
+- Profile stored locally in your browser
 
 ### Current Limitations
 
 | Limitation | Impact | Planned Fix |
 |------------|--------|-------------|
-| Local storage only | Data lost on deployment | Phase 1: S3 integration |
-| No run comparison UI | Can't compare runs yet | Phase 4: Diff implementation |
-| No risk flagging UI | No P0/P1/P2 alerts | Phase 4: Risk flags |
-| No export functionality | Can't download reports | Phase 4: Markdown export |
-| No deduplication | Re-uploading creates duplicates | Phase 2: Run registry |
+| Local storage only | Data lost on deployment | Phase 5: S3 integration |
+| Diff only works in demo mode | Can't compare real runs | Phase 4: Wire to real data |
+| No deduplication | Re-uploading creates duplicates | Planned enhancement |
 
 ---
 
 ## 8. Feature Roadmap
 
-### Phase 1: Cloud Storage (Next Up)
-**Focus:** Move from local filesystem to S3
+### Phase 1-2: Upload & Run Registry ✅ Complete
+**Focus:** Core data ingestion
+
+| Task | Status |
+|------|--------|
+| ZIP Upload | ✅ Working |
+| ZIP Extraction | ✅ Working |
+| Run Detection | ✅ Working |
+| Run Manifest | ✅ Working |
+| Demo Mode | ✅ Working |
+
+### Phase 3: Scorecard & Personalization ✅ Complete
+**Focus:** Rich analysis with personalized explanations
+
+| Task | Status |
+|------|--------|
+| Network/Run Selection | ✅ Working |
+| Port Table | ✅ Working |
+| Host Metrics | ✅ Working |
+| Risk Classification | ✅ Working |
+| **LLM Integration** | ✅ Working |
+| **Personalized Summaries** | ✅ Working |
+| **Persona System** | ✅ Working |
+
+### Phase 4: Diff with Real Data (Next Up)
+**Focus:** Connect comparison to actual scan data
+
+| Task | Description |
+|------|-------------|
+| Run Selector | Select baseline + comparison runs |
+| Real Data Diff | Compute differences from parsed data |
+| Host Delta | Show new/removed hosts from real scans |
+| Port Delta | Show opened/closed ports from real scans |
+
+### Phase 5: Cloud Storage & Advanced Features
+**Focus:** Scalability and customization
 
 | Task | Description |
 |------|-------------|
 | S3 Integration | Upload/store files in AWS S3 |
 | Presigned URLs | Direct browser-to-S3 upload |
-| ZIP Validation | Security checks for malicious ZIPs |
-
-### Phase 2: Run Registry
-**Focus:** Proper run management and deduplication
-
-| Task | Description |
-|------|-------------|
-| Run Manifest | Structured metadata storage |
-| Content Hashing | Detect duplicate uploads |
-| Run UID Generation | Stable run identifiers |
-
-### Phase 3: Scorecard Enhancement
-**Focus:** Rich single-run analysis
-
-| Task | Description |
-|------|-------------|
-| Network Selector | Dropdown to filter by network |
-| Run Type Filter | Filter by scan type |
-| Port Table | Sortable, paginated port listing |
-| Host Metrics | Visual statistics display |
-
-### Phase 4: Diff & Risk Flags
-**Focus:** Core comparison functionality
-
-| Task | Description |
-|------|-------------|
-| Comparison UI | Select two runs to compare |
-| Host Delta | Show new/removed hosts |
-| Port Delta | Show opened/closed ports |
-| Risk Flagging | P0/P1/P2 classification |
-| Markdown Export | CHANGES.md, WATCHLIST.md generation |
-
-### Phase 5: Advanced Features
-**Focus:** Customization and history
-
-| Task | Description |
-|------|-------------|
 | Custom Risk Rules | Per-network port classifications |
 | Comparison History | Track past comparisons |
-| Shareable URLs | Deep links to specific comparisons |
 | CSV Export | Alternative export format |
 
 ### Phase 6: Hardening

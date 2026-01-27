@@ -1,5 +1,148 @@
 # Session Notes - PSEC Baseline Hunter Migration
 
+## Session: 2026-01-26
+
+**Duration:** Single session
+**Goal:** Implement personalized plain-English summaries and persona system
+**Outcome:** Phase 3 complete - Personalized Summaries v0.3.0
+
+---
+
+### What Was Accomplished
+
+#### 1. Personalized Plain-English Summaries
+
+Implemented LLM-powered explanations that adapt to user profile:
+
+**New Files Created:**
+- `src/lib/types/userProfile.ts` - User profile types (technical level, profession, context, tone)
+- `src/lib/llm/provider.ts` - LLM abstraction supporting Anthropic Claude and OpenAI
+- `src/lib/llm/prompt-scorecard.ts` - Prompt templates for scorecard summaries
+- `src/lib/llm/prompt-diff.ts` - Prompt templates for diff summaries
+- `src/app/api/llm/scorecard-summary/route.ts` - API endpoint for scorecard explanations
+- `src/app/api/llm/diff-summary/route.ts` - API endpoint for diff explanations
+- `src/components/ui/dialog.tsx` - shadcn Dialog component
+- `src/components/scorecard/MarkdownViewer.tsx` - Markdown display with copy/download
+- `src/components/scorecard/PersonalizedSummaryModal.tsx` - 4-step profile capture wizard
+- `src/components/scorecard/PersonalizedSummaryCard.tsx` - "Explain This" card for Health Overview
+- `src/components/diff/PersonalizedDiffCard.tsx` - "Explain This" card for Changes page
+
+**Key Features:**
+- Dual LLM support (Anthropic preferred, OpenAI fallback)
+- Rule-based fallback when no API key configured
+- Privacy-first (IPs redacted by default, opt-in to include)
+- Markdown output with copy/download buttons
+
+#### 2. Persona System
+
+Created shared persona state management:
+
+**New Files:**
+- `src/lib/context/persona-context.tsx` - React Context for user profile
+- `src/components/layout/persona-toggle.tsx` - Sidebar persona viewer
+
+**Key Features:**
+- Profile persisted to localStorage
+- Shared across all pages via Context
+- Sidebar displays current profile (viewer-only with guidance)
+- Profile captured via wizard modal on main pages
+
+#### 3. Page Renames (UX Improvement)
+
+Updated navigation and page titles:
+- Upload → "Start Scan Review"
+- Scorecard → "Health Overview"
+- Diff → "Changes"
+
+#### 4. Bug Fixes
+
+**Persona State Synchronization:**
+- Fixed: Changing persona in modal didn't update sidebar
+- Solution: Updated modal to use `usePersona()` hook instead of local state
+
+**CI Build Failures:**
+- Fixed: `let html` should be `const html` in MarkdownViewer.tsx
+- Fixed: setState in useEffect issue in persona-context.tsx (refactored to lazy initialization)
+- Fixed: Removed unused imports and variables
+
+---
+
+### Git History
+
+```
+main branch:
+├── ead531a Merge pull request #6 from itprodirect/feature/phase2-run-registry
+├── 9028544 fix: remove remaining setUploadPath calls
+├── d4dcf16 fix: resolve ESLint errors and warnings for CI
+├── ebbdd2d feat: add single-page dashboard and demo mode (Phase 3)
+└── ... (personalized summaries commits)
+```
+
+---
+
+### Technical Notes
+
+#### LLM Provider Selection
+
+```typescript
+// Environment variables checked in order:
+1. ANTHROPIC_API_KEY → Uses Claude claude-sonnet-4-20250514
+2. OPENAI_API_KEY → Uses GPT-4o
+3. Neither → Falls back to rule-based summary
+```
+
+#### Persona Context Pattern
+
+Used lazy initialization to avoid useEffect setState issues:
+
+```typescript
+function getInitialProfile(): { profile: UserProfile; hasProfile: boolean } {
+  if (typeof window === "undefined") {
+    return { profile: DEFAULT_USER_PROFILE, hasProfile: false };
+  }
+  const saved = localStorage.getItem(USER_PROFILE_STORAGE_KEY);
+  // ... parse and return
+}
+
+const [{ profile, hasProfile }, setProfileData] = useState(() => getInitialProfile());
+```
+
+---
+
+### Files Changed This Session
+
+| File | Change |
+|------|--------|
+| `src/lib/types/userProfile.ts` | Created |
+| `src/lib/llm/provider.ts` | Created |
+| `src/lib/llm/prompt-scorecard.ts` | Created |
+| `src/lib/llm/prompt-diff.ts` | Created |
+| `src/lib/context/persona-context.tsx` | Created |
+| `src/app/api/llm/scorecard-summary/route.ts` | Created |
+| `src/app/api/llm/diff-summary/route.ts` | Created |
+| `src/components/ui/dialog.tsx` | Created |
+| `src/components/scorecard/MarkdownViewer.tsx` | Created |
+| `src/components/scorecard/PersonalizedSummaryModal.tsx` | Created |
+| `src/components/scorecard/PersonalizedSummaryCard.tsx` | Created |
+| `src/components/diff/PersonalizedDiffCard.tsx` | Created |
+| `src/components/layout/persona-toggle.tsx` | Created |
+| `src/components/layout/nav-sidebar.tsx` | Updated (page renames, persona display) |
+| `src/app/(dashboard)/layout.tsx` | Updated (added PersonaProvider) |
+| `src/app/(dashboard)/scorecard/page.tsx` | Updated (added summary card, title) |
+| `src/app/(dashboard)/diff/page.tsx` | Updated (added summary card, title) |
+| `src/app/(dashboard)/upload/page.tsx` | Updated (title) |
+
+---
+
+### Next Session: Phase 4 Tasks
+
+1. **Wire Diff to Real Data**
+   - Connect Changes page to actual parsed run data
+   - Implement run selector for baseline + comparison
+   - Compute real host/port differences
+
+---
+
 ## Session: 2026-01-25
 
 **Duration:** Single session

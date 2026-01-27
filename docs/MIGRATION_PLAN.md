@@ -1,6 +1,8 @@
 # PSEC Baseline Hunter: Next.js Migration Plan
 
-## Step 1: Current State Summary
+> **Status Update (2026-01-26):** Migration is largely complete. Phases 0-3 done. The application is now fully functional in Next.js with personalized LLM-powered summaries. The original Streamlit code remains in the repo as reference only. See [PROJECT_STATUS.md](PROJECT_STATUS.md) for current feature status.
+
+## Step 1: Current State Summary (Pre-Migration Reference)
 
 ### Features
 
