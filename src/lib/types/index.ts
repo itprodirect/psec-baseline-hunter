@@ -3,6 +3,8 @@
  * Ported from Python dataclasses in core/ingest.py and core/nmap_parse.py
  */
 
+import type { UserProfile } from "./userProfile";
+
 /**
  * Metadata about a scan run folder
  * Port of Python RunMeta dataclass
@@ -379,7 +381,7 @@ export interface PortImpactRequest {
   port: number;
   protocol: string;
   service: string;
-  userProfile?: any;        // Optional UserProfile for context-aware content
+  userProfile?: UserProfile;        // Optional UserProfile for context-aware content
 }
 
 /**
@@ -403,7 +405,7 @@ export interface PortImpactResponse {
  */
 export interface ExecutiveSummaryRequest {
   scorecardData: ScorecardData;
-  userProfile: any;         // Required UserProfile
+  userProfile: UserProfile;         // Required UserProfile
 }
 
 /**
