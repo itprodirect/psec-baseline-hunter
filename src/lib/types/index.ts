@@ -227,3 +227,106 @@ export interface DemoResponse {
   data?: DemoData;
   error?: string;
 }
+
+// ============================================================================
+// Custom Risk Rules (Phase 5)
+// ============================================================================
+
+/**
+ * Action type for custom risk rules
+ */
+export type RuleAction = "override" | "whitelist";
+
+/**
+ * A custom risk rule for a port
+ */
+export interface CustomRiskRule {
+  ruleId: string;              // Unique ID: {network}_{port}_{protocol}_{hash8}
+  port: number;                // Port number
+  protocol: "tcp" | "udp";     // Protocol
+  network: string;             // Network name or "*" for global
+  action: RuleAction;          // What to do: override risk level or whitelist
+  customRisk?: RiskLevel;      // New risk level (required if action = "override")
+  reason: string;              // Why this rule exists
+  createdAt: string;           // ISO timestamp
+}
+
+/**
+ * Rules registry stored at data/rules/index.json
+ */
+export interface RulesRegistry {
+  version: number;
+  rules: Record<string, CustomRiskRule>;
+  lastUpdated: string;
+}
+
+/**
+ * API request to create a rule
+ */
+export interface CreateRuleRequest {
+  port: number;
+  protocol: "tcp" | "udp";
+  network: string;
+  action: RuleAction;
+  customRisk?: RiskLevel;
+  reason: string;
+}
+
+/**
+ * API response for rules operations
+ */
+export interface RulesResponse {
+  success: boolean;
+  rules?: CustomRiskRule[];
+  rule?: CustomRiskRule;
+  error?: string;
+}
+
+// ============================================================================
+// Comparison History (Phase 5)
+// ============================================================================
+
+/**
+ * A saved comparison with unique ID for sharing
+ */
+export interface SavedComparison {
+  comparisonId: string;        // Short unique ID (8 chars)
+  baselineRunUid: string;      // Reference to baseline run
+  currentRunUid: string;       // Reference to current run
+  network: string;             // Network name
+  createdAt: string;           // When comparison was created
+  diffData: DiffData;          // The actual diff results
+  riskScore: number;           // Computed risk score (0-100)
+  riskLabel: string;           // "Excellent", "Good", etc.
+  title?: string;              // Optional user-provided title
+  notes?: string;              // Optional notes
+}
+
+/**
+ * Comparison registry stored at data/comparisons/index.json
+ */
+export interface ComparisonRegistry {
+  version: number;
+  comparisons: Record<string, SavedComparison>;
+  lastUpdated: string;
+}
+
+/**
+ * API request to save a comparison
+ */
+export interface SaveComparisonRequest {
+  baselineRunUid: string;
+  currentRunUid: string;
+  title?: string;
+  notes?: string;
+}
+
+/**
+ * API response for comparison operations
+ */
+export interface ComparisonResponse {
+  success: boolean;
+  comparison?: SavedComparison;
+  comparisons?: SavedComparison[];
+  error?: string;
+}

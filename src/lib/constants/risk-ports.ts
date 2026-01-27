@@ -4,6 +4,7 @@
  */
 
 import { RiskLevel } from "@/lib/types";
+import { getEffectiveRisk } from "@/lib/services/rules-registry";
 
 /**
  * P0 - Critical risk ports
@@ -140,3 +141,23 @@ export const PORT_SERVICE_NAMES: Record<number, string> = {
   9200: "Elasticsearch",
   27017: "MongoDB",
 };
+
+/**
+ * Get effective risk level for a port, considering custom rules
+ *
+ * This function checks custom rules first (network-specific, then global),
+ * and falls back to the default port classification if no rule matches.
+ *
+ * @param port - Port number
+ * @param protocol - Protocol (tcp/udp)
+ * @param network - Network name to check rules for
+ * @returns Risk level or null if whitelisted/unclassified
+ */
+export function getEffectivePortRisk(
+  port: number,
+  protocol: string,
+  network: string
+): RiskLevel | null {
+  const defaultRisk = getPortRisk(port);
+  return getEffectiveRisk(port, protocol, network, defaultRisk);
+}

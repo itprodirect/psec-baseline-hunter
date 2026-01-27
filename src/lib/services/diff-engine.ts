@@ -6,7 +6,7 @@ import * as fs from "fs";
 import { PortFinding, DiffData, HostChange, PortChange } from "@/lib/types";
 import { getRunByUid } from "./run-registry";
 import { parsePorts } from "./nmap-parser";
-import { getPortRisk } from "@/lib/constants/risk-ports";
+import { getEffectivePortRisk } from "@/lib/constants/risk-ports";
 
 /**
  * Device summary for a single host
@@ -114,6 +114,9 @@ export function computeDiff(baselineRunUid: string, currentRunUid: string): Diff
   const portsOpened: PortChange[] = [];
   const portsClosed: PortChange[] = [];
 
+  // Get network for custom rule lookups
+  const network = currentManifest.network;
+
   // Check for new ports on existing and new hosts
   for (const [ip, currentDevice] of currentDevices) {
     const baselineDevice = baselineDevices.get(ip);
@@ -124,7 +127,8 @@ export function computeDiff(baselineRunUid: string, currentRunUid: string): Diff
     for (const port of currentDevice.ports) {
       const portKey = `${port.protocol}:${port.port}`;
       if (!baselinePorts.has(portKey)) {
-        const risk = getPortRisk(port.port);
+        // Use effective risk which considers custom rules for this network
+        const risk = getEffectivePortRisk(port.port, port.protocol, network);
         portsOpened.push({
           ip,
           hostname: currentDevice.hostname || undefined,
