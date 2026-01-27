@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useContext, useState, useCallback, ReactNode } from "react";
+import { createContext, useContext, useState, useCallback, useEffect, ReactNode } from "react";
 import {
   UserProfile,
   DEFAULT_USER_PROFILE,
@@ -16,30 +16,28 @@ interface PersonaContextValue {
 
 const PersonaContext = createContext<PersonaContextValue | undefined>(undefined);
 
-// Helper to load profile from localStorage (runs once during initialization)
-function getInitialProfile(): { profile: UserProfile; hasProfile: boolean } {
-  if (typeof window === "undefined") {
-    return { profile: DEFAULT_USER_PROFILE, hasProfile: false };
-  }
-
-  const saved = localStorage.getItem(USER_PROFILE_STORAGE_KEY);
-  if (saved) {
-    try {
-      const parsed = JSON.parse(saved);
-      return {
-        profile: { ...DEFAULT_USER_PROFILE, ...parsed },
-        hasProfile: true
-      };
-    } catch {
-      // Ignore parse errors
-    }
-  }
-  return { profile: DEFAULT_USER_PROFILE, hasProfile: false };
-}
-
 export function PersonaProvider({ children }: { children: ReactNode }) {
-  // Initialize state from localStorage using lazy initialization
-  const [{ profile, hasProfile }, setProfileData] = useState(() => getInitialProfile());
+  // Always initialize with default to match server render (prevents hydration mismatch)
+  const [{ profile, hasProfile }, setProfileData] = useState<{
+    profile: UserProfile;
+    hasProfile: boolean;
+  }>({ profile: DEFAULT_USER_PROFILE, hasProfile: false });
+
+  // Load from localStorage after hydration
+  useEffect(() => {
+    const saved = localStorage.getItem(USER_PROFILE_STORAGE_KEY);
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        setProfileData({
+          profile: { ...DEFAULT_USER_PROFILE, ...parsed },
+          hasProfile: true,
+        });
+      } catch {
+        // Ignore parse errors
+      }
+    }
+  }, []);
 
   const setProfile = useCallback((newProfile: UserProfile) => {
     setProfileData({ profile: newProfile, hasProfile: true });
