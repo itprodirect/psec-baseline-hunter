@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { BarChart3, AlertTriangle, Shield, Server, Network, ChevronDown, Loader2 } from "lucide-react";
 import { useDemo } from "@/lib/context/demo-context";
 import { ScorecardData, RiskPort, TopPort, RunManifestInfo, RunsListResponseV2 } from "@/lib/types";
+import { PersonalizedSummaryCard } from "@/components/scorecard/PersonalizedSummaryCard";
 
 function formatTimestamp(timestamp: string): string {
   return new Date(timestamp).toLocaleDateString("en-US", {
@@ -53,6 +54,9 @@ function ScorecardDisplay({ data, actions }: ScorecardDisplayProps) {
           </div>
         </CardContent>
       </Card>
+
+      {/* Personalized Explanation Card */}
+      <PersonalizedSummaryCard scorecardData={data} />
 
       {/* Metric Cards */}
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
@@ -264,7 +268,7 @@ export default function ScorecardPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-3xl font-bold tracking-tight">Scorecard</h1>
+        <h1 className="text-3xl font-bold tracking-tight">Health Overview</h1>
         <p className="text-muted-foreground">
           {displayData
             ? `${displayData.network} - ${formatTimestamp(displayData.timestamp)}`

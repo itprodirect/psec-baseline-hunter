@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { GitCompare, AlertTriangle, Plus, Minus, Shield, ArrowRight } from "lucide-react";
 import { useDemo } from "@/lib/context/demo-context";
 import { DiffData, HostChange, PortChange, RiskLevel } from "@/lib/types";
+import { PersonalizedDiffCard } from "@/components/diff/PersonalizedDiffCard";
 
 function formatTimestamp(timestamp: string): string {
   return new Date(timestamp).toLocaleDateString("en-US", {
@@ -47,6 +48,9 @@ function DiffDisplay({ data }: { data: DiffData }) {
           </div>
         </CardContent>
       </Card>
+
+      {/* Personalized Change Report Card */}
+      <PersonalizedDiffCard diffData={data} />
 
       {/* Comparison Header */}
       <Card>
@@ -403,7 +407,7 @@ export default function DiffPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-3xl font-bold tracking-tight">Diff Mode</h1>
+        <h1 className="text-3xl font-bold tracking-tight">Changes</h1>
         <p className="text-muted-foreground">
           {diffData
             ? `Comparing runs on ${diffData.network}`

@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
 import { LayoutDashboard, Upload, BarChart3, GitCompare, Shield, FileSpreadsheet } from "lucide-react";
+import { PersonaToggle } from "./persona-toggle";
 
 const navItems = [
   {
@@ -13,19 +14,19 @@ const navItems = [
     description: "Network health overview",
   },
   {
-    title: "Upload",
+    title: "Start Scan Review",
     href: "/upload",
     icon: Upload,
     description: "Import scan files",
   },
   {
-    title: "Scorecard",
+    title: "Health Overview",
     href: "/scorecard",
     icon: BarChart3,
     description: "Single run analysis",
   },
   {
-    title: "Diff",
+    title: "Changes",
     href: "/diff",
     icon: GitCompare,
     description: "Compare runs",
@@ -44,6 +45,11 @@ export function NavSidebar() {
           <div className="font-semibold text-sm">PSEC Baseline Hunter</div>
           <div className="text-xs text-muted-foreground">Network Security</div>
         </div>
+      </div>
+
+      {/* Persona Toggle */}
+      <div className="border-b px-3 py-2">
+        <PersonaToggle />
       </div>
 
       {/* Navigation */}
@@ -90,7 +96,7 @@ export function NavSidebar() {
           Download Scan Script
         </a>
         <div className="text-xs text-muted-foreground">
-          v0.2.0 - Demo Ready
+          v0.3.0 - Personalized Summaries
         </div>
       </div>
     </aside>
