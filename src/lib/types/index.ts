@@ -3,8 +3,9 @@
  * Ported from Python dataclasses in core/ingest.py and core/nmap_parse.py
  */
 
-// Re-export UserProfile for use in API types
-export type { UserProfile } from "./userProfile";
+// Import and re-export UserProfile for use in API types
+import type { UserProfile } from "./userProfile";
+export type { UserProfile };
 
 /**
  * Metadata about a scan run folder
