@@ -43,6 +43,20 @@ mkdir -p data/uploads data/extracted
 npm run dev
 ```
 
+### Environment Variables (Optional)
+
+For LLM-powered features, add to `.env.local`:
+
+```bash
+# Anthropic Claude (preferred)
+ANTHROPIC_API_KEY=sk-ant-...
+
+# OR OpenAI (fallback)
+OPENAI_API_KEY=sk-...
+
+# App works without these (uses rule-based fallbacks)
+```
+
 ### Useful Commands
 
 ```bash
@@ -70,7 +84,14 @@ src/
 │       ├── upload/         # POST /api/upload
 │       ├── ingest/         # POST /api/ingest
 │       ├── runs/           # GET /api/runs
-│       └── parse/          # POST /api/parse
+│       ├── parse/          # POST /api/parse
+│       ├── diff/           # POST /api/diff
+│       ├── scorecard/      # GET /api/scorecard/[runUid]
+│       └── llm/            # LLM-powered features
+│           ├── scorecard-summary/
+│           ├── diff-summary/
+│           ├── port-impact/
+│           └── executive-summary/
 ├── components/
 │   ├── ui/                 # shadcn/ui primitives (don't modify)
 │   ├── layout/             # Layout components
@@ -78,7 +99,9 @@ src/
 └── lib/
     ├── types/              # TypeScript interfaces
     ├── constants/          # Configuration values
-    ├── services/           # Business logic
+    ├── services/           # Business logic (parsing, registry, etc.)
+    ├── llm/                # LLM integration (prompts, providers)
+    ├── context/            # React contexts (demo, persona)
     └── utils/              # Helper functions
 ```
 
@@ -87,9 +110,13 @@ src/
 | File | Purpose |
 |------|---------|
 | `src/lib/types/index.ts` | Core TypeScript interfaces |
+| `src/lib/types/userProfile.ts` | User profile types for personalization |
 | `src/lib/services/ingest.ts` | Run detection and ZIP handling |
 | `src/lib/services/nmap-parser.ts` | Nmap XML parsing |
+| `src/lib/services/risk-classifier.ts` | Port risk classification |
+| `src/lib/llm/provider.ts` | LLM abstraction (Anthropic/OpenAI) |
 | `src/lib/constants/file-patterns.ts` | File patterns and configuration |
+| `src/lib/constants/risk-ports.ts` | Risk port definitions |
 
 ### Data Flow
 
