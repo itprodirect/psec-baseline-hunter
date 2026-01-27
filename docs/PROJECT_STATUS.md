@@ -1,8 +1,8 @@
 # PSEC Baseline Hunter - Project Status
 
-**Last Updated:** 2026-01-26
+**Last Updated:** 2026-01-27
 **Current Branch:** `main`
-**Version:** v0.3.0 - Personalized Summaries
+**Version:** v0.5.0 - AI-Powered Insights
 
 ---
 
@@ -10,10 +10,10 @@
 
 | Metric | Value |
 |--------|-------|
-| **Current Version** | v0.3.0 (Personalized Summaries) |
-| **Last Completed** | Phase 3: Personalized Summaries + Persona System |
-| **Next Milestone** | Wire Diff to real data |
-| **Tech Stack** | Next.js 16 + TypeScript 5 |
+| **Current Version** | v0.5.0 (AI-Powered Insights) |
+| **Last Completed** | Phase 5.5: Real-World Impact + Executive Summaries |
+| **Next Milestone** | Phase 5: Custom rules, history, CSV export |
+| **Tech Stack** | Next.js 16 + TypeScript 5 + LLM |
 
 ---
 
@@ -25,8 +25,9 @@
 | **Phase 1** | Upload, extraction, parsing | ✅ Complete | 2026-01-25 |
 | **Phase 2** | Run registry, demo mode, scorecard | ✅ Complete | 2026-01-25 |
 | **Phase 3** | Personalized summaries, persona system | ✅ Complete | 2026-01-26 |
-| **Phase 4** | Diff with real data | 🔲 Not started | — |
-| **Phase 5** | Custom rules, history | 🔲 Not started | — |
+| **Phase 4** | Diff with real data | ✅ Complete | 2026-01-27 |
+| **Phase 5.5** | Real-World Impact + Executive Summaries | ✅ Complete | 2026-01-27 |
+| **Phase 5** | Custom rules, history, CSV export | 🔲 Not started | — |
 | **Phase 6** | Hardening, production | 🔲 Not started | — |
 
 ---
@@ -46,11 +47,17 @@
 | Run List UI | ✅ Working | Displays detected runs |
 | Demo Mode | ✅ Working | Preloaded sample data |
 | Health Overview | ✅ Working | Single-run analysis with real data |
-| Changes Page | ✅ Working | Comparison view (demo mode) |
+| Changes Page | ✅ Working | Comparison view with real data |
+| Run Comparison | ✅ Working | Select baseline + current runs to compare |
+| Diff Engine | ✅ Working | Computes host/port differences |
+| Risk Scoring | ✅ Working | 0-100 risk score with labels |
 | LLM Integration | ✅ Working | Anthropic Claude / OpenAI support |
 | Personalized Summaries | ✅ Working | On Health Overview + Changes pages |
 | Persona System | ✅ Working | Shared context, localStorage persistence |
-| Export (Demo) | ✅ Working | CHANGES.md, WATCHLIST.md |
+| Real-World Impact Cards | ✅ Working | Breach examples, financial costs (P0/P1 ports) |
+| Executive Summaries | ✅ Working | Business-focused reports for leadership |
+| Port Impact Caching | ✅ Working | 30-day localStorage cache |
+| Export | ✅ Working | CHANGES.md, WATCHLIST.md, summaries |
 
 ### API Endpoints
 
@@ -62,8 +69,11 @@
 | `/api/parse` | POST | Parse Nmap XML | ✅ Working |
 | `/api/demo` | GET | Get demo data | ✅ Working |
 | `/api/scorecard/[runUid]` | GET | Get scorecard data | ✅ Working |
-| `/api/llm/scorecard-summary` | POST/GET | Generate/check LLM summary | ✅ Working |
+| `/api/diff` | POST | Compute diff between two runs | ✅ Working |
+| `/api/llm/scorecard-summary` | POST | Generate personalized summary | ✅ Working |
 | `/api/llm/diff-summary` | POST | Generate diff summary | ✅ Working |
+| `/api/llm/port-impact` | POST | Get real-world breach examples | ✅ Working |
+| `/api/llm/executive-summary` | POST | Generate executive report | ✅ Working |
 
 ### Pages
 
@@ -71,7 +81,7 @@
 |------|-------|--------|----------|
 | Start Scan Review | `/upload` | ✅ Working | Dropzone, run list, demo mode button |
 | Health Overview | `/scorecard` | ✅ Working | Metrics, risk ports, personalized summary |
-| Changes | `/diff` | ✅ Working | Comparison tabs, export, personalized summary |
+| Changes | `/diff` | ✅ Working | Run selectors, comparison, risk score, export |
 
 ---
 
@@ -93,16 +103,20 @@ src/
 │       ├── demo/route.ts           # ✅ Demo data
 │       ├── scorecard/[runUid]/route.ts  # ✅ Scorecard data
 │       └── llm/
-│           ├── scorecard-summary/route.ts  # ✅ LLM summaries
-│           └── diff-summary/route.ts       # ✅ Diff summaries
+│           ├── scorecard-summary/route.ts  # ✅ Personalized summaries
+│           ├── diff-summary/route.ts       # ✅ Diff summaries
+│           ├── port-impact/route.ts        # ✅ Real-world impact
+│           └── executive-summary/route.ts  # ✅ Executive reports
 ├── components/
 │   ├── upload/
 │   │   ├── dropzone.tsx            # ✅ Drag-and-drop
 │   │   └── run-list.tsx            # ✅ Run display
 │   ├── scorecard/
-│   │   ├── PersonalizedSummaryCard.tsx   # ✅ Explain button
+│   │   ├── PersonalizedSummaryCard.tsx   # ✅ Personalized summaries
 │   │   ├── PersonalizedSummaryModal.tsx  # ✅ Profile wizard
-│   │   └── MarkdownViewer.tsx            # ✅ Markdown display
+│   │   ├── MarkdownViewer.tsx            # ✅ Markdown display
+│   │   ├── PortImpactCard.tsx            # ✅ Breach examples
+│   │   └── ExecutiveSummaryCard.tsx      # ✅ Executive reports
 │   ├── diff/
 │   │   └── PersonalizedDiffCard.tsx      # ✅ Diff explanation
 │   ├── layout/
@@ -122,27 +136,37 @@ src/
     ├── llm/
     │   ├── provider.ts             # ✅ LLM abstraction
     │   ├── prompt-scorecard.ts     # ✅ Scorecard prompts
-    │   └── prompt-diff.ts          # ✅ Diff prompts
+    │   ├── prompt-diff.ts          # ✅ Diff prompts
+    │   ├── prompt-impact.ts        # ✅ Port impact prompts
+    │   └── prompt-executive.ts     # ✅ Executive summary prompts
     └── services/
         ├── ingest.ts               # ✅ Run detection
         ├── nmap-parser.ts          # ✅ XML parsing
         ├── run-registry.ts         # ✅ Run manifest
-        └── risk-classifier.ts      # ✅ Risk classification
+        ├── risk-classifier.ts      # ✅ Risk classification
+        └── impact-cache.ts         # ✅ Port impact caching
 ```
 
 ---
 
 ## What's Next
 
-### Priority 1: Wire Diff to Real Data
-
-The Changes page currently only works with demo data. Next steps:
+### Priority 1: Custom Rules + History (Phase 5)
 
 | Task | Description |
 |------|-------------|
-| **Real data diff** | Connect diff computation to actual run data |
-| **Run selector** | Allow selecting baseline + comparison runs |
-| **Computed diff** | Compute host/port differences from parsed data |
+| **Custom risk rules** | Per-network port classifications |
+| **Comparison history** | Track past comparisons with shareable URLs |
+| **CSV export** | Alternative export format alongside markdown |
+| **S3 integration** | Cloud storage for persistence |
+
+### Priority 2: Hardening (Phase 6)
+
+| Task | Description |
+|------|-------------|
+| **Rate limiting** | Prevent abuse |
+| **Audit logging** | Track all actions |
+| **Run archival** | Move old runs to cold storage |
 
 ---
 
@@ -192,13 +216,37 @@ The Changes page currently only works with demo data. Next steps:
 
 | Issue | Severity | Status | Fix Plan |
 |-------|----------|--------|----------|
-| Diff only works in demo mode | Medium | Planned Phase 4 | Wire to real data |
 | Local storage only | Low | Planned Phase 5 | Add S3 support |
 | Minute-granular naming | Low | Documented | HHMM collisions possible |
+| No run deduplication | Low | Planned | Re-uploading same ZIP creates duplicates |
 
 ---
 
 ## Files Changed Recently
+
+### Phase 5.5 (2026-01-27)
+
+| File | Change |
+|------|--------|
+| `src/lib/llm/prompt-impact.ts` | Created - Port impact prompts with breach database |
+| `src/lib/llm/prompt-executive.ts` | Created - Executive summary prompts |
+| `src/lib/services/impact-cache.ts` | Created - 30-day localStorage caching |
+| `src/app/api/llm/port-impact/route.ts` | Created - Port impact API endpoint |
+| `src/app/api/llm/executive-summary/route.ts` | Created - Executive summary API endpoint |
+| `src/components/scorecard/PortImpactCard.tsx` | Created - Impact card UI |
+| `src/components/scorecard/ExecutiveSummaryCard.tsx` | Created - Summary card UI |
+| `src/lib/types/index.ts` | Updated - Added PortImpactData, ExecutiveSummaryResponse |
+| `src/app/(dashboard)/scorecard/page.tsx` | Updated - Integrated new cards |
+
+### Phase 4 (2026-01-27)
+
+| File | Change |
+|------|--------|
+| `src/app/(dashboard)/diff/page.tsx` | Added run selectors, API integration for real data diff |
+| `src/lib/services/diff-engine.ts` | Already complete - computes diffs between runs |
+| `src/app/api/diff/route.ts` | Already complete - POST endpoint for diff computation |
+| `docs/PROJECT_STATUS.md` | Updated to v0.4.0 |
+| `docs/CLAUDE.md` | Updated feature status |
 
 ### Phase 3 (2026-01-26)
 

@@ -19,33 +19,39 @@ PSEC Baseline Hunter is a network security baseline comparison tool. It ingests 
 
 ---
 
-## Current Sprint: Personalized Summaries (v0.3.0 - Complete)
+## Current Sprint: AI-Powered Insights (v0.5.0 - Complete)
 
-### Personalized Plain-English Summaries
+### Real-World Impact Cards + Executive Summaries (Phase 5.5)
+- [x] Port impact cards on P0/P1 risk ports with breach examples
+- [x] Real breach examples with financial costs (WannaCry, NotPetya, etc.)
+- [x] 30-day localStorage caching for impact data
+- [x] Executive summary generator for leadership
+- [x] Business-focused reports with financial impact estimates
+- [x] Profession-aware and regulatory context (HIPAA/PCI-DSS)
+- [x] Rule-based fallbacks for both features
+- [x] Markdown export with copy/download
+
+### Previous Sprint: Real Data Diff (v0.4.0 - Complete)
+- [x] Run selector UI on Changes page (baseline + current dropdowns)
+- [x] API integration with `/api/diff` endpoint
+- [x] Diff computation from actual parsed Nmap XML data
+- [x] Host delta (new/removed hosts from real scans)
+- [x] Port delta (opened/closed ports from real scans)
+- [x] Risk scoring (0-100 scale with labels)
+- [x] Export CHANGES.md and WATCHLIST.md with real data
+
+### Previous Sprint: Personalized Summaries (v0.3.0 - Complete)
 - [x] LLM integration (Anthropic Claude / OpenAI with automatic fallback)
 - [x] User profile capture (technical level, profession, context, tone)
 - [x] Privacy-first design (IP redaction by default, opt-in to include)
 - [x] Rule-based fallback when no API key configured
-- [x] Markdown viewer with copy/download functionality
-- [x] Personalized summaries on Health Overview page
-- [x] Personalized summaries on Changes page
-
-### Persona System
-- [x] Shared persona state via React Context (PersonaProvider)
-- [x] Profile persisted to localStorage
-- [x] Sidebar displays current persona (viewer-only with guidance)
-- [x] Profile captured via "Explain This for My Situation" wizard
-
-### Page Renames (UX Improvement)
-- [x] Upload → "Start Scan Review"
-- [x] Scorecard → "Health Overview"
-- [x] Diff → "Changes"
+- [x] Personalized summaries on Health Overview + Changes pages
+- [x] Persona system with shared React Context
 
 ### Previous Sprint: Demo Mode (Complete)
 - [x] Wire up selected run to display actual parsed metrics
 - [x] Add P0/P1/P2 risk classification display
 - [x] Demo mode with preloaded sample data
-- [x] Export CHANGES.md and WATCHLIST.md (demo mode)
 
 ---
 
@@ -85,7 +91,9 @@ src/
 │       ├── scorecard/[runUid]/route.ts  # Scorecard data for a run
 │       └── llm/
 │           ├── scorecard-summary/route.ts  # LLM-powered scorecard explanations
-│           └── diff-summary/route.ts       # LLM-powered diff explanations
+│           ├── diff-summary/route.ts       # LLM-powered diff explanations
+│           ├── port-impact/route.ts        # Real-world breach examples
+│           └── executive-summary/route.ts  # Executive reports for leadership
 ├── components/
 │   ├── upload/
 │   │   ├── dropzone.tsx          # Drag-and-drop upload
@@ -93,7 +101,9 @@ src/
 │   ├── scorecard/
 │   │   ├── PersonalizedSummaryCard.tsx   # "Explain This" card
 │   │   ├── PersonalizedSummaryModal.tsx  # Profile capture wizard
-│   │   └── MarkdownViewer.tsx            # Markdown display with copy/download
+│   │   ├── MarkdownViewer.tsx            # Markdown display with copy/download
+│   │   ├── PortImpactCard.tsx            # Real-world breach examples
+│   │   └── ExecutiveSummaryCard.tsx      # Executive summary generator
 │   ├── diff/
 │   │   └── PersonalizedDiffCard.tsx      # "Explain This" card for diff
 │   ├── layout/
@@ -113,12 +123,15 @@ src/
     ├── llm/
     │   ├── provider.ts           # LLM abstraction (Anthropic/OpenAI)
     │   ├── prompt-scorecard.ts   # Scorecard prompt templates + fallback
-    │   └── prompt-diff.ts        # Diff prompt templates + fallback
+    │   ├── prompt-diff.ts        # Diff prompt templates + fallback
+    │   ├── prompt-impact.ts      # Port impact prompts + breach database
+    │   └── prompt-executive.ts   # Executive summary prompts
     └── services/
         ├── ingest.ts             # Run detection logic
         ├── nmap-parser.ts        # XML parsing logic
         ├── run-registry.ts       # Run manifest CRUD
-        └── risk-classifier.ts    # Risk classification service
+        ├── risk-classifier.ts    # Risk classification service
+        └── impact-cache.ts       # Port impact caching (30-day TTL)
 ```
 
 ### Data Directory Structure
@@ -190,13 +203,18 @@ Risk rules defined in: `src/lib/constants/risk-ports.ts`
 | Nmap XML parsing | ✅ Working |
 | Demo mode | ✅ Working |
 | Health Overview (Scorecard) | ✅ Working (demo + real data) |
-| Changes (Diff) | ✅ Working (demo mode) |
-| Diff (real data) | 🔲 Not started |
+| Changes (Diff) | ✅ Working (demo + real data) |
+| Run comparison | ✅ Working (select baseline + current runs) |
+| Diff engine | ✅ Working (computes host/port differences) |
+| Risk scoring | ✅ Working (0-100 scale) |
 | LLM Integration | ✅ Working (Anthropic/OpenAI) |
 | Personalized Summaries | ✅ Working (Health Overview + Changes) |
 | Persona System | ✅ Working (shared context, localStorage) |
+| Real-World Impact Cards | ✅ Working (P0/P1 ports with breach examples) |
+| Executive Summary | ✅ Working (business-focused reports) |
+| Port Impact Caching | ✅ Working (30-day localStorage) |
 | Page Renames | ✅ Complete |
-| Export functionality | ✅ Working (demo mode) |
+| Export functionality | ✅ Working (real data + summaries) |
 
 ## Git Workflow
 
@@ -208,22 +226,29 @@ Risk rules defined in: `src/lib/constants/risk-ports.ts`
 
 - Local filesystem storage only (S3 integration planned)
 - Minute-granular naming (HHMM) can cause same-minute collisions
-- Diff comparison only works in demo mode currently
+- No run deduplication (re-uploading same ZIP creates duplicates)
 
 ---
 
 ## Future Enhancements
 
-### Next Priority: Wire Diff to Real Data
-- [ ] Connect Changes page to actual parsed run data
-- [ ] Remove demo-only limitation from comparison
+### Completed: Real-World Impact + Executive Summaries (v0.5.0)
+- ~~Port impact cards with breach examples and financial costs~~ ✅
+- ~~Executive summary generator for leadership~~ ✅
+- ~~30-day caching for impact data~~ ✅
+- ~~Rule-based fallbacks for both features~~ ✅
 
-### UX Improvements (Completed)
-- ~~Page Renames: Upload → "Start Scan Review", Scorecard → "Health Overview", Diff → "Changes"~~ ✅
-- ~~Persona Toggle: Profile-based explanation customization~~ ✅
-- ~~Plain-Language Summaries on every major view~~ ✅
+### Completed: Wire Diff to Real Data (v0.4.0)
+- ~~Connect Changes page to actual parsed run data~~ ✅
+- ~~Remove demo-only limitation from comparison~~ ✅
 
-### Hardening + Scalability (Planned)
+### Next Priority: Custom Rules + History (Phase 5)
+- [ ] Custom risk rules (per-network port classifications)
+- [ ] Comparison history with shareable URLs
+- [ ] CSV export alongside markdown
+- [ ] S3 cloud storage integration
+
+### Hardening + Scalability (Phase 6)
 - Replace client-supplied paths with runId-based APIs
 - Add zip-slip + extraction guardrails
 - Refactor recursive run detection into testable units

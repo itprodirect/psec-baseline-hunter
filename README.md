@@ -31,6 +31,9 @@ Week 1: Baseline Scan          Week 2: New Scan              Result
 | **Automatic Detection** | Finds scan runs and parses Nmap XML |
 | **Run Comparison** | Compare any two scans to see changes |
 | **Risk Prioritization** | P0/P1/P2 alerts for dangerous ports |
+| **AI-Powered Insights** | LLM-generated security explanations tailored to your role |
+| **Real-World Impact Cards** | See actual breach examples and financial costs for exposed ports |
+| **Executive Summaries** | Business-focused reports for leadership |
 | **Export Reports** | Download CHANGES.md and WATCHLIST.md |
 
 ---
@@ -84,21 +87,44 @@ psec-baseline-hunter/
 │   ├── app/                      # Next.js App Router
 │   │   ├── (dashboard)/          # Dashboard pages
 │   │   │   ├── upload/           # File upload & run detection
-│   │   │   ├── scorecard/        # Single-run analysis
-│   │   │   └── diff/             # Run comparison
+│   │   │   ├── scorecard/        # Single-run analysis (Health Overview)
+│   │   │   └── diff/             # Run comparison (Changes)
 │   │   └── api/                  # API routes
 │   │       ├── upload/           # File upload endpoint
 │   │       ├── ingest/           # ZIP extraction
 │   │       ├── runs/             # Run listing
-│   │       └── parse/            # XML parsing
+│   │       ├── parse/            # XML parsing
+│   │       ├── diff/             # Diff computation
+│   │       ├── scorecard/        # Scorecard data
+│   │       └── llm/              # LLM-powered features
+│   │           ├── scorecard-summary/    # Personalized summaries
+│   │           ├── diff-summary/         # Diff explanations
+│   │           ├── port-impact/          # Breach examples
+│   │           └── executive-summary/    # Executive reports
 │   ├── components/               # React components
 │   │   ├── upload/               # Upload-related components
+│   │   ├── scorecard/            # Scorecard components
+│   │   │   ├── PersonalizedSummaryCard.tsx
+│   │   │   ├── PortImpactCard.tsx
+│   │   │   └── ExecutiveSummaryCard.tsx
+│   │   ├── diff/                 # Diff components
 │   │   ├── layout/               # Layout components
 │   │   └── ui/                   # shadcn/ui components
 │   └── lib/                      # Business logic
 │       ├── services/             # Core services
 │       │   ├── ingest.ts         # Run detection
-│       │   └── nmap-parser.ts    # XML parsing
+│       │   ├── nmap-parser.ts    # XML parsing
+│       │   ├── risk-classifier.ts # Risk classification
+│       │   └── impact-cache.ts   # Port impact caching
+│       ├── llm/                  # LLM integration
+│       │   ├── provider.ts       # Anthropic/OpenAI abstraction
+│       │   ├── prompt-scorecard.ts
+│       │   ├── prompt-diff.ts
+│       │   ├── prompt-impact.ts
+│       │   └── prompt-executive.ts
+│       ├── context/              # React contexts
+│       │   ├── demo-context.tsx
+│       │   └── persona-context.tsx
 │       ├── types/                # TypeScript types
 │       └── constants/            # Configuration
 ├── docs/                         # Documentation
@@ -151,6 +177,53 @@ For each run, you can:
 
 ---
 
+## AI-Powered Features
+
+PSEC Baseline Hunter includes optional LLM integration for non-technical security explanations:
+
+### Personalized Summaries
+Get plain-English explanations of scan results tailored to your:
+- **Technical level** (non-technical to security professional)
+- **Profession** (healthcare, small business, IT professional, etc.)
+- **Context** (HIPAA, PCI-DSS, handles client data, etc.)
+- **Tone preference** (direct, reassuring, technical)
+
+### Real-World Impact Cards
+Click "Show Real-World Impact" on any P0/P1 risk port to see:
+- **Attack scenarios** - How attackers exploit this service
+- **Real breach examples** - Actual incidents with costs (e.g., "WannaCry - $4B damages")
+- **Financial impact** - Average breach cost, recovery time, regulatory fines
+- **Quick fixes** - Immediate actions to reduce risk
+
+Impact data is **cached for 30 days** to reduce API costs (~80% savings).
+
+### Executive Summaries
+Generate business-focused security reports for leadership with:
+- **Plain-English overview** - No jargon
+- **Top 3 business risks** - What it is, why it matters, recommended action
+- **Financial impact estimates** - Breach costs, fines, recovery time
+- **Action plan** - Immediate, short-term, and ongoing steps
+- **Questions for leadership** - Business decisions needed
+
+### LLM Configuration
+
+```bash
+# Optional: Add to .env.local for LLM features
+ANTHROPIC_API_KEY=sk-ant-...      # Preferred
+# OR
+OPENAI_API_KEY=sk-...             # Fallback
+
+# Without API keys, the app uses rule-based summaries
+```
+
+**Supported LLMs:**
+- Anthropic Claude (claude-3-5-sonnet-20241022)
+- OpenAI GPT-4o
+
+**Cost estimate:** ~$0.02-0.03 per session with caching
+
+---
+
 ## Available Commands
 
 ```bash
@@ -181,18 +254,17 @@ npx tsc --noEmit      # Type check without emitting
 
 ## Development Status
 
-### Completed
-- [x] Phase 0: Next.js scaffolding with shadcn/ui
-- [x] Phase 1: Upload, extraction, run detection, XML parsing
+### Completed ✅
+- [x] **Phase 0:** Next.js scaffolding with shadcn/ui
+- [x] **Phase 1:** Upload, extraction, run detection, XML parsing
+- [x] **Phase 2:** Run registry, demo mode, scorecard
+- [x] **Phase 3:** Personalized summaries with LLM integration
+- [x] **Phase 4:** Diff comparison with real data
+- [x] **Phase 5.5:** Real-World Impact Cards + Executive Summaries
 
-### In Progress
-- [ ] Phase 2: Run registry with deduplication
-
-### Planned
-- [ ] Phase 3: Enhanced scorecard with filtering
-- [ ] Phase 4: Diff comparison with risk flags
-- [ ] Phase 5: Custom rules and export
-- [ ] Phase 6: Production hardening
+### Next Up 🚧
+- [ ] **Phase 5:** Custom risk rules, comparison history, CSV export
+- [ ] **Phase 6:** Production hardening, S3 storage, rate limiting
 
 ---
 
@@ -203,9 +275,11 @@ npx tsc --noEmit      # Type check without emitting
 | Framework | Next.js 16 (App Router) |
 | Language | TypeScript 5 |
 | Styling | Tailwind CSS 4 |
-| Components | shadcn/ui |
+| Components | shadcn/ui (Radix UI + Tailwind) |
 | XML Parsing | fast-xml-parser |
 | ZIP Handling | adm-zip |
+| LLM (Optional) | Anthropic Claude / OpenAI GPT-4o |
+| State Management | React Context + localStorage |
 
 ---
 
