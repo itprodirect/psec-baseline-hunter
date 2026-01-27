@@ -330,3 +330,89 @@ export interface ComparisonResponse {
   comparisons?: SavedComparison[];
   error?: string;
 }
+
+// ============================================================================
+// Real-World Impact Cards (Phase 5.5)
+// ============================================================================
+
+/**
+ * A real-world breach example for a port
+ */
+export interface BreachExample {
+  headline: string;          // Brief incident description
+  company?: string;          // Company name (if public)
+  year: number;              // Year of breach
+  cost?: string;             // Financial impact (e.g., "$5M fine")
+}
+
+/**
+ * Real-world impact data for a port
+ */
+export interface PortImpactData {
+  port: number;
+  protocol: string;
+  service: string;
+  severity: "Critical" | "High";          // Simplified for UI
+  attackScenario: string;                 // 2-3 sentences on how attacks happen
+  breachExamples: BreachExample[];        // 1-2 real incidents
+  financialImpact: {
+    avgBreachCost: string;                // e.g., "$4.5M average"
+    recoveryTime: string;                 // e.g., "200-280 days"
+    potentialFines?: string;              // e.g., "$50K-$1.5M" (if HIPAA/PCI)
+  };
+  quickFix: string;                       // 1-2 sentence action
+}
+
+/**
+ * Cached port impact with TTL
+ */
+export interface PortImpactCacheEntry {
+  data: PortImpactData;
+  cachedAt: string;         // ISO timestamp
+  expiresAt: string;        // ISO timestamp (cachedAt + 30 days)
+}
+
+/**
+ * API request for port impact
+ */
+export interface PortImpactRequest {
+  port: number;
+  protocol: string;
+  service: string;
+  userProfile?: any;        // Optional UserProfile for context-aware content
+}
+
+/**
+ * API response for port impact
+ */
+export interface PortImpactResponse {
+  success: boolean;
+  impact?: PortImpactData;
+  provider?: string;
+  isRuleBased?: boolean;
+  isCached?: boolean;
+  error?: string;
+}
+
+// ============================================================================
+// Executive Summary (Phase 5.5)
+// ============================================================================
+
+/**
+ * API request for executive summary
+ */
+export interface ExecutiveSummaryRequest {
+  scorecardData: ScorecardData;
+  userProfile: any;         // Required UserProfile
+}
+
+/**
+ * API response for executive summary
+ */
+export interface ExecutiveSummaryResponse {
+  success: boolean;
+  summary?: string;         // Markdown content
+  provider?: string;
+  isRuleBased?: boolean;
+  error?: string;
+}

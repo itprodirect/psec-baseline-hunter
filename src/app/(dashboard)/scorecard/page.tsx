@@ -8,6 +8,8 @@ import { BarChart3, AlertTriangle, Shield, Server, Network, ChevronDown, Loader2
 import { useDemo } from "@/lib/context/demo-context";
 import { ScorecardData, RiskPort, TopPort, RunManifestInfo, RunsListResponseV2 } from "@/lib/types";
 import { PersonalizedSummaryCard } from "@/components/scorecard/PersonalizedSummaryCard";
+import { PortImpactCard } from "@/components/scorecard/PortImpactCard";
+import { ExecutiveSummaryCard } from "@/components/scorecard/ExecutiveSummaryCard";
 
 function formatTimestamp(timestamp: string): string {
   return new Date(timestamp).toLocaleDateString("en-US", {
@@ -57,6 +59,9 @@ function ScorecardDisplay({ data, actions }: ScorecardDisplayProps) {
 
       {/* Personalized Explanation Card */}
       <PersonalizedSummaryCard scorecardData={data} />
+
+      {/* Executive Summary Card */}
+      <ExecutiveSummaryCard scorecardData={data} />
 
       {/* Metric Cards */}
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
@@ -141,23 +146,30 @@ function ScorecardDisplay({ data, actions }: ScorecardDisplayProps) {
           <CardContent>
             <div className="space-y-4">
               {data.riskPortsDetail.map((rp: RiskPort, idx: number) => (
-                <div key={idx} className="flex items-start justify-between p-4 bg-red-50 dark:bg-red-950/20 rounded-lg">
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <span className="font-mono font-semibold">
-                        {rp.port}/{rp.protocol}
-                      </span>
-                      <span className="text-muted-foreground">{rp.service}</span>
-                      <RiskBadge risk={rp.risk} />
+                <div key={idx} className="space-y-2">
+                  <div className="flex items-start justify-between p-4 bg-red-50 dark:bg-red-950/20 rounded-lg">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="font-mono font-semibold">
+                          {rp.port}/{rp.protocol}
+                        </span>
+                        <span className="text-muted-foreground">{rp.service}</span>
+                        <RiskBadge risk={rp.risk} />
+                      </div>
+                      <p className="text-sm text-muted-foreground mt-1">
+                        Exposed on {rp.hostsAffected} host{rp.hostsAffected !== 1 ? "s" : ""}:{" "}
+                        <span className="font-mono text-xs">
+                          {rp.hosts.slice(0, 3).join(", ")}
+                          {rp.hosts.length > 3 && ` +${rp.hosts.length - 3} more`}
+                        </span>
+                      </p>
                     </div>
-                    <p className="text-sm text-muted-foreground mt-1">
-                      Exposed on {rp.hostsAffected} host{rp.hostsAffected !== 1 ? "s" : ""}:{" "}
-                      <span className="font-mono text-xs">
-                        {rp.hosts.slice(0, 3).join(", ")}
-                        {rp.hosts.length > 3 && ` +${rp.hosts.length - 3} more`}
-                      </span>
-                    </p>
                   </div>
+
+                  {/* Show Real-World Impact for P0 and P1 only */}
+                  {(rp.risk === "P0" || rp.risk === "P1") && (
+                    <PortImpactCard riskPort={rp} />
+                  )}
                 </div>
               ))}
             </div>
