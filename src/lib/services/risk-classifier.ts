@@ -4,15 +4,16 @@
  */
 
 import { PortFinding, RiskPort, RiskLevel, ScorecardData } from "@/lib/types";
-import { getPortRisk, P0_ACTIONS } from "@/lib/constants/risk-ports";
+import { getPortRisk, getEffectivePortRisk, P0_ACTIONS } from "@/lib/constants/risk-ports";
 import { parsePorts, topPorts } from "./nmap-parser";
 import { getRunByUid } from "./run-registry";
 import * as fs from "fs";
 
 /**
  * Classify a list of port findings by risk level
+ * Considers custom rules for the specified network
  */
-export function classifyPorts(findings: PortFinding[]): {
+export function classifyPorts(findings: PortFinding[], network: string): {
   p0: PortFinding[];
   p1: PortFinding[];
   p2: PortFinding[];
@@ -28,7 +29,8 @@ export function classifyPorts(findings: PortFinding[]): {
   for (const finding of findings) {
     if (finding.state !== "open") continue;
 
-    const risk = getPortRisk(finding.port);
+    // Use getEffectivePortRisk to apply custom rules
+    const risk = getEffectivePortRisk(finding.port, finding.protocol, network);
     switch (risk) {
       case "P0":
         result.p0.push(finding);
@@ -49,14 +51,16 @@ export function classifyPorts(findings: PortFinding[]): {
 
 /**
  * Aggregate risk ports with host lists
+ * Considers custom rules for the specified network
  */
-export function aggregateRiskPorts(findings: PortFinding[]): RiskPort[] {
+export function aggregateRiskPorts(findings: PortFinding[], network: string): RiskPort[] {
   const openFindings = findings.filter((f) => f.state === "open");
   const portMap = new Map<string, RiskPort>();
 
   for (const finding of openFindings) {
-    const risk = getPortRisk(finding.port);
-    if (!risk) continue;
+    // Use getEffectivePortRisk to apply custom rules
+    const risk = getEffectivePortRisk(finding.port, finding.protocol, network);
+    if (!risk) continue; // Whitelisted or unclassified
 
     const key = `${finding.protocol}:${finding.port}`;
 
@@ -182,8 +186,8 @@ export function buildScorecardData(runUid: string): ScorecardData | null {
   // Get top ports
   const topPortsList = topPorts(findings, 10);
 
-  // Classify and aggregate risks
-  const riskPortsList = aggregateRiskPorts(findings);
+  // Classify and aggregate risks (pass network name for custom rules)
+  const riskPortsList = aggregateRiskPorts(findings, manifest.network);
 
   // Count unique hosts and services
   const uniqueHosts = new Set(openFindings.map((f) => f.ip));
