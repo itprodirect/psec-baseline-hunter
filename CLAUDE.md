@@ -80,16 +80,18 @@ src/
 - Demo mode with sample data
 - Diff view for comparing scans
 - Quick Overview panel
+- **CSV Export** - Scorecard and diff data for Excel/Sheets
+- **Custom Risk Rules** - Override default port classifications per network
+- **Comparison History** - Save and share scan comparisons with unique URLs
+- **Real-World Impact Cards** - Breach examples with financial costs
+- **Executive Summaries** - Business-focused reports for leadership
 
-### ⚠️ Known Issues
-1. **Persona state disconnected** — Sidebar doesn't update when persona changes in modal
-2. **Dashboard too large** — page.tsx mixes data fetching, state, presentation
-3. **Hardcoded strings** — "Top 3 Actions Required" doesn't use real data
-
-### 📋 Next Priorities
-1. Fix persona state (create unified PersonaContext)
-2. Add "New Device Alert" with labeling
-3. Add Fix-It Checklist with progress tracking
+### 📋 Next Priorities (Phase 5/6)
+1. **LLM Observability** - Integrate wandb for tracking API calls, costs, performance
+2. **S3 Cloud Storage** - Move from local filesystem to cloud storage
+3. **Scheduled Scans** - Automated scan execution and weekly digests
+4. **Security Hardening** - Rate limiting, input validation, zip-slip protection
+5. **Device Identification** - Parse HTTP titles and MAC vendors for device names
 
 ---
 

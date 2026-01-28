@@ -211,23 +211,23 @@ npm test          # Run tests
 
 ## Roadmap Highlights
 
-### ✅ Completed
-- Persona-based explanations
+### ✅ Completed (v0.6.0)
+- Persona-based explanations with LLM integration
 - Demo mode with sample data
 - Risk scoring and prioritization
-- LLM-powered summaries (optional)
 - Change detection and diff view
+- Real-world impact cards with breach examples
+- Executive summaries for leadership
+- **Custom risk rules** - Per-network port classifications
+- **CSV export** - Download scorecard and diff data
+- **Comparison history** - Save and share scan comparisons
 
-### 🚧 In Progress
+### 📋 Planned (Phase 6+)
+- **LLM observability** - Wandb integration for tracking API calls, costs, performance
+- **S3 cloud storage** - Move from local filesystem
 - Device identification (HTTP titles, MAC vendors)
-- Unified persona state across components
-- Export templates for different audiences
-
-### 📋 Planned
-- "New Device Joined" alerts
-- Fix-it checklist with progress tracking
 - Scheduled scans + weekly digest
-- Household device mapping (rooms, owners)
+- Security hardening (rate limiting, input validation)
 
 ---
 

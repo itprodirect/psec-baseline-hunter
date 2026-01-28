@@ -108,7 +108,7 @@ export function NavSidebar() {
           Download Scan Script
         </a>
         <div className="text-xs text-muted-foreground">
-          v0.5.0 - AI-Powered Insights
+          v0.6.0 - Custom Rules & History
         </div>
       </div>
     </aside>
