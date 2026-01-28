@@ -339,7 +339,7 @@ export default function ScorecardPage() {
         port: tp.port,
         protocol: tp.protocol,
         service: tp.service || "unknown",
-        host_count: tp.hostCount,
+        host_count: tp.hostsAffected,
       })),
       {
         port: "Port",

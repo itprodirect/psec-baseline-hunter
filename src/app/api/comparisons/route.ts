@@ -60,20 +60,20 @@ export async function POST(
     }
 
     // Compute the diff
-    const diffResult = computeDiff(body.baselineRunUid, body.currentRunUid);
+    const diffData = computeDiff(body.baselineRunUid, body.currentRunUid);
 
-    if (!diffResult.success || !diffResult.data) {
+    if (!diffData) {
       return NextResponse.json(
         {
           success: false,
-          error: diffResult.error || "Failed to compute diff",
+          error: "Could not compute diff. Check that both runs exist and have port scan data.",
         },
         { status: 400 }
       );
     }
 
     // Save the comparison
-    const comparison = saveComparison(body, diffResult.data);
+    const comparison = saveComparison(body, diffData);
 
     return NextResponse.json({
       success: true,
