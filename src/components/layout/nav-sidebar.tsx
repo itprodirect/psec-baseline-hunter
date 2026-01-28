@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
-import { LayoutDashboard, Upload, BarChart3, GitCompare, Shield, FileSpreadsheet, Settings } from "lucide-react";
+import { LayoutDashboard, Upload, BarChart3, GitCompare, Shield, FileSpreadsheet, Settings, History } from "lucide-react";
 import { PersonaToggle } from "./persona-toggle";
 
 const navItems = [
@@ -30,6 +30,12 @@ const navItems = [
     href: "/diff",
     icon: GitCompare,
     description: "Compare runs",
+  },
+  {
+    title: "History",
+    href: "/history",
+    icon: History,
+    description: "Saved comparisons",
   },
   {
     title: "Custom Rules",
