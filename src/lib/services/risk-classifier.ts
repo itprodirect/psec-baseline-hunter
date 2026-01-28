@@ -4,7 +4,7 @@
  */
 
 import { PortFinding, RiskPort, RiskLevel, ScorecardData } from "@/lib/types";
-import { getPortRisk, getEffectivePortRisk, P0_ACTIONS } from "@/lib/constants/risk-ports";
+import { getEffectivePortRisk, P0_ACTIONS } from "@/lib/constants/risk-ports";
 import { parsePorts, topPorts } from "./nmap-parser";
 import { getRunByUid } from "./run-registry";
 import * as fs from "fs";

@@ -5,7 +5,6 @@
 
 import * as fs from "fs";
 import * as path from "path";
-import * as crypto from "crypto";
 import {
   SavedComparison,
   ComparisonRegistry,
@@ -13,7 +12,6 @@ import {
   DiffData,
 } from "@/lib/types";
 import { getDataDir, ensureDir } from "./ingest";
-import { computeDiff } from "./diff-engine";
 
 const REGISTRY_VERSION = 1;
 

@@ -3,7 +3,7 @@
  * Generates real-world breach examples and financial impact for risky ports
  */
 
-import { PortImpactData, BreachExample } from "@/lib/types";
+import { PortImpactData } from "@/lib/types";
 import type { UserProfile } from "@/lib/types/userProfile";
 import { PORT_SERVICE_NAMES } from "@/lib/constants/risk-ports";
 

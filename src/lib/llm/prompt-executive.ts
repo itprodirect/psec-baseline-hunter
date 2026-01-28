@@ -8,7 +8,6 @@ import {
   UserProfile,
   PROFESSION_LABELS,
   CONTEXT_FACTOR_LABELS,
-  REDACTED_PLACEHOLDER
 } from "@/lib/types/userProfile";
 import { RISK_DESCRIPTIONS, PORT_SERVICE_NAMES } from "@/lib/constants/risk-ports";
 
@@ -159,7 +158,6 @@ export function generateRuleBasedExecutiveSummary(
 ): string {
   const p0Ports = data.riskPortsDetail.filter((r) => r.risk === "P0");
   const p1Ports = data.riskPortsDetail.filter((r) => r.risk === "P1");
-  const profession = PROFESSION_LABELS[profile.profession];
 
   let summary = `# Executive Summary: Network Security Assessment\n\n`;
 

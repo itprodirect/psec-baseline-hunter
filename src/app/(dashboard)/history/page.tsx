@@ -209,7 +209,7 @@ export default function HistoryPage() {
                     </div>
                     {comparison.notes && (
                       <p className="text-sm text-muted-foreground mt-2 italic">
-                        "{comparison.notes}"
+                        &quot;{comparison.notes}&quot;
                       </p>
                     )}
                   </div>
