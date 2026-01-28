@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "rules": {
+    "orange-network_8888_tcp_f4f9570a": {
+      "ruleId": "orange-network_8888_tcp_f4f9570a",
+      "port": 8888,
+      "protocol": "tcp",
+      "network": "orange-network",
+      "action": "override",
+      "customRisk": "P2",
+      "reason": "Testing feature and need to find out what devices and services are running here to make a good decision",
+      "createdAt": "2026-01-28T03:47:03.595Z"
+    },
+    "orange-network_1080_tcp_eb620fe3": {
+      "ruleId": "orange-network_1080_tcp_eb620fe3",
+      "port": 1080,
+      "protocol": "tcp",
+      "network": "orange-network",
+      "action": "whitelist",
+      "reason": "Testing feature",
+      "createdAt": "2026-01-28T03:50:22.121Z"
+    }
+  },
+  "lastUpdated": "2026-01-28T03:50:22.121Z"
+}

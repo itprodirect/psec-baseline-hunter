@@ -11,6 +11,8 @@ import { PersonalizedSummaryCard } from "@/components/scorecard/PersonalizedSumm
 import { PortImpactCard } from "@/components/scorecard/PortImpactCard";
 import { ExecutiveSummaryCard } from "@/components/scorecard/ExecutiveSummaryCard";
 import { QuickRuleButton } from "@/components/scorecard/QuickRuleButton";
+import { ExportCSVButton } from "@/components/ui/export-csv-button";
+import { arrayToCSV, downloadCSV, buildMultiSectionCSV, formatDateForFilename } from "@/lib/utils/csv-export";
 
 function formatTimestamp(timestamp: string): string {
   return new Date(timestamp).toLocaleDateString("en-US", {
@@ -279,15 +281,98 @@ export default function ScorecardPage() {
 
   const selectedRun = runs.find((r) => r.runUid === selectedRunUid);
 
+  const handleExportCSV = () => {
+    if (!displayData) return;
+
+    const date = formatDateForFilename(displayData.timestamp || new Date());
+    const network = displayData.network.replace(/[^a-z0-9-]/gi, "_");
+
+    // Summary metrics
+    const summaryCSV = arrayToCSV(
+      [
+        {
+          metric: "Total Hosts",
+          value: displayData.totalHosts,
+        },
+        {
+          metric: "Open Ports",
+          value: displayData.openPorts,
+        },
+        {
+          metric: "Unique Services",
+          value: displayData.uniqueServices,
+        },
+        {
+          metric: "Risk Ports (P0/P1)",
+          value: displayData.riskPorts,
+        },
+      ],
+      {
+        metric: "Metric",
+        value: "Value",
+      }
+    );
+
+    // Risk ports detail
+    const riskPortsCSV = arrayToCSV(
+      displayData.riskPortsDetail.map((rp) => ({
+        port: rp.port,
+        protocol: rp.protocol,
+        service: rp.service || "unknown",
+        risk_level: rp.risk,
+        hosts_affected: rp.hostsAffected,
+        hosts: rp.hosts.join("; "),
+      })),
+      {
+        port: "Port",
+        protocol: "Protocol",
+        service: "Service",
+        risk_level: "Risk Level",
+        hosts_affected: "Hosts Affected",
+        hosts: "Affected Hosts",
+      }
+    );
+
+    // Top ports
+    const topPortsCSV = arrayToCSV(
+      displayData.topPorts.map((tp) => ({
+        port: tp.port,
+        protocol: tp.protocol,
+        service: tp.service || "unknown",
+        host_count: tp.hostCount,
+      })),
+      {
+        port: "Port",
+        protocol: "Protocol",
+        service: "Service",
+        host_count: "Host Count",
+      }
+    );
+
+    // Combine sections
+    const csvContent = buildMultiSectionCSV([
+      { title: "# SUMMARY METRICS", data: summaryCSV },
+      { title: "# RISK PORTS (P0/P1)", data: riskPortsCSV },
+      { title: "# TOP PORTS", data: topPortsCSV },
+    ]);
+
+    downloadCSV(csvContent, `${network}_${date}_scorecard.csv`);
+  };
+
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold tracking-tight">Health Overview</h1>
-        <p className="text-muted-foreground">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight">Health Overview</h1>
+          <p className="text-muted-foreground">
           {displayData
             ? `${displayData.network} - ${formatTimestamp(displayData.timestamp)}`
             : "Analyze a single baseline scan run"}
         </p>
+        </div>
+        {displayData && (
+          <ExportCSVButton onExport={handleExportCSV} />
+        )}
       </div>
 
       {/* Run Selector (hidden in demo mode) */}
