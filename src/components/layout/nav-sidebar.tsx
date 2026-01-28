@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
-import { LayoutDashboard, Upload, BarChart3, GitCompare, Shield, FileSpreadsheet } from "lucide-react";
+import { LayoutDashboard, Upload, BarChart3, GitCompare, Shield, FileSpreadsheet, Settings } from "lucide-react";
 import { PersonaToggle } from "./persona-toggle";
 
 const navItems = [
@@ -30,6 +30,12 @@ const navItems = [
     href: "/diff",
     icon: GitCompare,
     description: "Compare runs",
+  },
+  {
+    title: "Custom Rules",
+    href: "/rules",
+    icon: Settings,
+    description: "Manage risk rules",
   },
 ];
 
@@ -96,7 +102,7 @@ export function NavSidebar() {
           Download Scan Script
         </a>
         <div className="text-xs text-muted-foreground">
-          v0.3.0 - Personalized Summaries
+          v0.5.0 - AI-Powered Insights
         </div>
       </div>
     </aside>
