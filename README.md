@@ -1,8 +1,6 @@
 # PSEC Baseline Hunter
 
-**Network Security Baseline Comparison Tool**
-
-Detect unauthorized changes on your network by comparing scan results over time. Upload Nmap scans, identify new hosts and open ports, and get prioritized security alerts.
+**Network Security for Everyone** — Understand what changed on your network, explained in plain English.
 
 [![Next.js](https://img.shields.io/badge/Next.js-16.x-black)](https://nextjs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-blue)](https://www.typescriptlang.org/)
@@ -10,72 +8,125 @@ Detect unauthorized changes on your network by comparing scan results over time.
 
 ---
 
-## What Does This Tool Do?
+## What Is This?
 
-PSEC Baseline Hunter answers the critical security question: **"What changed on my network since the last scan?"**
+PSEC Baseline Hunter helps you answer: **"Is my network safe, and what should I do about it?"**
+
+Upload your network scans, and get:
+- **Plain-English summaries** tailored to your role (executive, attorney, IT, parent)
+- **Prioritized action items** — what to fix first and why
+- **Change detection** — what's new since your last scan
+- **Risk scoring** — understand your security posture at a glance
 
 ```
-Week 1: Baseline Scan          Week 2: New Scan              Result
-┌─────────────────────┐        ┌─────────────────────┐       ┌─────────────────────┐
-│ 50 hosts            │        │ 53 hosts            │       │ +3 new hosts        │
-│ 127 open ports      │  -->   │ 134 open ports      │  -->  │ +7 new ports        │
-│ No RDP exposed      │        │ 1 host with RDP     │       │ P0 ALERT: RDP open! │
-└─────────────────────┘        └─────────────────────┘       └─────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│  🏠 Your Network Health                                         │
+│                                                                 │
+│  Risk Score: 72 (Good)                                          │
+│                                                                 │
+│  ✅ No critical exposures detected                              │
+│  ⚠️  2 new devices joined your network                          │
+│  📋 Recommended: Review unknown devices                         │
+│                                                                 │
+│  [View Details]  [Explain This To Me]  [Export Report]          │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-### Key Features
+---
 
-| Feature | Description |
+## Key Features
+
+| Feature | What It Does |
 |---------|-------------|
-| **Drag & Drop Upload** | Upload baselinekit ZIP files with ease |
-| **Automatic Detection** | Finds scan runs and parses Nmap XML |
-| **Run Comparison** | Compare any two scans to see changes |
-| **Risk Prioritization** | P0/P1/P2 alerts for dangerous ports |
-| **AI-Powered Insights** | LLM-generated security explanations tailored to your role |
-| **Real-World Impact Cards** | See actual breach examples and financial costs for exposed ports |
-| **Executive Summaries** | Business-focused reports for leadership |
-| **Export Reports** | Download CHANGES.md and WATCHLIST.md |
+| **Personalized Explanations** | Choose your audience (Executive, Security Pro, Attorney, Operations) and get results in language you understand |
+| **Demo Mode** | Try the app instantly with sample data — no scan required |
+| **Risk Prioritization** | Critical → High → Watch classifications with clear action items |
+| **Change Detection** | Compare scans over time to see what's new or different |
+| **One-Click Export** | Generate reports for stakeholders, IT teams, or compliance |
+| **LLM-Powered Summaries** | Optional AI explanations tailored to your profession and context |
 
 ---
 
 ## Quick Start
 
-### Prerequisites
-
-- Node.js 20+ (`node --version`)
-- npm 10+ (`npm --version`)
-
-### Installation
+### Option 1: Try Demo Mode (No Setup)
 
 ```bash
-# Clone the repository
 git clone https://github.com/itprodirect/psec-baseline-hunter.git
 cd psec-baseline-hunter
-
-# Install dependencies
 npm install
-
-# Start development server
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) in your browser.
+Open http://localhost:3000 and click **"Try Demo"** — see the app with sample data instantly.
 
-### Create Your First Scan
+### Option 2: Scan Your Own Network
+
+**Prerequisites:** Node.js 20+, Nmap installed
 
 ```bash
-# Scan your network with Nmap (replace with your network range)
-nmap -sV --top-ports 200 192.168.1.0/24 -oX ports_scan.xml
+# 1. Run a scan (replace with your network range)
+nmap -sV --top-ports 200 192.168.1.0/24 -oX my_scan.xml
 
-# Create the expected folder structure
+# 2. Create ZIP structure
 mkdir -p my-network/rawscans/$(date +%Y-%m-%d_%H%M)_baseline
-mv ports_scan.xml my-network/rawscans/*/
+mv my_scan.xml my-network/rawscans/*/ports_top200_open.xml
+zip -r my-network.zip my-network/
 
-# Create ZIP and upload
-zip -r my-network-scan.zip my-network/
+# 3. Upload at http://localhost:3000
 ```
 
-Upload the ZIP file at [http://localhost:3000/upload](http://localhost:3000/upload)
+---
+
+## Who Is This For?
+
+### 👨‍👩‍👧‍👦 Families & Home Users
+> "I want to know if something sketchy joined my Wi-Fi."
+
+Get alerts when new devices appear, understand risks in plain English, and get simple fix instructions.
+
+### ⚖️ Attorneys & Compliance
+> "I need to document network exposure for a case or audit."
+
+Export professional reports with liability framing, chain-of-custody language, and regulatory context.
+
+### 💼 Small Business Owners
+> "Just tell me what I need to do to stay safe."
+
+See your risk score, get the top 3 actions, and share reports with your IT vendor.
+
+### 🔒 Security Professionals
+> "I want the raw data plus quick triage."
+
+Full port/service details, P0/P1/P2 classifications, and export to CHANGES.md / WATCHLIST.md.
+
+---
+
+## The 3-Step Flow
+
+```
+┌──────────────┐     ┌──────────────┐     ┌──────────────┐
+│   UPLOAD     │────▶│   ANALYZE    │────▶│   ACT        │
+│              │     │              │     │              │
+│ Drag & drop  │     │ View health  │     │ Fix issues   │
+│ your scan    │     │ summary &    │     │ with guided  │
+│ ZIP file     │     │ risk score   │     │ checklist    │
+└──────────────┘     └──────────────┘     └──────────────┘
+```
+
+---
+
+## Personalized Explanations
+
+The app adapts its language based on who you are:
+
+| Persona | Language Style |
+|---------|---------------|
+| **Executive** | Risk trends, business impact, board-ready summaries |
+| **Attorney** | Liability exposure, documentation trail, privilege concerns |
+| **Security** | Ports, services, CVEs, technical remediation |
+| **Operations** | Change tickets, uptime risk, rollback steps |
+| **Parent** | "Your kid's iPad" vs "Unknown device on kids' Wi-Fi" |
 
 ---
 
@@ -85,222 +136,120 @@ Upload the ZIP file at [http://localhost:3000/upload](http://localhost:3000/uplo
 psec-baseline-hunter/
 ├── src/
 │   ├── app/                      # Next.js App Router
-│   │   ├── (dashboard)/          # Dashboard pages
-│   │   │   ├── upload/           # File upload & run detection
-│   │   │   ├── scorecard/        # Single-run analysis (Health Overview)
-│   │   │   └── diff/             # Run comparison (Changes)
-│   │   └── api/                  # API routes
-│   │       ├── upload/           # File upload endpoint
-│   │       ├── ingest/           # ZIP extraction
-│   │       ├── runs/             # Run listing
-│   │       ├── parse/            # XML parsing
-│   │       ├── diff/             # Diff computation
-│   │       ├── scorecard/        # Scorecard data
-│   │       └── llm/              # LLM-powered features
-│   │           ├── scorecard-summary/    # Personalized summaries
-│   │           ├── diff-summary/         # Diff explanations
-│   │           ├── port-impact/          # Breach examples
-│   │           └── executive-summary/    # Executive reports
-│   ├── components/               # React components
-│   │   ├── upload/               # Upload-related components
-│   │   ├── scorecard/            # Scorecard components
-│   │   │   ├── PersonalizedSummaryCard.tsx
-│   │   │   ├── PortImpactCard.tsx
-│   │   │   └── ExecutiveSummaryCard.tsx
-│   │   ├── diff/                 # Diff components
-│   │   ├── layout/               # Layout components
+│   │   ├── (dashboard)/          # Main dashboard pages
+│   │   │   ├── page.tsx          # Network Health Dashboard
+│   │   │   ├── scorecard/        # Health Overview (single run)
+│   │   │   └── diff/             # Changes view (compare runs)
+│   │   └── api/                  # Backend API routes
+│   ├── components/
+│   │   ├── scorecard/            # Personalized summary, modals
+│   │   ├── layout/               # Sidebar, navigation
 │   │   └── ui/                   # shadcn/ui components
-│   └── lib/                      # Business logic
-│       ├── services/             # Core services
-│       │   ├── ingest.ts         # Run detection
-│       │   ├── nmap-parser.ts    # XML parsing
-│       │   ├── risk-classifier.ts # Risk classification
-│       │   └── impact-cache.ts   # Port impact caching
-│       ├── llm/                  # LLM integration
-│       │   ├── provider.ts       # Anthropic/OpenAI abstraction
-│       │   ├── prompt-scorecard.ts
-│       │   ├── prompt-diff.ts
-│       │   ├── prompt-impact.ts
-│       │   └── prompt-executive.ts
-│       ├── context/              # React contexts
-│       │   ├── demo-context.tsx
-│       │   └── persona-context.tsx
-│       ├── types/                # TypeScript types
-│       └── constants/            # Configuration
+│   └── lib/
+│       ├── services/             # Diff engine, risk classifier, parsers
+│       ├── llm/                  # LLM prompt builders
+│       ├── types/                # TypeScript definitions
+│       └── constants/            # Risk ports, actions mapping
+├── scripts/                      # PowerShell/bash scan scripts
 ├── docs/                         # Documentation
-│   ├── ROADMAP.md               # Feature roadmap
-│   ├── SCANNING_GUIDE.md        # Nmap scanning guide
-│   ├── MIGRATION_PLAN.md        # Technical migration plan
-│   └── PROJECT_STATUS.md        # Current status
-├── data/                         # Local data storage (gitignored)
-│   ├── uploads/                  # Uploaded ZIP files
-│   └── extracted/                # Extracted contents
-└── streamlit_app/                # Legacy Python app (deprecated)
+└── data/                         # Local storage (gitignored)
 ```
 
 ---
 
-## How It Works
+## Risk Classification
 
-### 1. Upload Phase
-You provide a ZIP file containing Nmap scan results organized in a specific structure:
-
-```
-network-name/
-└── rawscans/
-    └── 2025-01-25_1430_baselinekit_v0/
-        ├── ports_top200_open.xml      # Required: Port scan data
-        ├── hosts_up.txt               # Optional: Live hosts list
-        └── discovery_ping_sweep.xml   # Optional: Discovery scan
-```
-
-### 2. Detection Phase
-The tool automatically:
-- Extracts the ZIP file
-- Finds run folders matching `YYYY-MM-DD_HHMM_*` pattern
-- Identifies key files (ports, discovery, hosts)
-- Parses Nmap XML to extract host/port/service data
-
-### 3. Analysis Phase
-For each run, you can:
-- View **Scorecard**: Top ports, host counts, service inventory
-- Compare **Diff**: Changes between two scans
-- Get **Alerts**: P0/P1/P2 risk flags for dangerous ports
-
-### Risk Classification
-
-| Priority | Ports | Description |
-|----------|-------|-------------|
-| **P0 (Critical)** | 23, 445, 3389, 5900, 135, 139, 1080 | Remote access, file sharing - rarely safe to expose |
-| **P1 (Admin)** | 8080, 8443, 8888 | Admin panels, dev servers - often unprotected |
-| **P2 (Watch)** | 22, 80, 443 | Common services - note when NEW |
+| Priority | Ports | Why It Matters |
+|----------|-------|----------------|
+| **P0 Critical** | 23, 445, 3389, 5900, 135, 139, 1080 | Remote access & file sharing — fix immediately |
+| **P1 Admin** | 8080, 8443, 8888, 9000, 9090 | Admin panels — often unprotected |
+| **P2 Watch** | 22, 80, 443 | Common services — note when NEW |
 
 ---
 
-## AI-Powered Features
+## Configuration
 
-PSEC Baseline Hunter includes optional LLM integration for non-technical security explanations:
+### Optional: Enable AI Summaries
 
-### Personalized Summaries
-Get plain-English explanations of scan results tailored to your:
-- **Technical level** (non-technical to security professional)
-- **Profession** (healthcare, small business, IT professional, etc.)
-- **Context** (HIPAA, PCI-DSS, handles client data, etc.)
-- **Tone preference** (direct, reassuring, technical)
-
-### Real-World Impact Cards
-Click "Show Real-World Impact" on any P0/P1 risk port to see:
-- **Attack scenarios** - How attackers exploit this service
-- **Real breach examples** - Actual incidents with costs (e.g., "WannaCry - $4B damages")
-- **Financial impact** - Average breach cost, recovery time, regulatory fines
-- **Quick fixes** - Immediate actions to reduce risk
-
-Impact data is **cached for 30 days** to reduce API costs (~80% savings).
-
-### Executive Summaries
-Generate business-focused security reports for leadership with:
-- **Plain-English overview** - No jargon
-- **Top 3 business risks** - What it is, why it matters, recommended action
-- **Financial impact estimates** - Breach costs, fines, recovery time
-- **Action plan** - Immediate, short-term, and ongoing steps
-- **Questions for leadership** - Business decisions needed
-
-### LLM Configuration
+Add to `.env.local`:
 
 ```bash
-# Optional: Add to .env.local for LLM features
-ANTHROPIC_API_KEY=sk-ant-...      # Preferred
-# OR
-OPENAI_API_KEY=sk-...             # Fallback
+# Anthropic (recommended)
+ANTHROPIC_API_KEY=sk-ant-...
+ANTHROPIC_MODEL=claude-3-5-sonnet-latest
 
-# Without API keys, the app uses rule-based summaries
+# Or OpenAI
+OPENAI_API_KEY=sk-...
+OPENAI_MODEL=gpt-4o-mini
 ```
 
-**Supported LLMs:**
-- Anthropic Claude (claude-3-5-sonnet-20241022)
-- OpenAI GPT-4o
-
-**Cost estimate:** ~$0.02-0.03 per session with caching
+Without API keys, the app uses intelligent rule-based summaries.
 
 ---
 
-## Available Commands
+## Development
 
 ```bash
-# Development
-npm run dev           # Start dev server with hot reload
-npm run build         # Production build
-npm run start         # Start production server
-
-# Quality
-npm run lint          # Run ESLint
-npx tsc --noEmit      # Type check without emitting
+npm run dev       # Start dev server
+npm run build     # Production build
+npm run lint      # Run linter
+npm test          # Run tests
 ```
 
 ---
 
 ## Documentation
 
-| Document | Purpose |
-|----------|---------|
-| [ROADMAP.md](docs/ROADMAP.md) | Feature roadmap and future plans |
-| [SCANNING_GUIDE.md](docs/SCANNING_GUIDE.md) | How to create scan files with Nmap |
-| [MIGRATION_PLAN.md](docs/MIGRATION_PLAN.md) | Technical architecture details |
-| [PROJECT_STATUS.md](docs/PROJECT_STATUS.md) | Current implementation status |
-| [CONTRIBUTING.md](CONTRIBUTING.md) | Contribution guidelines |
+| Document | Description |
+|----------|-------------|
+| [CLAUDE.md](CLAUDE.md) | AI assistant context for Claude Code |
+| [ROADMAP.md](docs/ROADMAP.md) | Feature roadmap |
+| [SCANNING_GUIDE.md](docs/SCANNING_GUIDE.md) | How to run Nmap scans |
 | [CHANGELOG.md](CHANGELOG.md) | Version history |
 
 ---
 
-## Development Status
+## Roadmap Highlights
 
-### Completed ✅
-- [x] **Phase 0:** Next.js scaffolding with shadcn/ui
-- [x] **Phase 1:** Upload, extraction, run detection, XML parsing
-- [x] **Phase 2:** Run registry, demo mode, scorecard
-- [x] **Phase 3:** Personalized summaries with LLM integration
-- [x] **Phase 4:** Diff comparison with real data
-- [x] **Phase 5.5:** Real-World Impact Cards + Executive Summaries
+### ✅ Completed
+- Persona-based explanations
+- Demo mode with sample data
+- Risk scoring and prioritization
+- LLM-powered summaries (optional)
+- Change detection and diff view
 
-### Next Up 🚧
-- [ ] **Phase 5:** Custom risk rules, comparison history, CSV export
-- [ ] **Phase 6:** Production hardening, S3 storage, rate limiting
+### 🚧 In Progress
+- Device identification (HTTP titles, MAC vendors)
+- Unified persona state across components
+- Export templates for different audiences
 
----
-
-## Tech Stack
-
-| Category | Technology |
-|----------|------------|
-| Framework | Next.js 16 (App Router) |
-| Language | TypeScript 5 |
-| Styling | Tailwind CSS 4 |
-| Components | shadcn/ui (Radix UI + Tailwind) |
-| XML Parsing | fast-xml-parser |
-| ZIP Handling | adm-zip |
-| LLM (Optional) | Anthropic Claude / OpenAI GPT-4o |
-| State Management | React Context + localStorage |
+### 📋 Planned
+- "New Device Joined" alerts
+- Fix-it checklist with progress tracking
+- Scheduled scans + weekly digest
+- Household device mapping (rooms, owners)
 
 ---
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development guidelines.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ---
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) for details.
+MIT License — see [LICENSE](LICENSE) for details.
 
 ---
 
 ## Acknowledgments
 
-- [Nmap](https://nmap.org/) - The network scanning tool that provides our input data
-- [shadcn/ui](https://ui.shadcn.com/) - Beautiful UI components
-- [Next.js](https://nextjs.org/) - The React framework
+- [Nmap](https://nmap.org/) — The network scanner that powers our data
+- [shadcn/ui](https://ui.shadcn.com/) — Beautiful UI components
+- [Next.js](https://nextjs.org/) — React framework
+- [Anthropic](https://anthropic.com/) — Claude AI for summaries
 
 ---
 
-*Built for learning network security with free tools.*
+**Built to help families, small businesses, and professionals understand their network security.**

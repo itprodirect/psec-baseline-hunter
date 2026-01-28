@@ -42,3 +42,4 @@ data/extracted/
 data/runs/
 data/**/*.zip
 data/comparisons/
+*.old
