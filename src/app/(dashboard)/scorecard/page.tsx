@@ -10,6 +10,7 @@ import { ScorecardData, RiskPort, TopPort, RunManifestInfo, RunsListResponseV2 }
 import { PersonalizedSummaryCard } from "@/components/scorecard/PersonalizedSummaryCard";
 import { PortImpactCard } from "@/components/scorecard/PortImpactCard";
 import { ExecutiveSummaryCard } from "@/components/scorecard/ExecutiveSummaryCard";
+import { QuickRuleButton } from "@/components/scorecard/QuickRuleButton";
 
 function formatTimestamp(timestamp: string): string {
   return new Date(timestamp).toLocaleDateString("en-US", {
@@ -164,6 +165,7 @@ function ScorecardDisplay({ data, actions }: ScorecardDisplayProps) {
                         </span>
                       </p>
                     </div>
+                    <QuickRuleButton riskPort={rp} network={data.network} />
                   </div>
 
                   {/* Show Real-World Impact for P0 and P1 only */}
