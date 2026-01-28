@@ -18,7 +18,8 @@ import { useDemo } from "@/lib/context/demo-context";
 import { DiffData, HostChange, PortChange, RiskLevel, RunManifestInfo, RunsListResponseV2, SavedComparison, ComparisonResponse } from "@/lib/types";
 import { PersonalizedDiffCard } from "@/components/diff/PersonalizedDiffCard";
 import { RulesManagerCard } from "@/components/rules/RulesManagerCard";
-import { diffToCSV, watchlistToCSV, downloadCSV } from "@/lib/utils/csv-export";
+import { diffToCSV, watchlistToCSV, downloadCSV, formatDateForFilename } from "@/lib/utils/csv-export";
+import { ExportCSVButton } from "@/components/ui/export-csv-button";
 
 function formatTimestamp(timestamp: string): string {
   return new Date(timestamp).toLocaleDateString("en-US", {
@@ -411,28 +412,27 @@ function DiffDisplay({ data }: { data: DiffData }) {
                 {/* CSV Exports */}
                 <div>
                   <h4 className="text-sm font-medium mb-2">CSV Exports</h4>
-                  <div className="flex gap-4">
-                    <button
-                      className="px-4 py-2 bg-green-100 hover:bg-green-200 dark:bg-green-900/30 dark:hover:bg-green-900/50 text-green-700 dark:text-green-300 rounded-lg text-sm font-medium transition-colors"
-                      onClick={() => {
+                  <div className="flex gap-3">
+                    <ExportCSVButton
+                      label="All Changes"
+                      onExport={() => {
                         const csv = diffToCSV(data);
-                        const date = new Date().toISOString().split("T")[0];
-                        downloadCSV(csv, `changes-${data.network}-${date}.csv`);
+                        const date = formatDateForFilename(data.currentTimestamp);
+                        const network = data.network.replace(/[^a-z0-9-]/gi, "_");
+                        downloadCSV(csv, `${network}_${date}_changes.csv`);
                       }}
-                    >
-                      Download All Changes (CSV)
-                    </button>
+                    />
                     {data.riskyExposures.length > 0 && (
-                      <button
-                        className="px-4 py-2 bg-red-100 hover:bg-red-200 dark:bg-red-900/30 dark:hover:bg-red-900/50 text-red-700 dark:text-red-300 rounded-lg text-sm font-medium transition-colors"
-                        onClick={() => {
+                      <ExportCSVButton
+                        label="Watchlist Only"
+                        variant="default"
+                        onExport={() => {
                           const csv = watchlistToCSV(data.riskyExposures);
-                          const date = new Date().toISOString().split("T")[0];
-                          downloadCSV(csv, `watchlist-${data.network}-${date}.csv`);
+                          const date = formatDateForFilename(data.currentTimestamp);
+                          const network = data.network.replace(/[^a-z0-9-]/gi, "_");
+                          downloadCSV(csv, `${network}_${date}_watchlist.csv`);
                         }}
-                      >
-                        Download Watchlist (CSV)
-                      </button>
+                      />
                     )}
                   </div>
                 </div>
