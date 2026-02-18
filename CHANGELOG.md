@@ -5,6 +5,12 @@ All notable changes to PSEC Baseline Hunter will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- Refactored `scorecard` and `diff` pages into reusable components to reduce page complexity and improve UX consistency.
+- Updated generated Next.js type reference path for current framework output.
+
 ## [0.6.0] - 2026-01-27
 
 ### Added
@@ -25,7 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Comparison History** - Save and share scan comparisons
   - Save diff comparisons with unique 8-character IDs
-  - Shareable URLs (`/diff?comparison=ABC12345`)
+  - Shareable URLs (`/diff/ABC12345`)
   - Risk scoring (0-100 scale) with color-coded labels
   - Search/filter by network or notes
   - Delete saved comparisons
@@ -137,6 +143,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **v0.2.0** - Run Registry & Demo Mode
 - **v0.1.0** - Initial Next.js Release
 
+[Unreleased]: https://github.com/itprodirect/psec-baseline-hunter/compare/v0.6.0...HEAD
 [0.6.0]: https://github.com/itprodirect/psec-baseline-hunter/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/itprodirect/psec-baseline-hunter/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/itprodirect/psec-baseline-hunter/compare/v0.3.0...v0.4.0
