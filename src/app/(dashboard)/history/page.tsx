@@ -62,7 +62,7 @@ export default function HistoryPage() {
   }
 
   function handleCopyLink(comparisonId: string) {
-    const url = `${window.location.origin}/diff?comparison=${comparisonId}`;
+    const url = `${window.location.origin}/diff/${comparisonId}`;
     navigator.clipboard.writeText(url);
     setCopiedId(comparisonId);
     setTimeout(() => setCopiedId(null), 2000);
@@ -232,7 +232,7 @@ export default function HistoryPage() {
                         </>
                       )}
                     </Button>
-                    <Link href={`/diff?comparison=${comparison.comparisonId}`}>
+                    <Link href={`/diff/${comparison.comparisonId}`}>
                       <Button variant="outline" size="sm">
                         <ExternalLink className="h-4 w-4 mr-1" />
                         View

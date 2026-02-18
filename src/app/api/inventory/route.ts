@@ -5,6 +5,7 @@ import {
   listInventoryNetworks,
   InventoryDevice,
 } from "@/lib/services/inventory";
+import { sanitizeNetworkName } from "@/lib/services/path-safety";
 
 export interface InventoryResponse {
   success: boolean;
@@ -24,7 +25,15 @@ export async function GET(request: NextRequest): Promise<NextResponse<InventoryR
     const network = searchParams.get("network");
 
     if (network) {
-      const devices = getNetworkInventory(network);
+      const safeNetwork = sanitizeNetworkName(network);
+      if (!safeNetwork) {
+        return NextResponse.json(
+          { success: false, error: "Invalid network name" },
+          { status: 400 }
+        );
+      }
+
+      const devices = getNetworkInventory(safeNetwork);
       return NextResponse.json({ success: true, devices });
     } else {
       const networks = listInventoryNetworks();
@@ -47,9 +56,17 @@ export async function POST(request: NextRequest): Promise<NextResponse<Inventory
     const body = await request.json();
     const { network, device } = body;
 
-    if (!network) {
+    if (!network || typeof network !== "string") {
       return NextResponse.json(
         { success: false, error: "Network is required" },
+        { status: 400 }
+      );
+    }
+
+    const safeNetwork = sanitizeNetworkName(network);
+    if (!safeNetwork) {
+      return NextResponse.json(
+        { success: false, error: "Invalid network name" },
         { status: 400 }
       );
     }
@@ -61,7 +78,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<Inventory
       );
     }
 
-    const newDevice = addDeviceToInventory(network, device);
+    const newDevice = addDeviceToInventory(safeNetwork, device);
     return NextResponse.json({ success: true, device: newDevice });
   } catch (error) {
     return NextResponse.json(

@@ -73,7 +73,7 @@ export function SaveComparisonButton({
 
   function handleCopyLink() {
     if (savedId) {
-      const url = `${window.location.origin}/diff?comparison=${savedId}`;
+      const url = `${window.location.origin}/diff/${savedId}`;
       navigator.clipboard.writeText(url);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
@@ -125,7 +125,7 @@ export function SaveComparisonButton({
               <div className="flex gap-2">
                 <Input
                   readOnly
-                  value={`${window.location.origin}/diff?comparison=${savedId}`}
+                  value={`${window.location.origin}/diff/${savedId}`}
                   className="font-mono text-sm"
                 />
                 <Button

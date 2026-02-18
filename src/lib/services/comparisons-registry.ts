@@ -12,6 +12,7 @@ import {
   DiffData,
 } from "@/lib/types";
 import { getDataDir, ensureDir } from "./ingest";
+import { computeRiskScore, getRiskScoreLabel } from "./diff-engine";
 
 const REGISTRY_VERSION = 1;
 
@@ -75,39 +76,6 @@ export function generateComparisonId(): string {
 }
 
 /**
- * Calculate risk score from diff data (0-100 scale)
- */
-function calculateRiskScore(diffData: DiffData): number {
-  let score = 100; // Start perfect
-
-  // Deduct points for risky exposures (most important)
-  score -= diffData.riskyExposures.length * 10;
-
-  // Deduct for new hosts (could be unauthorized)
-  score -= diffData.newHosts.length * 5;
-
-  // Deduct for new open ports
-  score -= diffData.portsOpened.length * 2;
-
-  // Slight credit for ports closed
-  score += diffData.portsClosed.length * 1;
-
-  // Clamp to 0-100
-  return Math.max(0, Math.min(100, score));
-}
-
-/**
- * Get risk label from score
- */
-function getRiskLabel(score: number): string {
-  if (score >= 90) return "Excellent";
-  if (score >= 75) return "Good";
-  if (score >= 60) return "Fair";
-  if (score >= 40) return "Poor";
-  return "Critical";
-}
-
-/**
  * Save a new comparison
  */
 export function saveComparison(
@@ -117,7 +85,8 @@ export function saveComparison(
   const registry = loadComparisonsRegistry();
 
   const comparisonId = generateComparisonId();
-  const riskScore = calculateRiskScore(diffData);
+  const riskScore = computeRiskScore(diffData);
+  const { label: riskLabel } = getRiskScoreLabel(riskScore);
 
   const comparison: SavedComparison = {
     comparisonId,
@@ -127,7 +96,7 @@ export function saveComparison(
     createdAt: new Date().toISOString(),
     diffData,
     riskScore,
-    riskLabel: getRiskLabel(riskScore),
+    riskLabel,
     title: request.title,
     notes: request.notes,
   };

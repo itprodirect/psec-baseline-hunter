@@ -4,11 +4,13 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { extractZip, detectRunFolders } from "@/lib/services/ingest";
+import { extractZip, detectRunFolders, getDataDir } from "@/lib/services/ingest";
 import { registerRun, RunManifest } from "@/lib/services/run-registry";
 import { IngestResponseV2 } from "@/lib/types";
 import { shortId } from "@/lib/utils/hash";
 import * as fs from "fs";
+import * as path from "path";
+import { resolvePathWithin } from "@/lib/services/path-safety";
 
 interface IngestRequestBody {
   zipPath: string;
@@ -27,8 +29,24 @@ export async function POST(request: NextRequest): Promise<NextResponse<IngestRes
       );
     }
 
+    if (!zipPath.toLowerCase().endsWith(".zip")) {
+      return NextResponse.json(
+        { success: false, error: "zipPath must point to a .zip file" },
+        { status: 400 }
+      );
+    }
+
+    const uploadsDir = path.join(getDataDir(), "uploads");
+    const safeZipPath = resolvePathWithin(uploadsDir, zipPath);
+    if (!safeZipPath) {
+      return NextResponse.json(
+        { success: false, error: "zipPath must reference a file in data/uploads" },
+        { status: 400 }
+      );
+    }
+
     // Verify the file exists
-    if (!fs.existsSync(zipPath)) {
+    if (!fs.existsSync(safeZipPath)) {
       return NextResponse.json(
         { success: false, error: "ZIP file not found" },
         { status: 404 }
@@ -39,7 +57,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<IngestRes
     const extractionId = shortId();
 
     // Extract ZIP
-    const extractedPath = extractZip(zipPath);
+    const extractedPath = extractZip(safeZipPath);
 
     // Detect run folders
     const runFolders = detectRunFolders(extractedPath);

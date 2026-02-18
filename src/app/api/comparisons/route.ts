@@ -59,6 +59,30 @@ export async function POST(
       );
     }
 
+    if (body.baselineRunUid === body.currentRunUid) {
+      return NextResponse.json(
+        { success: false, error: "baselineRunUid and currentRunUid must be different" },
+        { status: 400 }
+      );
+    }
+
+    const title = body.title?.trim();
+    const notes = body.notes?.trim();
+
+    if (title && title.length > 120) {
+      return NextResponse.json(
+        { success: false, error: "title must be 120 characters or fewer" },
+        { status: 400 }
+      );
+    }
+
+    if (notes && notes.length > 2000) {
+      return NextResponse.json(
+        { success: false, error: "notes must be 2000 characters or fewer" },
+        { status: 400 }
+      );
+    }
+
     // Compute the diff
     const diffData = computeDiff(body.baselineRunUid, body.currentRunUid);
 
@@ -73,7 +97,15 @@ export async function POST(
     }
 
     // Save the comparison
-    const comparison = saveComparison(body, diffData);
+    const comparison = saveComparison(
+      {
+        baselineRunUid: body.baselineRunUid,
+        currentRunUid: body.currentRunUid,
+        title,
+        notes,
+      },
+      diffData
+    );
 
     return NextResponse.json({
       success: true,

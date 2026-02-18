@@ -3,6 +3,7 @@ import { promises as fs } from "fs";
 import * as path from "path";
 import { parseInventoryCSV, InventoryDevice, getInventoryDir } from "@/lib/services/inventory";
 import { ensureDir } from "@/lib/services/ingest";
+import { sanitizeNetworkName } from "@/lib/services/path-safety";
 
 export interface InventoryUploadResponse {
   success: boolean;
@@ -35,6 +36,14 @@ export async function POST(request: NextRequest): Promise<NextResponse<Inventory
       );
     }
 
+    const safeNetwork = sanitizeNetworkName(network);
+    if (!safeNetwork) {
+      return NextResponse.json(
+        { success: false, error: "Invalid network name" },
+        { status: 400 }
+      );
+    }
+
     // Validate file type
     const fileName = file.name.toLowerCase();
     if (!fileName.endsWith(".csv")) {
@@ -49,10 +58,10 @@ export async function POST(request: NextRequest): Promise<NextResponse<Inventory
     const content = new TextDecoder().decode(bytes);
 
     // Parse CSV
-    const devices = parseInventoryCSV(content, network);
+    const devices = parseInventoryCSV(content, safeNetwork);
 
     // Save to inventory directory
-    const networkDir = ensureDir(path.join(getInventoryDir(), network));
+    const networkDir = ensureDir(path.join(getInventoryDir(), safeNetwork));
     const devicesPath = path.join(networkDir, "devices.json");
 
     // Load existing devices and merge

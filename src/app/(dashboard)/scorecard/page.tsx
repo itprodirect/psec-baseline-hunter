@@ -248,6 +248,14 @@ export default function ScorecardPage() {
     loadRuns();
   }, []);
 
+  // Auto-select newest run for a simpler first experience
+  useEffect(() => {
+    if (isDemoMode) return;
+    if (!selectedRunUid && runs.length > 0) {
+      setSelectedRunUid(runs[0].runUid);
+    }
+  }, [isDemoMode, runs, selectedRunUid]);
+
   // Load scorecard when run is selected
   useEffect(() => {
     if (!selectedRunUid || isDemoMode) return;

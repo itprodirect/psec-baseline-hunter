@@ -1,12 +1,19 @@
 "use client";
 
+import { useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
-import { LayoutDashboard, Upload, BarChart3, GitCompare, Shield, FileSpreadsheet, Settings, History } from "lucide-react";
+import { LayoutDashboard, Upload, BarChart3, GitCompare, Shield, FileSpreadsheet, Settings, History, Menu } from "lucide-react";
 import { PersonaToggle } from "./persona-toggle";
+import { Button } from "@/components/ui/button";
+import {
+  Sheet,
+  SheetContent,
+  SheetTrigger,
+} from "@/components/ui/sheet";
 
-const navItems = [
+const NAV_ITEMS = [
   {
     title: "Dashboard",
     href: "/",
@@ -45,72 +52,119 @@ const navItems = [
   },
 ];
 
-export function NavSidebar() {
+function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname();
 
   return (
-    <aside className="flex h-screen w-64 flex-col border-r bg-background">
-      {/* Logo / Brand */}
-      <div className="flex h-16 items-center gap-2 border-b px-6">
-        <Shield className="h-6 w-6 text-primary" />
-        <div>
-          <div className="font-semibold text-sm">PSEC Baseline Hunter</div>
-          <div className="text-xs text-muted-foreground">Network Security</div>
-        </div>
-      </div>
+    <nav className="flex-1 space-y-1 p-4">
+      {NAV_ITEMS.map((item) => {
+        const isActive = pathname === item.href ||
+          (item.href !== "/" && pathname.startsWith(item.href));
+        return (
+          <Link
+            key={item.href}
+            href={item.href}
+            onClick={onNavigate}
+            className={cn(
+              "flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors",
+              isActive
+                ? "bg-primary text-primary-foreground"
+                : "text-muted-foreground hover:bg-muted hover:text-foreground"
+            )}
+          >
+            <item.icon className="h-4 w-4" />
+            <div>
+              <div className="font-medium">{item.title}</div>
+              <div
+                className={cn(
+                  "text-xs",
+                  isActive ? "text-primary-foreground/70" : "text-muted-foreground"
+                )}
+              >
+                {item.description}
+              </div>
+            </div>
+          </Link>
+        );
+      })}
+    </nav>
+  );
+}
 
-      {/* Persona Toggle */}
+function SidebarFooter() {
+  return (
+    <div className="border-t p-4 space-y-2">
+      <a
+        href="/scripts/network-scan.ps1"
+        download
+        className="flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground transition-colors"
+      >
+        <FileSpreadsheet className="h-3 w-3" />
+        Download Scan Script
+      </a>
+      <div className="text-xs text-muted-foreground">
+        v0.6.0 - Custom Rules & History
+      </div>
+    </div>
+  );
+}
+
+function SidebarBrand() {
+  return (
+    <div className="flex h-16 items-center gap-2 border-b px-6">
+      <Shield className="h-6 w-6 text-primary" />
+      <div>
+        <div className="font-semibold text-sm">PSEC Baseline Hunter</div>
+        <div className="text-xs text-muted-foreground">Network Security</div>
+      </div>
+    </div>
+  );
+}
+
+export function NavSidebar() {
+  return (
+    <aside className="flex h-screen w-64 flex-col border-r bg-background">
+      <SidebarBrand />
+
       <div className="border-b px-3 py-2">
         <PersonaToggle />
       </div>
 
-      {/* Navigation */}
-      <nav className="flex-1 space-y-1 p-4">
-        {navItems.map((item) => {
-          const isActive = pathname === item.href ||
-            (item.href !== "/" && pathname.startsWith(item.href));
-          return (
-            <Link
-              key={item.href}
-              href={item.href}
-              className={cn(
-                "flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors",
-                isActive
-                  ? "bg-primary text-primary-foreground"
-                  : "text-muted-foreground hover:bg-muted hover:text-foreground"
-              )}
-            >
-              <item.icon className="h-4 w-4" />
-              <div>
-                <div className="font-medium">{item.title}</div>
-                <div
-                  className={cn(
-                    "text-xs",
-                    isActive ? "text-primary-foreground/70" : "text-muted-foreground"
-                  )}
-                >
-                  {item.description}
-                </div>
-              </div>
-            </Link>
-          );
-        })}
-      </nav>
-
-      {/* Help Section */}
-      <div className="border-t p-4 space-y-2">
-        <a
-          href="/scripts/network-scan.ps1"
-          download
-          className="flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground transition-colors"
-        >
-          <FileSpreadsheet className="h-3 w-3" />
-          Download Scan Script
-        </a>
-        <div className="text-xs text-muted-foreground">
-          v0.6.0 - Custom Rules & History
-        </div>
-      </div>
+      <NavLinks />
+      <SidebarFooter />
     </aside>
+  );
+}
+
+export function MobileNav() {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <header className="md:hidden border-b bg-background px-4 py-3">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Shield className="h-5 w-5 text-primary" />
+          <div className="text-sm font-semibold">PSEC Baseline Hunter</div>
+        </div>
+
+        <Sheet open={open} onOpenChange={setOpen}>
+          <SheetTrigger asChild>
+            <Button variant="outline" size="icon" aria-label="Open navigation">
+              <Menu className="h-4 w-4" />
+            </Button>
+          </SheetTrigger>
+          <SheetContent side="left" className="w-[300px] p-0">
+            <div className="flex h-full flex-col">
+              <SidebarBrand />
+              <div className="border-b px-3 py-2">
+                <PersonaToggle />
+              </div>
+              <NavLinks onNavigate={() => setOpen(false)} />
+              <SidebarFooter />
+            </div>
+          </SheetContent>
+        </Sheet>
+      </div>
+    </header>
   );
 }

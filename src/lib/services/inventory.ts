@@ -6,6 +6,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { getDataDir, ensureDir } from "./ingest";
+import { resolvePathWithin, sanitizeNetworkName } from "./path-safety";
 
 /**
  * Inventory device record
@@ -47,6 +48,23 @@ const INVENTORY_VERSION = 1;
  */
 export function getInventoryDir(): string {
   return ensureDir(path.join(getDataDir(), "inventory"));
+}
+
+function resolveNetworkPath(network: string): { networkName: string; networkDir: string } {
+  const networkName = sanitizeNetworkName(network);
+  if (!networkName) {
+    throw new Error("Invalid network name");
+  }
+
+  const inventoryDir = getInventoryDir();
+  const candidateDir = path.join(inventoryDir, networkName);
+  const networkDir = resolvePathWithin(inventoryDir, candidateDir);
+
+  if (!networkDir || networkDir === path.resolve(inventoryDir)) {
+    throw new Error("Invalid network path");
+  }
+
+  return { networkName, networkDir };
 }
 
 /**
@@ -238,12 +256,12 @@ function normalizeMac(mac: string): string {
  * Import inventory from CSV file
  */
 export function importInventoryCSV(csvPath: string, network: string): InventoryDevice[] {
+  const { networkName, networkDir } = resolveNetworkPath(network);
   const content = fs.readFileSync(csvPath, "utf-8");
-  const devices = parseInventoryCSV(content, network);
+  const devices = parseInventoryCSV(content, networkName);
 
   // Save to inventory directory
-  const inventoryDir = getInventoryDir();
-  const networkDir = ensureDir(path.join(inventoryDir, network));
+  ensureDir(networkDir);
   const devicesPath = path.join(networkDir, "devices.json");
 
   // Load existing devices
@@ -262,8 +280,8 @@ export function importInventoryCSV(csvPath: string, network: string): InventoryD
 
   // Update index
   const index = loadInventoryIndex();
-  index.networks[network] = {
-    name: network,
+  index.networks[networkName] = {
+    name: networkName,
     csvPath,
     deviceCount: merged.length,
     lastUpdated: new Date().toISOString(),
@@ -317,7 +335,14 @@ function mergeDevices(existing: InventoryDevice[], incoming: InventoryDevice[]):
  * Get inventory for a network
  */
 export function getNetworkInventory(network: string): InventoryDevice[] {
-  const devicesPath = path.join(getInventoryDir(), network, "devices.json");
+  let networkDir: string;
+  try {
+    networkDir = resolveNetworkPath(network).networkDir;
+  } catch {
+    return [];
+  }
+
+  const devicesPath = path.join(networkDir, "devices.json");
 
   if (!fs.existsSync(devicesPath)) {
     return [];
@@ -337,7 +362,8 @@ export function addDeviceToInventory(
   network: string,
   device: Partial<InventoryDevice>
 ): InventoryDevice {
-  const devices = getNetworkInventory(network);
+  const { networkName, networkDir } = resolveNetworkPath(network);
+  const devices = getNetworkInventory(networkName);
 
   const newDevice: InventoryDevice = {
     id: generateDeviceId(),
@@ -349,28 +375,28 @@ export function addDeviceToInventory(
     status: device.status || "active",
     notes: device.notes || "",
     securityRecs: device.securityRecs || "",
-    network,
+    network: networkName,
     addedAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
 
   devices.push(newDevice);
 
-  const networkDir = ensureDir(path.join(getInventoryDir(), network));
+  ensureDir(networkDir);
   fs.writeFileSync(path.join(networkDir, "devices.json"), JSON.stringify(devices, null, 2));
 
   // Update index
   const index = loadInventoryIndex();
-  if (!index.networks[network]) {
-    index.networks[network] = {
-      name: network,
+  if (!index.networks[networkName]) {
+    index.networks[networkName] = {
+      name: networkName,
       csvPath: "",
       deviceCount: 0,
       lastUpdated: new Date().toISOString(),
     };
   }
-  index.networks[network].deviceCount = devices.length;
-  index.networks[network].lastUpdated = new Date().toISOString();
+  index.networks[networkName].deviceCount = devices.length;
+  index.networks[networkName].lastUpdated = new Date().toISOString();
   saveInventoryIndex(index);
 
   return newDevice;

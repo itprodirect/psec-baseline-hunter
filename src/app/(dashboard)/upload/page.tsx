@@ -1,10 +1,11 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import Link from "next/link";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Upload, FolderSearch, RefreshCw, Play, X } from "lucide-react";
+import { Upload, FolderSearch, RefreshCw, Play, X, ArrowRight } from "lucide-react";
 import { Dropzone } from "@/components/upload/dropzone";
 import { RunList } from "@/components/upload/run-list";
 import { RunManifestInfo, UploadResponse, IngestResponseV2, RunsListResponseV2 } from "@/lib/types";
@@ -128,7 +129,7 @@ export default function UploadPage() {
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Start Scan Review</h1>
           <p className="text-muted-foreground">
-            Upload baselinekit scan results to begin your security review
+            Upload your network scan ZIP to see what changed and what to fix first
           </p>
         </div>
         {!isDemoMode ? (
@@ -194,7 +195,7 @@ export default function UploadPage() {
             Upload Baseline ZIP
           </CardTitle>
           <CardDescription>
-            Drag and drop a baselinekit ZIP file or click to browse
+            Drag and drop a baselinekit ZIP file, or click to browse
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -247,6 +248,22 @@ export default function UploadPage() {
                 {ingestStats.duplicateRuns > 0 && `${ingestStats.duplicateRuns} duplicate${ingestStats.duplicateRuns !== 1 ? "s" : ""} skipped`}
                 {ingestStats.newRuns === 0 && ingestStats.duplicateRuns === 0 && "No runs found in ZIP"}
               </p>
+              {ingestStats.newRuns > 0 && (
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Button asChild size="sm" variant="outline">
+                    <Link href="/scorecard">
+                      Review Health Overview
+                      <ArrowRight className="h-4 w-4 ml-1" />
+                    </Link>
+                  </Button>
+                  <Button asChild size="sm" variant="outline">
+                    <Link href="/diff">
+                      Compare Changes
+                      <ArrowRight className="h-4 w-4 ml-1" />
+                    </Link>
+                  </Button>
+                </div>
+              )}
             </div>
           )}
         </CardContent>
