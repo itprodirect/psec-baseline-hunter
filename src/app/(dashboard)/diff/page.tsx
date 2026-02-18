@@ -3,18 +3,9 @@
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog";
-import { GitCompare, ArrowRight, ChevronDown, Loader2, Save, History, Trash2 } from "lucide-react";
+import { GitCompare, ArrowRight, Loader2 } from "lucide-react";
 import { useDemo } from "@/lib/context/demo-context";
 import { DiffData, RunManifestInfo, RunsListResponseV2, SavedComparison, ComparisonResponse } from "@/lib/types";
 import { PersonalizedDiffCard } from "@/components/diff/PersonalizedDiffCard";
@@ -23,6 +14,10 @@ import { diffToCSV, watchlistToCSV, downloadCSV, formatDateForFilename } from "@
 import { ExportCSVButton } from "@/components/ui/export-csv-button";
 import { DiffView } from "@/components/diff/DiffView";
 import { buildTopActions } from "@/lib/services/diff-actions";
+import { RunSelector } from "@/components/diff/RunSelector";
+import { SaveComparisonDialog } from "@/components/diff/SaveComparisonDialog";
+import { ComparisonHistoryDialog } from "@/components/diff/ComparisonHistoryDialog";
+import { DiffEmptyState } from "@/components/diff/DiffEmptyState";
 
 function DiffDisplay({ data }: { data: DiffData }) {
   const topActions = buildTopActions(data);
@@ -114,106 +109,31 @@ interface DiffDataWithScore extends DiffData {
   riskColor: string;
 }
 
-function RunSelector({
-  label,
-  runs,
-  selectedRunUid,
-  onSelect,
-  disabledRunUid,
-  isOpen,
-  onToggle,
-}: {
-  label: string;
-  runs: RunManifestInfo[];
-  selectedRunUid: string | null;
-  onSelect: (runUid: string) => void;
-  disabledRunUid?: string | null;
-  isOpen: boolean;
-  onToggle: () => void;
-}) {
-  const selectedRun = runs.find((r) => r.runUid === selectedRunUid);
-  const availableRuns = runs.filter((r) => r.runUid !== disabledRunUid);
-
-  return (
-    <div className="flex-1">
-      <label className="text-sm font-medium text-muted-foreground mb-2 block">
-        {label}
-      </label>
-      <div className="relative">
-        <Button
-          variant="outline"
-          className="w-full justify-between"
-          onClick={onToggle}
-        >
-          {selectedRun ? (
-            <span className="truncate">
-              {selectedRun.network} - {selectedRun.folderName}
-            </span>
-          ) : (
-            <span className="text-muted-foreground">Select a run...</span>
-          )}
-          <ChevronDown className="h-4 w-4 ml-2 shrink-0" />
-        </Button>
-        {isOpen && (
-          <div className="absolute z-10 mt-1 w-full bg-background border rounded-lg shadow-lg max-h-64 overflow-y-auto">
-            {availableRuns.length === 0 ? (
-              <div className="px-4 py-2 text-sm text-muted-foreground">
-                No other runs available
-              </div>
-            ) : (
-              availableRuns.map((run) => (
-                <button
-                  key={run.runUid}
-                  className="w-full px-4 py-2 text-left text-sm hover:bg-muted transition-colors first:rounded-t-lg last:rounded-b-lg"
-                  onClick={() => {
-                    onSelect(run.runUid);
-                    onToggle();
-                  }}
-                >
-                  <div className="font-medium">{run.network}</div>
-                  <div className="text-xs text-muted-foreground">
-                    {run.folderName}
-                  </div>
-                </button>
-              ))
-            )}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
 export default function DiffPage() {
   const { isDemoMode, demoData } = useDemo();
   const router = useRouter();
 
-  // State for runs and selection
   const [runs, setRuns] = useState<RunManifestInfo[]>([]);
   const [baselineRunUid, setBaselineRunUid] = useState<string | null>(null);
   const [currentRunUid, setCurrentRunUid] = useState<string | null>(null);
   const [diffData, setDiffData] = useState<DiffDataWithScore | null>(null);
 
-  // UI state
   const [isLoadingRuns, setIsLoadingRuns] = useState(true);
   const [isComparing, setIsComparing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showBaselineSelector, setShowBaselineSelector] = useState(false);
   const [showCurrentSelector, setShowCurrentSelector] = useState(false);
 
-  // Save comparison state
   const [isSaveDialogOpen, setIsSaveDialogOpen] = useState(false);
   const [saveTitle, setSaveTitle] = useState("");
   const [saveNotes, setSaveNotes] = useState("");
   const [isSaving, setIsSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
-  // History state
   const [isHistoryDialogOpen, setIsHistoryDialogOpen] = useState(false);
   const [history, setHistory] = useState<SavedComparison[]>([]);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
 
-  // Backward compatibility: old links used /diff?comparison=<id>
   useEffect(() => {
     const comparisonId = new URLSearchParams(window.location.search).get("comparison");
     if (comparisonId) {
@@ -221,7 +141,6 @@ export default function DiffPage() {
     }
   }, [router]);
 
-  // Load runs on mount
   useEffect(() => {
     async function loadRuns() {
       setIsLoadingRuns(true);
@@ -243,7 +162,6 @@ export default function DiffPage() {
     loadRuns();
   }, []);
 
-  // Auto-select latest two runs to reduce user effort
   useEffect(() => {
     if (isDemoMode || runs.length < 2) return;
 
@@ -447,141 +365,33 @@ export default function DiffPage() {
                         </Badge>
                       </div>
 
-                      <Dialog open={isSaveDialogOpen} onOpenChange={setIsSaveDialogOpen}>
-                        <DialogTrigger asChild>
-                          <Button variant="outline" size="sm">
-                            <Save className="h-4 w-4 mr-1" />
-                            Save
-                          </Button>
-                        </DialogTrigger>
-                        <DialogContent>
-                          <DialogHeader>
-                            <DialogTitle>Save Comparison</DialogTitle>
-                            <DialogDescription>
-                              Save this comparison with a shareable URL for later reference.
-                            </DialogDescription>
-                          </DialogHeader>
-                          <div className="space-y-4 py-4">
-                            {saveError && (
-                              <div className="p-2 text-sm text-red-600 bg-red-50 rounded">
-                                {saveError}
-                              </div>
-                            )}
-                            <div>
-                              <label className="text-sm font-medium">Title (optional)</label>
-                              <input
-                                type="text"
-                                className="w-full mt-1 px-3 py-2 border rounded-md"
-                                placeholder={`${diffData.network} comparison`}
-                                value={saveTitle}
-                                onChange={(e) => setSaveTitle(e.target.value)}
-                              />
-                            </div>
-                            <div>
-                              <label className="text-sm font-medium">Notes (optional)</label>
-                              <textarea
-                                className="w-full mt-1 px-3 py-2 border rounded-md"
-                                rows={3}
-                                placeholder="Add notes about this comparison..."
-                                value={saveNotes}
-                                onChange={(e) => setSaveNotes(e.target.value)}
-                              />
-                            </div>
-                            <div className="flex justify-end gap-2">
-                              <Button
-                                variant="outline"
-                                onClick={() => setIsSaveDialogOpen(false)}
-                                disabled={isSaving}
-                              >
-                                Cancel
-                              </Button>
-                              <Button onClick={handleSaveComparison} disabled={isSaving}>
-                                {isSaving ? (
-                                  <>
-                                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                                    Saving...
-                                  </>
-                                ) : (
-                                  "Save Comparison"
-                                )}
-                              </Button>
-                            </div>
-                          </div>
-                        </DialogContent>
-                      </Dialog>
+                      <SaveComparisonDialog
+                        open={isSaveDialogOpen}
+                        onOpenChange={setIsSaveDialogOpen}
+                        isSaving={isSaving}
+                        error={saveError}
+                        network={diffData.network}
+                        title={saveTitle}
+                        notes={saveNotes}
+                        onTitleChange={setSaveTitle}
+                        onNotesChange={setSaveNotes}
+                        onSave={handleSaveComparison}
+                      />
                     </>
                   )}
 
-                  <Dialog
+                  <ComparisonHistoryDialog
                     open={isHistoryDialogOpen}
                     onOpenChange={(open) => {
                       setIsHistoryDialogOpen(open);
-                      if (open) loadHistory();
+                      if (open) {
+                        loadHistory();
+                      }
                     }}
-                  >
-                    <DialogTrigger asChild>
-                      <Button variant="outline" size="sm">
-                        <History className="h-4 w-4 mr-1" />
-                        History
-                      </Button>
-                    </DialogTrigger>
-                    <DialogContent className="max-w-2xl">
-                      <DialogHeader>
-                        <DialogTitle>Saved Comparisons</DialogTitle>
-                        <DialogDescription>
-                          View and load previously saved comparisons.
-                        </DialogDescription>
-                      </DialogHeader>
-                      <div className="py-4 max-h-96 overflow-y-auto">
-                        {isLoadingHistory ? (
-                          <div className="flex items-center justify-center py-8">
-                            <Loader2 className="h-6 w-6 animate-spin" />
-                          </div>
-                        ) : history.length === 0 ? (
-                          <p className="text-sm text-muted-foreground text-center py-8">
-                            No saved comparisons yet. Save a comparison to see it here.
-                          </p>
-                        ) : (
-                          <div className="space-y-2">
-                            {history.map((comp) => (
-                              <div
-                                key={comp.comparisonId}
-                                className="flex items-center justify-between p-3 bg-muted/50 rounded-lg hover:bg-muted transition-colors"
-                              >
-                                <a
-                                  href={`/diff/${comp.comparisonId}`}
-                                  className="flex-1"
-                                >
-                                  <div className="font-medium">
-                                    {comp.title || `${comp.network} comparison`}
-                                  </div>
-                                  <div className="text-xs text-muted-foreground flex items-center gap-2">
-                                    <span>{comp.network}</span>
-                                    <span>|</span>
-                                    <span>{new Date(comp.createdAt).toLocaleDateString()}</span>
-                                    <span>|</span>
-                                    <Badge
-                                      variant={comp.riskScore >= 70 ? "secondary" : comp.riskScore >= 50 ? "default" : "destructive"}
-                                      className="text-xs"
-                                    >
-                                      {comp.riskScore}/100
-                                    </Badge>
-                                  </div>
-                                </a>
-                                <Button
-                                  variant="ghost"
-                                  size="sm"
-                                  onClick={() => handleDeleteComparison(comp.comparisonId)}
-                                >
-                                  <Trash2 className="h-4 w-4 text-red-500" />
-                                </Button>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    </DialogContent>
-                  </Dialog>
+                    comparisons={history}
+                    isLoading={isLoadingHistory}
+                    onDeleteComparison={handleDeleteComparison}
+                  />
                 </div>
               </div>
             )}
@@ -619,84 +429,9 @@ export default function DiffPage() {
 
       {displayData && !isComparing ? (
         <DiffDisplay data={displayData} />
-      ) : !isComparing && !error && !isDemoMode && !displayData && (
-        <>
-          <div className="grid gap-4 md:grid-cols-5">
-            <Card>
-              <CardHeader className="pb-2">
-                <CardDescription>New Hosts</CardDescription>
-                <CardTitle className="text-2xl">-</CardTitle>
-              </CardHeader>
-            </Card>
-            <Card>
-              <CardHeader className="pb-2">
-                <CardDescription>Removed Hosts</CardDescription>
-                <CardTitle className="text-2xl">-</CardTitle>
-              </CardHeader>
-            </Card>
-            <Card>
-              <CardHeader className="pb-2">
-                <CardDescription>Ports Opened</CardDescription>
-                <CardTitle className="text-2xl">-</CardTitle>
-              </CardHeader>
-            </Card>
-            <Card>
-              <CardHeader className="pb-2">
-                <CardDescription>Ports Closed</CardDescription>
-                <CardTitle className="text-2xl">-</CardTitle>
-              </CardHeader>
-            </Card>
-            <Card>
-              <CardHeader className="pb-2">
-                <CardDescription>Risky Exposures</CardDescription>
-                <CardTitle className="flex items-center gap-2 text-2xl">
-                  -
-                  <Badge variant="destructive" className="text-xs">P0</Badge>
-                </CardTitle>
-              </CardHeader>
-            </Card>
-          </div>
-
-          <Card>
-            <CardContent className="pt-6">
-              <Tabs defaultValue="summary">
-                <TabsList className="grid w-full grid-cols-5">
-                  <TabsTrigger value="summary">Summary</TabsTrigger>
-                  <TabsTrigger value="hosts">Hosts</TabsTrigger>
-                  <TabsTrigger value="ports">Ports</TabsTrigger>
-                  <TabsTrigger value="risk">Risk Flags</TabsTrigger>
-                  <TabsTrigger value="export">Export</TabsTrigger>
-                </TabsList>
-                <TabsContent value="summary" className="mt-4">
-                  <p className="text-sm text-muted-foreground">
-                    Select two runs above and click Compare to see results.
-                  </p>
-                </TabsContent>
-                <TabsContent value="hosts" className="mt-4">
-                  <p className="text-sm text-muted-foreground">
-                    New and removed hosts will appear here.
-                  </p>
-                </TabsContent>
-                <TabsContent value="ports" className="mt-4">
-                  <p className="text-sm text-muted-foreground">
-                    Opened and closed ports will appear here.
-                  </p>
-                </TabsContent>
-                <TabsContent value="risk" className="mt-4">
-                  <p className="text-sm text-muted-foreground">
-                    P0, P1, and P2 risk flags will appear here.
-                  </p>
-                </TabsContent>
-                <TabsContent value="export" className="mt-4">
-                  <p className="text-sm text-muted-foreground">
-                    Download CHANGES.md and WATCHLIST.md exports.
-                  </p>
-                </TabsContent>
-              </Tabs>
-            </CardContent>
-          </Card>
-        </>
-      )}
+      ) : !isComparing && !error && !isDemoMode && !displayData ? (
+        <DiffEmptyState />
+      ) : null}
     </div>
   );
 }
