@@ -25,6 +25,75 @@ export interface LLMResponse {
   tokensUsed?: number;
 }
 
+export const DEFAULT_LLM_REQUEST_TIMEOUT_MS = 15_000;
+export const DEFAULT_LLM_MAX_TOKENS = 2_000;
+export const LLM_MAX_TOKENS_UPPER_CAP = 8_000;
+
+function parsePositiveIntegerEnv(
+  value: string | undefined,
+  defaultValue: number,
+  maxValue?: number
+): number {
+  if (!value) {
+    return defaultValue;
+  }
+
+  const normalized = value.trim();
+
+  if (!/^\d+$/.test(normalized)) {
+    return defaultValue;
+  }
+
+  const parsed = Number(normalized);
+
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    return defaultValue;
+  }
+
+  return maxValue ? Math.min(parsed, maxValue) : parsed;
+}
+
+export function getLLMRequestTimeoutMs(): number {
+  return parsePositiveIntegerEnv(
+    process.env.LLM_REQUEST_TIMEOUT_MS,
+    DEFAULT_LLM_REQUEST_TIMEOUT_MS
+  );
+}
+
+export function getLLMMaxTokens(): number {
+  return parsePositiveIntegerEnv(
+    process.env.LLM_MAX_TOKENS,
+    DEFAULT_LLM_MAX_TOKENS,
+    LLM_MAX_TOKENS_UPPER_CAP
+  );
+}
+
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number
+): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    return await fetch(url, {
+      ...init,
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === "AbortError";
+}
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : "Unknown provider error";
+}
+
 /**
  * Get the configured LLM provider
  * Priority: ANTHROPIC_API_KEY > OPENAI_API_KEY > none
@@ -71,21 +140,28 @@ async function callAnthropic(
   systemPrompt: string,
   userPrompt: string
 ): Promise<LLMResponse> {
+  const maxTokens = getLLMMaxTokens();
+  const timeoutMs = getLLMRequestTimeoutMs();
+
   try {
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": config.apiKey!,
-        "anthropic-version": "2023-06-01",
+    const response = await fetchWithTimeout(
+      "https://api.anthropic.com/v1/messages",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": config.apiKey!,
+          "anthropic-version": "2023-06-01",
+        },
+        body: JSON.stringify({
+          model: config.model,
+          max_tokens: maxTokens,
+          system: systemPrompt,
+          messages: [{ role: "user", content: userPrompt }],
+        }),
       },
-      body: JSON.stringify({
-        model: config.model,
-        max_tokens: 2000,
-        system: systemPrompt,
-        messages: [{ role: "user", content: userPrompt }],
-      }),
-    });
+      timeoutMs
+    );
 
     if (!response.ok) {
       const error = await response.text();
@@ -111,10 +187,17 @@ async function callAnthropic(
       tokensUsed: data.usage?.input_tokens + data.usage?.output_tokens,
     };
   } catch (error) {
-    console.error("Anthropic API call failed:", error);
+    const timedOut = isAbortError(error);
+    console.error("Anthropic API call failed:", {
+      message: getErrorMessage(error),
+      timedOut,
+    });
+
     return {
       success: false,
-      error: "Anthropic API call failed",
+      error: timedOut
+        ? "Anthropic API request timed out"
+        : "Anthropic API call failed",
       provider: "anthropic",
     };
   }
@@ -128,22 +211,29 @@ async function callOpenAI(
   systemPrompt: string,
   userPrompt: string
 ): Promise<LLMResponse> {
+  const maxTokens = getLLMMaxTokens();
+  const timeoutMs = getLLMRequestTimeoutMs();
+
   try {
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${config.apiKey}`,
+    const response = await fetchWithTimeout(
+      "https://api.openai.com/v1/chat/completions",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.apiKey}`,
+        },
+        body: JSON.stringify({
+          model: config.model,
+          max_tokens: maxTokens,
+          messages: [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: userPrompt },
+          ],
+        }),
       },
-      body: JSON.stringify({
-        model: config.model,
-        max_tokens: 2000,
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: userPrompt },
-        ],
-      }),
-    });
+      timeoutMs
+    );
 
     if (!response.ok) {
       const error = await response.text();
@@ -169,10 +259,15 @@ async function callOpenAI(
       tokensUsed: data.usage?.total_tokens,
     };
   } catch (error) {
-    console.error("OpenAI API call failed:", error);
+    const timedOut = isAbortError(error);
+    console.error("OpenAI API call failed:", {
+      message: getErrorMessage(error),
+      timedOut,
+    });
+
     return {
       success: false,
-      error: "OpenAI API call failed",
+      error: timedOut ? "OpenAI API request timed out" : "OpenAI API call failed",
       provider: "openai",
     };
   }

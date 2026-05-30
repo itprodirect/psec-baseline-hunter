@@ -33,7 +33,14 @@ const {
   resetLLMRateLimitForTesting,
   SHARED_LLM_RATE_LIMIT_IDENTITY,
 } = require("../src/lib/services/llm-rate-limit.ts");
-const { callLLM } = require("../src/lib/llm/provider.ts");
+const {
+  callLLM,
+  DEFAULT_LLM_MAX_TOKENS,
+  DEFAULT_LLM_REQUEST_TIMEOUT_MS,
+  LLM_MAX_TOKENS_UPPER_CAP,
+  getLLMMaxTokens,
+  getLLMRequestTimeoutMs,
+} = require("../src/lib/llm/provider.ts");
 
 let total = 0;
 let failed = 0;
@@ -193,26 +200,55 @@ async function assertJsonError(response, status, errorPattern, context) {
   assert.match(body.error, errorPattern, message("expected matching error"));
 }
 
-async function withoutLLMKeys(fn) {
-  const originalAnthropicKey = process.env.ANTHROPIC_API_KEY;
-  const originalOpenAIKey = process.env.OPENAI_API_KEY;
+async function withEnv(overrides, fn) {
+  const originals = new Map();
 
-  delete process.env.ANTHROPIC_API_KEY;
-  delete process.env.OPENAI_API_KEY;
+  for (const key of Object.keys(overrides)) {
+    originals.set(key, process.env[key]);
+    const value = overrides[key];
+
+    if (value === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = value;
+    }
+  }
 
   try {
     return await fn();
   } finally {
-    if (originalAnthropicKey === undefined) {
-      delete process.env.ANTHROPIC_API_KEY;
-    } else {
-      process.env.ANTHROPIC_API_KEY = originalAnthropicKey;
+    for (const [key, value] of originals.entries()) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
     }
+  }
+}
 
-    if (originalOpenAIKey === undefined) {
-      delete process.env.OPENAI_API_KEY;
+async function withoutLLMKeys(fn) {
+  return withEnv(
+    {
+      ANTHROPIC_API_KEY: undefined,
+      OPENAI_API_KEY: undefined,
+    },
+    fn
+  );
+}
+
+async function withMockedFetch(fetchImpl, fn) {
+  const hadFetch = Object.prototype.hasOwnProperty.call(global, "fetch");
+  const originalFetch = global.fetch;
+  global.fetch = fetchImpl;
+
+  try {
+    return await fn();
+  } finally {
+    if (hadFetch) {
+      global.fetch = originalFetch;
     } else {
-      process.env.OPENAI_API_KEY = originalOpenAIKey;
+      delete global.fetch;
     }
   }
 }
@@ -226,6 +262,59 @@ async function withMutedConsoleLog(fn) {
   } finally {
     console.log = originalConsoleLog;
   }
+}
+
+async function withMutedConsoleMethods(methods, fn) {
+  const originals = new Map();
+
+  for (const method of methods) {
+    originals.set(method, console[method]);
+    console[method] = () => {};
+  }
+
+  try {
+    return await fn();
+  } finally {
+    for (const [method, original] of originals.entries()) {
+      console[method] = original;
+    }
+  }
+}
+
+function createAbortError() {
+  const error = new Error("The operation was aborted.");
+  error.name = "AbortError";
+  return error;
+}
+
+function createAbortableFetch(onRequest) {
+  return async (_url, options = {}) => {
+    if (onRequest) {
+      onRequest(options);
+    }
+
+    assert.ok(options.signal instanceof AbortSignal);
+
+    return await new Promise((_, reject) => {
+      if (options.signal.aborted) {
+        reject(createAbortError());
+        return;
+      }
+
+      const watchdog = setTimeout(() => {
+        reject(new Error("Mock fetch was not aborted"));
+      }, 250);
+
+      options.signal.addEventListener(
+        "abort",
+        () => {
+          clearTimeout(watchdog);
+          reject(createAbortError());
+        },
+        { once: true }
+      );
+    });
+  };
 }
 
 function withTempDir(fn) {
@@ -1138,8 +1227,209 @@ run("LLM POST routes allow normal requests without API keys", async () => {
 
         assert.equal(response.status, 200, routeCase.name);
         assert.equal(body.success, true, routeCase.name);
+        assert.equal(body.provider, "rule-based", routeCase.name);
+        assert.equal(body.isRuleBased, true, routeCase.name);
       }
     });
+  });
+  resetLLMRateLimitForTesting();
+});
+
+run("LLM provider config uses safe defaults for invalid env values", async () => {
+  await withEnv(
+    {
+      LLM_REQUEST_TIMEOUT_MS: "0",
+      LLM_MAX_TOKENS: "not-a-number",
+    },
+    async () => {
+      assert.equal(getLLMRequestTimeoutMs(), DEFAULT_LLM_REQUEST_TIMEOUT_MS);
+      assert.equal(getLLMMaxTokens(), DEFAULT_LLM_MAX_TOKENS);
+    }
+  );
+
+  await withEnv(
+    {
+      LLM_MAX_TOKENS: String(LLM_MAX_TOKENS_UPPER_CAP + 1),
+    },
+    async () => {
+      assert.equal(getLLMMaxTokens(), LLM_MAX_TOKENS_UPPER_CAP);
+    }
+  );
+});
+
+run("LLM provider passes configured max tokens to Anthropic", async () => {
+  let requestBody = null;
+
+  await withEnv(
+    {
+      ANTHROPIC_API_KEY: "test-anthropic-key",
+      OPENAI_API_KEY: undefined,
+      LLM_MAX_TOKENS: "1234",
+    },
+    async () => {
+      await withMockedFetch(async (_url, options = {}) => {
+        assert.ok(options.signal instanceof AbortSignal);
+        requestBody = JSON.parse(options.body);
+
+        return new Response(
+          JSON.stringify({
+            content: [{ text: "anthropic ok" }],
+            usage: { input_tokens: 1, output_tokens: 2 },
+          }),
+          { status: 200 }
+        );
+      }, async () => {
+        const response = await callLLM("system", "user");
+
+        assert.equal(response.success, true);
+      });
+    }
+  );
+
+  assert.equal(requestBody.max_tokens, 1234);
+});
+
+run("LLM provider passes configured max tokens to OpenAI", async () => {
+  let requestBody = null;
+
+  await withEnv(
+    {
+      ANTHROPIC_API_KEY: undefined,
+      OPENAI_API_KEY: "test-openai-key",
+      LLM_MAX_TOKENS: "3456",
+    },
+    async () => {
+      await withMockedFetch(async (_url, options = {}) => {
+        assert.ok(options.signal instanceof AbortSignal);
+        requestBody = JSON.parse(options.body);
+
+        return new Response(
+          JSON.stringify({
+            choices: [{ message: { content: "openai ok" } }],
+            usage: { total_tokens: 3 },
+          }),
+          { status: 200 }
+        );
+      }, async () => {
+        const response = await callLLM("system", "user");
+
+        assert.equal(response.success, true);
+      });
+    }
+  );
+
+  assert.equal(requestBody.max_tokens, 3456);
+});
+
+run("LLM provider aborts slow OpenAI requests and returns success=false", async () => {
+  let receivedSignal = false;
+  let aborted = false;
+
+  await withMutedConsoleMethods(["error"], async () => {
+    await withEnv(
+      {
+        ANTHROPIC_API_KEY: undefined,
+        OPENAI_API_KEY: "test-openai-key",
+        LLM_REQUEST_TIMEOUT_MS: "5",
+      },
+      async () => {
+        await withMockedFetch(
+          createAbortableFetch((options) => {
+            receivedSignal = options.signal instanceof AbortSignal;
+            options.signal.addEventListener(
+              "abort",
+              () => {
+                aborted = true;
+              },
+              { once: true }
+            );
+          }),
+          async () => {
+            const startedAt = Date.now();
+            const response = await callLLM("system", "user");
+            const elapsedMs = Date.now() - startedAt;
+
+            assert.equal(receivedSignal, true);
+            assert.equal(aborted, true);
+            assert.equal(response.success, false);
+            assert.equal(response.provider, "openai");
+            assert.match(response.error, /timed out/);
+            assert.ok(elapsedMs < 250, `expected timeout path under 250ms, got ${elapsedMs}ms`);
+          }
+        );
+      }
+    );
+  });
+});
+
+run("LLM POST route falls back when provider request times out", async () => {
+  await withMutedConsoleMethods(["error", "warn"], async () => {
+    await withEnv(
+      {
+        ANTHROPIC_API_KEY: undefined,
+        OPENAI_API_KEY: "test-openai-key",
+        LLM_REQUEST_TIMEOUT_MS: "5",
+      },
+      async () => {
+        await withMockedFetch(createAbortableFetch(), async () => {
+          resetLLMRateLimitForTesting();
+          const llmRouteCases = await getLLMRouteCases();
+          const routeCase = llmRouteCases.find(
+            (candidate) => candidate.name === "scorecard summary"
+          );
+          const response = await routeCase.post(
+            createJsonPostRequest(
+              routeCase.path,
+              routeCase.body(),
+              "198.51.100.80"
+            )
+          );
+          const body = await response.json();
+
+          assert.equal(response.status, 200);
+          assert.equal(body.success, true);
+          assert.equal(body.provider, "rule-based");
+          assert.equal(body.isRuleBased, true);
+        });
+      }
+    );
+  });
+  resetLLMRateLimitForTesting();
+});
+
+run("LLM POST route falls back when provider returns an error", async () => {
+  await withMutedConsoleMethods(["error", "warn"], async () => {
+    await withEnv(
+      {
+        ANTHROPIC_API_KEY: undefined,
+        OPENAI_API_KEY: "test-openai-key",
+      },
+      async () => {
+        await withMockedFetch(
+          async () => new Response("provider unavailable", { status: 502 }),
+          async () => {
+            resetLLMRateLimitForTesting();
+            const llmRouteCases = await getLLMRouteCases();
+            const routeCase = llmRouteCases.find(
+              (candidate) => candidate.name === "scorecard summary"
+            );
+            const response = await routeCase.post(
+              createJsonPostRequest(
+                routeCase.path,
+                routeCase.body(),
+                "198.51.100.81"
+              )
+            );
+            const body = await response.json();
+
+            assert.equal(response.status, 200);
+            assert.equal(body.success, true);
+            assert.equal(body.provider, "rule-based");
+            assert.equal(body.isRuleBased, true);
+          }
+        );
+      }
+    );
   });
   resetLLMRateLimitForTesting();
 });
