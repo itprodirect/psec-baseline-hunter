@@ -7,8 +7,14 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { getRuleById, updateRule, deleteRule } from "@/lib/services/rules-registry";
-import { RulesResponse, RuleAction, RiskLevel } from "@/lib/types";
+import { RulesResponse } from "@/lib/types";
 import { getSafeErrorMessage } from "@/lib/services/api-response-safety";
+import {
+  isRequestValidationError,
+  readJsonObject,
+  validateResourceId,
+  validateRuleUpdateBody,
+} from "@/lib/services/request-validation";
 
 interface RouteParams {
   params: Promise<{ ruleId: string }>;
@@ -51,30 +57,10 @@ export async function PUT(
 ): Promise<NextResponse<RulesResponse>> {
   try {
     const { ruleId } = await params;
-    const body = await request.json();
+    const safeRuleId = validateResourceId(ruleId, "ruleId");
+    const updates = validateRuleUpdateBody(await readJsonObject(request));
 
-    // Validate action if provided
-    if (body.action && !["override", "whitelist"].includes(body.action)) {
-      return NextResponse.json(
-        { success: false, error: "action must be 'override' or 'whitelist'" },
-        { status: 400 }
-      );
-    }
-
-    // Validate customRisk if action is override
-    if (body.action === "override" && !body.customRisk) {
-      return NextResponse.json(
-        { success: false, error: "customRisk is required when action is 'override'" },
-        { status: 400 }
-      );
-    }
-
-    const updates: { action?: RuleAction; customRisk?: RiskLevel; reason?: string } = {};
-    if (body.action) updates.action = body.action;
-    if (body.customRisk) updates.customRisk = body.customRisk;
-    if (body.reason) updates.reason = body.reason;
-
-    const rule = updateRule(ruleId, updates);
+    const rule = updateRule(safeRuleId, updates);
 
     if (!rule) {
       return NextResponse.json(
@@ -88,6 +74,13 @@ export async function PUT(
       rule,
     });
   } catch (error) {
+    if (isRequestValidationError(error)) {
+      return NextResponse.json(
+        { success: false, error: error.message },
+        { status: 400 }
+      );
+    }
+
     console.error("Failed to update rule:", error);
     return NextResponse.json(
       {

@@ -16,6 +16,11 @@ import {
   sanitizeRunManifestForClient,
   toClientDataPath,
 } from "@/lib/services/api-response-safety";
+import {
+  isRequestValidationError,
+  readJsonObject,
+  validateIngestBody,
+} from "@/lib/services/request-validation";
 
 interface IngestRequestBody {
   zipPath: string;
@@ -24,15 +29,8 @@ interface IngestRequestBody {
 
 export async function POST(request: NextRequest): Promise<NextResponse<IngestResponseV2>> {
   try {
-    const body: IngestRequestBody = await request.json();
+    const body: IngestRequestBody = validateIngestBody(await readJsonObject(request));
     const { zipPath, network } = body;
-
-    if (!zipPath) {
-      return NextResponse.json(
-        { success: false, error: "zipPath is required" },
-        { status: 400 }
-      );
-    }
 
     if (!zipPath.toLowerCase().endsWith(".zip")) {
       return NextResponse.json(
@@ -91,6 +89,13 @@ export async function POST(request: NextRequest): Promise<NextResponse<IngestRes
       duplicateRuns: duplicateCount,
     });
   } catch (error) {
+    if (isRequestValidationError(error)) {
+      return NextResponse.json(
+        { success: false, error: error.message },
+        { status: 400 }
+      );
+    }
+
     console.error("Ingest error:", error);
     return NextResponse.json(
       { success: false, error: getSafeErrorMessage(error, "Ingest failed") },

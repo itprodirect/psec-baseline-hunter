@@ -10,8 +10,13 @@ import {
   saveComparison,
 } from "@/lib/services/comparisons-registry";
 import { computeDiff } from "@/lib/services/diff-engine";
-import { ComparisonResponse, SaveComparisonRequest } from "@/lib/types";
+import { ComparisonResponse } from "@/lib/types";
 import { getSafeErrorMessage } from "@/lib/services/api-response-safety";
+import {
+  isRequestValidationError,
+  readJsonObject,
+  validateSaveComparisonBody,
+} from "@/lib/services/request-validation";
 
 export async function GET(
   request: NextRequest
@@ -42,46 +47,7 @@ export async function POST(
   request: NextRequest
 ): Promise<NextResponse<ComparisonResponse>> {
   try {
-    const body: SaveComparisonRequest = await request.json();
-
-    // Validate required fields
-    if (!body.baselineRunUid || typeof body.baselineRunUid !== "string") {
-      return NextResponse.json(
-        { success: false, error: "baselineRunUid is required" },
-        { status: 400 }
-      );
-    }
-
-    if (!body.currentRunUid || typeof body.currentRunUid !== "string") {
-      return NextResponse.json(
-        { success: false, error: "currentRunUid is required" },
-        { status: 400 }
-      );
-    }
-
-    if (body.baselineRunUid === body.currentRunUid) {
-      return NextResponse.json(
-        { success: false, error: "baselineRunUid and currentRunUid must be different" },
-        { status: 400 }
-      );
-    }
-
-    const title = body.title?.trim();
-    const notes = body.notes?.trim();
-
-    if (title && title.length > 120) {
-      return NextResponse.json(
-        { success: false, error: "title must be 120 characters or fewer" },
-        { status: 400 }
-      );
-    }
-
-    if (notes && notes.length > 2000) {
-      return NextResponse.json(
-        { success: false, error: "notes must be 2000 characters or fewer" },
-        { status: 400 }
-      );
-    }
+    const body = validateSaveComparisonBody(await readJsonObject(request));
 
     // Compute the diff
     const diffData = computeDiff(body.baselineRunUid, body.currentRunUid);
@@ -101,8 +67,8 @@ export async function POST(
       {
         baselineRunUid: body.baselineRunUid,
         currentRunUid: body.currentRunUid,
-        title,
-        notes,
+        title: body.title,
+        notes: body.notes,
       },
       diffData
     );
@@ -112,6 +78,13 @@ export async function POST(
       comparison,
     });
   } catch (error) {
+    if (isRequestValidationError(error)) {
+      return NextResponse.json(
+        { success: false, error: error.message },
+        { status: 400 }
+      );
+    }
+
     console.error("Failed to save comparison:", error);
     return NextResponse.json(
       {
