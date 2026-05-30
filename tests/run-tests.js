@@ -278,12 +278,15 @@ function createNmapXml(ports) {
   ].join("");
 }
 
-function writeRunRegistryFixtures() {
+function writeRunRegistryFixtures(options = {}) {
   const dataDir = path.join(process.cwd(), "data");
   const scansDir = path.join(dataDir, "test-scans");
   const runsDir = path.join(dataDir, "runs");
-  const baselineRunUid = "baseline-run";
-  const currentRunUid = "current-run";
+  const baselineRunUid = options.baselineRunUid ?? "baseline-run";
+  const currentRunUid = options.currentRunUid ?? "current-run";
+  const baselineTimestamp = options.baselineTimestamp ?? "2026-02-01T10:00:00.000Z";
+  const currentTimestamp = options.currentTimestamp ?? "2026-02-08T10:00:00.000Z";
+  const network = options.network ?? "home-lab";
   const baselineXmlPath = path.join(scansDir, "baseline.xml");
   const currentXmlPath = path.join(scansDir, "current.xml");
 
@@ -309,16 +312,18 @@ function writeRunRegistryFixtures() {
         runs: {
           [baselineRunUid]: createRunManifest(
             baselineRunUid,
-            "2026-02-01T10:00:00.000Z",
-            baselineXmlPath
+            baselineTimestamp,
+            baselineXmlPath,
+            network
           ),
           [currentRunUid]: createRunManifest(
             currentRunUid,
-            "2026-02-08T10:00:00.000Z",
-            currentXmlPath
+            currentTimestamp,
+            currentXmlPath,
+            network
           ),
         },
-        lastUpdated: "2026-02-08T10:00:00.000Z",
+        lastUpdated: currentTimestamp,
       },
       null,
       2
@@ -328,10 +333,10 @@ function writeRunRegistryFixtures() {
   return { baselineRunUid, currentRunUid };
 }
 
-function createRunManifest(runUid, timestamp, portsXmlPath) {
+function createRunManifest(runUid, timestamp, portsXmlPath, network = "home-lab") {
   return {
     runUid,
-    network: "home-lab",
+    network,
     runFolder: path.dirname(portsXmlPath),
     folderName: runUid,
     timestamp,
@@ -777,6 +782,18 @@ run("diff and comparisons POST reject invalid IDs and strings", async () => {
     );
     await assertJsonError(emptyDiffResponse, 400, /baselineRunUid is required/);
 
+    const sameDiffResponse = await diffRoute.POST(
+      createJsonRequest("/api/diff", "POST", {
+        baselineRunUid: "same-run",
+        currentRunUid: "same-run",
+      })
+    );
+    await assertJsonError(
+      sameDiffResponse,
+      400,
+      /baselineRunUid and currentRunUid must refer to different runs/
+    );
+
     const sameComparisonResponse = await comparisonsRoute.POST(
       createJsonRequest("/api/comparisons", "POST", {
         baselineRunUid: "same-run",
@@ -806,6 +823,35 @@ run("diff and comparisons POST reject invalid IDs and strings", async () => {
       })
     );
     await assertJsonError(invalidNotesResponse, 400, /notes must be a string/);
+  });
+});
+
+run("diff and comparisons POST reject same-network same-minute ambiguity", async () => {
+  const [diffRoute, comparisonsRoute] = await Promise.all([
+    import("../src/app/api/diff/route.ts"),
+    import("../src/app/api/comparisons/route.ts"),
+  ]);
+
+  await withTempCwd(async () => {
+    const timestamp = "2026-02-08T10:00:00.000Z";
+    const { baselineRunUid, currentRunUid } = writeRunRegistryFixtures({
+      baselineRunUid: "same-minute-baseline-run",
+      currentRunUid: "same-minute-current-run",
+      baselineTimestamp: timestamp,
+      currentTimestamp: timestamp,
+    });
+
+    const response = await diffRoute.POST(
+      createJsonRequest("/api/diff", "POST", { baselineRunUid, currentRunUid })
+    );
+
+    await assertJsonError(response, 400, /same network and minute/);
+
+    const comparisonResponse = await comparisonsRoute.POST(
+      createJsonRequest("/api/comparisons", "POST", { baselineRunUid, currentRunUid })
+    );
+
+    await assertJsonError(comparisonResponse, 400, /same network and minute/);
   });
 });
 

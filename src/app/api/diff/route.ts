@@ -1,5 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { computeDiff, computeRiskScore, getRiskScoreLabel } from "@/lib/services/diff-engine";
+import {
+  computeDiff,
+  computeRiskScore,
+  getDiffComparisonGuardrailError,
+  getRiskScoreLabel,
+} from "@/lib/services/diff-engine";
 import { DiffData } from "@/lib/types";
 import { getSafeErrorMessage } from "@/lib/services/api-response-safety";
 import {
@@ -31,6 +36,14 @@ export async function POST(request: NextRequest): Promise<NextResponse<DiffRespo
   try {
     const body: DiffRequest = validateDiffBody(await readJsonObject(request));
     const { baselineRunUid, currentRunUid } = body;
+
+    const guardrailError = getDiffComparisonGuardrailError(baselineRunUid, currentRunUid);
+    if (guardrailError) {
+      return NextResponse.json(
+        { success: false, error: guardrailError },
+        { status: 400 }
+      );
+    }
 
     const diffData = computeDiff(baselineRunUid, currentRunUid);
 
