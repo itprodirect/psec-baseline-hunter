@@ -9,7 +9,9 @@ import { getDataDir, ensureDir } from "./ingest";
 import {
   assertInventoryCSVFileSize,
   assertInventoryCSVRowLimit,
+  hasInventoryCSVValues,
   InventoryCSVLimitOptions,
+  parseInventoryCSVLine,
 } from "./inventory-csv-safety";
 import { resolvePathWithin, sanitizeNetworkName } from "./path-safety";
 
@@ -138,7 +140,7 @@ export function parseInventoryCSV(
 
   // Parse header - normalize column names
   const headerLine = lines[headerIndex];
-  const headers = parseCSVLine(headerLine).map((h) => normalizeHeader(h));
+  const headers = parseInventoryCSVLine(headerLine).map((h) => normalizeHeader(h));
 
   // Find column indices (fault-tolerant mapping)
   const colMap = {
@@ -154,13 +156,10 @@ export function parseInventoryCSV(
 
   // Parse data rows
   for (let i = headerIndex + 1; i < lines.length; i++) {
-    const line = lines[i].trim();
-    if (!line) continue; // Skip blank rows
+    const line = lines[i];
+    if (!hasInventoryCSVValues(line)) continue; // Skip blank rows
 
-    const values = parseCSVLine(line);
-
-    // Skip if all values are empty
-    if (values.every((v) => !v.trim())) continue;
+    const values = parseInventoryCSVLine(line);
 
     // Extract values with defaults
     const device: InventoryDevice = {
@@ -185,36 +184,6 @@ export function parseInventoryCSV(
   }
 
   return devices;
-}
-
-/**
- * Parse a single CSV line, handling quoted fields
- */
-function parseCSVLine(line: string): string[] {
-  const result: string[] = [];
-  let current = "";
-  let inQuotes = false;
-
-  for (let i = 0; i < line.length; i++) {
-    const char = line[i];
-
-    if (char === '"') {
-      if (inQuotes && line[i + 1] === '"') {
-        current += '"';
-        i++; // Skip escaped quote
-      } else {
-        inQuotes = !inQuotes;
-      }
-    } else if (char === "," && !inQuotes) {
-      result.push(current.trim());
-      current = "";
-    } else {
-      current += char;
-    }
-  }
-
-  result.push(current.trim());
-  return result;
 }
 
 /**

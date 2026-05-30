@@ -4,6 +4,7 @@ import * as path from "path";
 import { parseInventoryCSV, InventoryDevice, getInventoryDir } from "@/lib/services/inventory";
 import {
   assertInventoryCSVFileSize,
+  assertInventoryCSVRequestContentLength,
   isInventoryCSVLimitError,
 } from "@/lib/services/inventory-csv-safety";
 import { ensureDir } from "@/lib/services/ingest";
@@ -22,6 +23,8 @@ export interface InventoryUploadResponse {
  */
 export async function POST(request: NextRequest): Promise<NextResponse<InventoryUploadResponse>> {
   try {
+    assertInventoryCSVRequestContentLength(request.headers.get("content-length"));
+
     const formData = await request.formData();
     const file = formData.get("file") as File | null;
     const network = formData.get("network") as string | null;

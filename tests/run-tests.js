@@ -14,6 +14,7 @@ const {
 const { buildTopActions } = require("../src/lib/services/diff-actions.ts");
 const {
   assertInventoryCSVFileSize,
+  assertInventoryCSVRequestContentLength,
   assertInventoryCSVRowLimit,
   InventoryCSVLimitError,
 } = require("../src/lib/services/inventory-csv-safety.ts");
@@ -236,6 +237,27 @@ run("inventory CSV safety rejects oversized uploads before file read", () => {
       error instanceof InventoryCSVLimitError &&
       /CSV file is too large/.test(error.message)
   );
+});
+
+run("inventory CSV safety rejects oversized request Content-Length before multipart parsing", () => {
+  assert.throws(
+    () => assertInventoryCSVRequestContentLength("13", { maxBytes: 10, maxMultipartBytes: 12 }),
+    (error) =>
+      error instanceof InventoryCSVLimitError &&
+      /CSV upload request is too large/.test(error.message)
+  );
+});
+
+run("inventory CSV safety ignores delimiter-only rows when enforcing row limit", () => {
+  const csv = [
+    "device,mac,ip",
+    ",,,",
+    " , , ",
+    "\"\",\"\",",
+    "router,00:11:22:33:44:55,192.168.1.1",
+  ].join("\n");
+
+  assert.doesNotThrow(() => assertInventoryCSVRowLimit(csv, { maxRows: 1 }));
 });
 
 run("inventory CSV safety rejects too many inventory rows", () => {
