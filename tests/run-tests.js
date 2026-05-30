@@ -24,41 +24,36 @@ const {
   sanitizeRunManifestForClient,
   toClientDataPath,
 } = require("../src/lib/services/api-response-safety.ts");
+const {
+  consumeLLMRateLimit,
+  getLLMRateLimitIdentity,
+  LLM_RATE_LIMIT_ERROR_RESPONSE,
+  LLM_RATE_LIMIT_MAX_REQUESTS,
+  LLM_RATE_LIMIT_WINDOW_MS,
+  resetLLMRateLimitForTesting,
+} = require("../src/lib/services/llm-rate-limit.ts");
 const { callLLM } = require("../src/lib/llm/provider.ts");
 
 let total = 0;
 let failed = 0;
-const pending = [];
+let testQueue = Promise.resolve();
 
 function run(name, fn) {
   total += 1;
-  try {
-    const result = fn();
-    if (result && typeof result.then === "function") {
-      pending.push(
-        result
-          .then(() => {
-            console.log(`PASS: ${name}`);
-          })
-          .catch((error) => {
-            failed += 1;
-            console.error(`FAIL: ${name}`);
-            console.error(error instanceof Error ? error.stack : error);
-          })
-      );
-      return;
+  testQueue = testQueue.then(async () => {
+    try {
+      await fn();
+      console.log(`PASS: ${name}`);
+    } catch (error) {
+      failed += 1;
+      console.error(`FAIL: ${name}`);
+      console.error(error instanceof Error ? error.stack : error);
     }
-
-    console.log(`PASS: ${name}`);
-  } catch (error) {
-    failed += 1;
-    console.error(`FAIL: ${name}`);
-    console.error(error instanceof Error ? error.stack : error);
-  }
+  });
 }
 
 async function finish() {
-  await Promise.all(pending);
+  await testQueue;
 
   if (failed > 0) {
     console.error(`\n${failed}/${total} tests failed`);
@@ -82,6 +77,124 @@ function createDiffData(riskyExposures) {
     riskyExposures,
     summary: "summary",
   };
+}
+
+function createScorecardData() {
+  return {
+    runUid: "run-1",
+    network: "home-lab",
+    timestamp: "2026-02-08T10:00:00.000Z",
+    totalHosts: 1,
+    openPorts: 1,
+    uniqueServices: 1,
+    riskPorts: 0,
+    topPorts: [],
+    riskPortsDetail: [],
+    summary: "No critical exposures detected.",
+  };
+}
+
+const testUserProfile = {
+  technicalLevel: "non-technical",
+  profession: "small-business-owner",
+  contextFactors: [],
+  tone: "direct",
+  includeNetworkDetails: false,
+};
+
+async function getLLMRouteCases() {
+  const [
+    scorecardSummaryRoute,
+    diffSummaryRoute,
+    portImpactRoute,
+    executiveSummaryRoute,
+  ] = await Promise.all([
+    import("../src/app/api/llm/scorecard-summary/route.ts"),
+    import("../src/app/api/llm/diff-summary/route.ts"),
+    import("../src/app/api/llm/port-impact/route.ts"),
+    import("../src/app/api/llm/executive-summary/route.ts"),
+  ]);
+
+  return [
+    {
+      name: "scorecard summary",
+      path: "/api/llm/scorecard-summary",
+      post: scorecardSummaryRoute.POST,
+      body: () => ({ scorecardData: createScorecardData() }),
+    },
+    {
+      name: "diff summary",
+      path: "/api/llm/diff-summary",
+      post: diffSummaryRoute.POST,
+      body: () => ({ diffData: createDiffData([]) }),
+    },
+    {
+      name: "port impact",
+      path: "/api/llm/port-impact",
+      post: portImpactRoute.POST,
+      body: () => ({
+        port: 3389,
+        protocol: "tcp",
+        service: "ms-wbt-server",
+        userProfile: testUserProfile,
+      }),
+    },
+    {
+      name: "executive summary",
+      path: "/api/llm/executive-summary",
+      post: executiveSummaryRoute.POST,
+      body: () => ({
+        scorecardData: createScorecardData(),
+        userProfile: testUserProfile,
+      }),
+    },
+  ];
+}
+
+function createJsonPostRequest(pathname, body, identity) {
+  return new Request(`http://localhost${pathname}`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-forwarded-for": identity,
+    },
+    body: JSON.stringify(body),
+  });
+}
+
+async function withoutLLMKeys(fn) {
+  const originalAnthropicKey = process.env.ANTHROPIC_API_KEY;
+  const originalOpenAIKey = process.env.OPENAI_API_KEY;
+
+  delete process.env.ANTHROPIC_API_KEY;
+  delete process.env.OPENAI_API_KEY;
+
+  try {
+    return await fn();
+  } finally {
+    if (originalAnthropicKey === undefined) {
+      delete process.env.ANTHROPIC_API_KEY;
+    } else {
+      process.env.ANTHROPIC_API_KEY = originalAnthropicKey;
+    }
+
+    if (originalOpenAIKey === undefined) {
+      delete process.env.OPENAI_API_KEY;
+    } else {
+      process.env.OPENAI_API_KEY = originalOpenAIKey;
+    }
+  }
+}
+
+async function withMutedConsoleLog(fn) {
+  const originalConsoleLog = console.log;
+  console.log = () => {};
+
+  try {
+    return await fn();
+  } finally {
+    console.log = originalConsoleLog;
+  }
 }
 
 function withTempDir(fn) {
@@ -377,6 +490,108 @@ run("run manifests returned to clients do not include absolute file paths", () =
   assert.equal(path.isAbsolute(safeManifest.keyFiles.ports[0]), false);
   assert.match(safeManifest.runFolder, /^data\/extracted\//);
   assert.match(safeManifest.keyFiles.ports[0], /^data\/extracted\//);
+});
+
+run("LLM rate limit identity prefers forwarded and real IP headers", () => {
+  assert.equal(
+    getLLMRateLimitIdentity(
+      new Headers({
+        "x-forwarded-for": "198.51.100.10, 203.0.113.20",
+        "x-real-ip": "203.0.113.30",
+      })
+    ),
+    "198.51.100.10"
+  );
+  assert.equal(
+    getLLMRateLimitIdentity(new Headers({ "x-real-ip": "203.0.113.30" })),
+    "203.0.113.30"
+  );
+  assert.equal(getLLMRateLimitIdentity(new Headers()), "unknown");
+});
+
+run("LLM rate limit blocks after threshold until the window resets", () => {
+  resetLLMRateLimitForTesting();
+  let nowMs = 1_000;
+  const request = {
+    headers: new Headers({ "x-real-ip": "198.51.100.55" }),
+  };
+  const options = {
+    maxRequests: 2,
+    windowMs: LLM_RATE_LIMIT_WINDOW_MS,
+    now: () => nowMs,
+  };
+
+  try {
+    assert.equal(consumeLLMRateLimit(request, options).allowed, true);
+    assert.equal(consumeLLMRateLimit(request, options).allowed, true);
+    assert.equal(consumeLLMRateLimit(request, options).allowed, false);
+
+    nowMs += LLM_RATE_LIMIT_WINDOW_MS;
+    assert.equal(consumeLLMRateLimit(request, options).allowed, true);
+  } finally {
+    resetLLMRateLimitForTesting();
+  }
+});
+
+run("LLM POST routes allow normal requests without API keys", async () => {
+  await withoutLLMKeys(async () => {
+    await withMutedConsoleLog(async () => {
+      const llmRouteCases = await getLLMRouteCases();
+      for (
+        let routeIndex = 0;
+        routeIndex < llmRouteCases.length;
+        routeIndex += 1
+      ) {
+        const routeCase = llmRouteCases[routeIndex];
+        resetLLMRateLimitForTesting();
+        const response = await routeCase.post(
+          createJsonPostRequest(
+            routeCase.path,
+            routeCase.body(),
+            `198.51.100.${routeIndex + 1}`
+          )
+        );
+        const body = await response.json();
+
+        assert.equal(response.status, 200, routeCase.name);
+        assert.equal(body.success, true, routeCase.name);
+      }
+    });
+  });
+  resetLLMRateLimitForTesting();
+});
+
+run("LLM POST routes return 429 after the default threshold", async () => {
+  await withoutLLMKeys(async () => {
+    await withMutedConsoleLog(async () => {
+      const llmRouteCases = await getLLMRouteCases();
+      for (const routeCase of llmRouteCases) {
+        resetLLMRateLimitForTesting();
+
+        for (let i = 0; i < LLM_RATE_LIMIT_MAX_REQUESTS; i += 1) {
+          const response = await routeCase.post(
+            createJsonPostRequest(
+              routeCase.path,
+              routeCase.body(),
+              "203.0.113.200"
+            )
+          );
+
+          assert.notEqual(response.status, 429, routeCase.name);
+          await response.json();
+        }
+
+        const limitedResponse = await routeCase.post(
+          createJsonPostRequest(routeCase.path, routeCase.body(), "203.0.113.200")
+        );
+        const limitedBody = await limitedResponse.json();
+
+        assert.equal(limitedResponse.status, 429, routeCase.name);
+        assert.deepEqual(limitedBody, LLM_RATE_LIMIT_ERROR_RESPONSE, routeCase.name);
+      }
+    });
+  });
+  resetLLMRateLimitForTesting();
 });
 
 run("LLM provider hides upstream bodies in returned errors while logging detail", async () => {

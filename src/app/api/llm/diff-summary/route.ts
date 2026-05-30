@@ -12,6 +12,10 @@ import {
   getSafeErrorMessage,
   LLM_FALLBACK_ERROR_MESSAGE,
 } from "@/lib/services/api-response-safety";
+import {
+  consumeLLMRateLimit,
+  LLM_RATE_LIMIT_ERROR_RESPONSE,
+} from "@/lib/services/llm-rate-limit";
 
 /**
  * POST /api/llm/diff-summary
@@ -20,6 +24,11 @@ import {
 export async function POST(
   request: NextRequest
 ): Promise<NextResponse<DiffSummaryResponse>> {
+  const rateLimit = consumeLLMRateLimit(request);
+  if (!rateLimit.allowed) {
+    return NextResponse.json(LLM_RATE_LIMIT_ERROR_RESPONSE, { status: 429 });
+  }
+
   try {
     const body: DiffSummaryRequest = await request.json();
 
