@@ -6,9 +6,9 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as crypto from "crypto";
-import AdmZip from "adm-zip";
 import { RunMeta } from "@/lib/types";
 import { KEY_FILE_PATTERNS, RUN_FOLDER_REGEX } from "@/lib/constants/file-patterns";
+import { extractZipSafely } from "./archive-safety";
 
 /**
  * Get the data directory path
@@ -271,10 +271,8 @@ export async function saveUpload(
 export function extractZip(zipPath: string): string {
   const stem = path.basename(zipPath, ".zip");
   const extractId = crypto.randomUUID().slice(0, 8);
-  const outDir = ensureDir(path.join(getDataDir(), "extracted", `${stem}_${extractId}`));
-
-  const zip = new AdmZip(zipPath);
-  zip.extractAllTo(outDir, true);
+  const outDir = path.join(getDataDir(), "extracted", `${stem}_${extractId}`);
+  extractZipSafely(zipPath, outDir);
 
   return outDir;
 }

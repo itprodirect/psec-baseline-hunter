@@ -1,10 +1,16 @@
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
+const AdmZip = require("adm-zip");
 
 const {
   resolvePathWithin,
   sanitizeNetworkName,
 } = require("../src/lib/services/path-safety.ts");
+const {
+  extractZipSafely,
+} = require("../src/lib/services/archive-safety.ts");
 const { buildTopActions } = require("../src/lib/services/diff-actions.ts");
 
 let total = 0;
@@ -38,6 +44,26 @@ function createDiffData(riskyExposures) {
   };
 }
 
+function withTempDir(fn) {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "psec-archive-test-"));
+  try {
+    fn(tempDir);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+function writeZip(zipPath, entries) {
+  const zip = new AdmZip();
+  for (const entry of entries) {
+    const zipEntry = zip.addFile(entry.name, Buffer.from(entry.content ?? ""));
+    if (entry.unsafeName) {
+      zipEntry.entryName = entry.unsafeName;
+    }
+  }
+  zip.writeZip(zipPath);
+}
+
 run("resolvePathWithin allows paths inside base directory", () => {
   const baseDir = path.resolve("data/uploads");
   const candidate = path.join(baseDir, "scan.zip");
@@ -62,6 +88,106 @@ run("sanitizeNetworkName rejects unsafe names", () => {
   assert.equal(sanitizeNetworkName("../secret"), null);
   assert.equal(sanitizeNetworkName("office/network"), null);
   assert.equal(sanitizeNetworkName("office\\network"), null);
+});
+
+run("extractZipSafely rejects traversal entries before extraction", () => {
+  withTempDir((tempDir) => {
+    const zipPath = path.join(tempDir, "traversal.zip");
+    const extractDir = path.join(tempDir, "extract");
+    const outsidePath = path.join(tempDir, "evil.txt");
+
+    writeZip(zipPath, [
+      { name: "safe.txt", unsafeName: "../evil.txt", content: "bad" },
+    ]);
+
+    assert.throws(
+      () => extractZipSafely(zipPath, extractDir),
+      /Unsafe ZIP entry rejected/
+    );
+    assert.equal(fs.existsSync(outsidePath), false);
+    assert.equal(fs.existsSync(extractDir), false);
+  });
+});
+
+run("extractZipSafely rejects absolute path entries before extraction", () => {
+  withTempDir((tempDir) => {
+    const unsafeNames = ["/evil.txt", "C:/evil.txt"];
+
+    unsafeNames.forEach((unsafeName, index) => {
+      const zipPath = path.join(tempDir, `absolute-${index}.zip`);
+      const extractDir = path.join(tempDir, `extract-${index}`);
+
+      writeZip(zipPath, [
+        { name: "safe.txt", unsafeName, content: "bad" },
+      ]);
+
+      assert.throws(
+        () => extractZipSafely(zipPath, extractDir),
+        /Unsafe ZIP entry rejected/
+      );
+      assert.equal(fs.existsSync(extractDir), false);
+    });
+  });
+});
+
+run("extractZipSafely rejects archives with too many entries before extraction", () => {
+  withTempDir((tempDir) => {
+    const zipPath = path.join(tempDir, "too-many.zip");
+    const extractDir = path.join(tempDir, "extract");
+
+    writeZip(zipPath, [
+      { name: "one.txt" },
+      { name: "two.txt" },
+      { name: "three.txt" },
+    ]);
+
+    assert.throws(
+      () => extractZipSafely(zipPath, extractDir, { maxEntryCount: 2 }),
+      /too many entries/
+    );
+    assert.equal(fs.existsSync(extractDir), false);
+  });
+});
+
+run("extractZipSafely rejects excessive total uncompressed size before extraction", () => {
+  withTempDir((tempDir) => {
+    const zipPath = path.join(tempDir, "too-large.zip");
+    const extractDir = path.join(tempDir, "extract");
+
+    writeZip(zipPath, [
+      { name: "scan.xml", content: "12345" },
+    ]);
+
+    assert.throws(
+      () => extractZipSafely(zipPath, extractDir, { maxTotalUncompressedBytes: 4 }),
+      /uncompressed size exceeds limit/
+    );
+    assert.equal(fs.existsSync(extractDir), false);
+  });
+});
+
+run("extractZipSafely preserves a valid baseline archive layout", () => {
+  withTempDir((tempDir) => {
+    const zipPath = path.join(tempDir, "valid.zip");
+    const extractDir = path.join(tempDir, "extract");
+    const scanPath = path.join(
+      extractDir,
+      "demo-network",
+      "rawscans",
+      "2026-01-01_0101_baseline",
+      "ports_top200_open.xml"
+    );
+
+    writeZip(zipPath, [
+      {
+        name: "demo-network/rawscans/2026-01-01_0101_baseline/ports_top200_open.xml",
+        content: "<nmaprun></nmaprun>",
+      },
+    ]);
+
+    extractZipSafely(zipPath, extractDir);
+    assert.equal(fs.readFileSync(scanPath, "utf8"), "<nmaprun></nmaprun>");
+  });
 });
 
 run("buildTopActions returns empty list when there are no risky exposures", () => {

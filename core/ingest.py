@@ -5,11 +5,13 @@ import uuid
 import zipfile
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Dict, List, Optional, Tuple
 
 
 RUN_FOLDER_RE = re.compile(r"^(?P<date>\d{4}-\d{2}-\d{2})_(?P<hm>\d{4})_(?P<rest>.+)$")
+MAX_ZIP_ENTRY_COUNT = 2000
+MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES = 250 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -47,6 +49,47 @@ def save_upload(uploaded_file, uploads_dir: Optional[Path] = None) -> Path:
     return out_path
 
 
+def _validate_zip_member(member: zipfile.ZipInfo, out_dir: Path) -> None:
+    name = member.filename
+
+    if not name or "\0" in name:
+        raise ValueError("Unsafe ZIP entry rejected: empty or invalid entry name")
+
+    if "\\" in name:
+        raise ValueError(f"Unsafe ZIP entry rejected: {name}")
+
+    posix_path = PurePosixPath(name)
+    if posix_path.is_absolute() or re.match(r"^[A-Za-z]:", name):
+        raise ValueError(f"Unsafe ZIP entry rejected: {name}")
+
+    segments = [segment for segment in name.split("/") if segment]
+    if not segments or any(segment in {".", ".."} for segment in segments):
+        raise ValueError(f"Unsafe ZIP entry rejected: {name}")
+
+    resolved_out_dir = out_dir.resolve()
+    resolved_target = (out_dir.joinpath(*segments)).resolve()
+    try:
+        resolved_target.relative_to(resolved_out_dir)
+    except ValueError as exc:
+        raise ValueError(f"Unsafe ZIP entry rejected: {name}") from exc
+
+
+def _inspect_zip_before_extraction(z: zipfile.ZipFile, out_dir: Path) -> None:
+    members = z.infolist()
+    if len(members) > MAX_ZIP_ENTRY_COUNT:
+        raise ValueError(f"ZIP archive has too many entries: {len(members)} > {MAX_ZIP_ENTRY_COUNT}")
+
+    total_uncompressed_bytes = 0
+    for member in members:
+        _validate_zip_member(member, out_dir)
+        total_uncompressed_bytes += member.file_size
+        if total_uncompressed_bytes > MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES:
+            raise ValueError(
+                "ZIP archive uncompressed size exceeds limit: "
+                f"{total_uncompressed_bytes} > {MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES}"
+            )
+
+
 def extract_zip(zip_path: Path, out_dir: Optional[Path] = None) -> Path:
     """
     Extract zip to: data/extracted/<zip_stem>_<id>/
@@ -54,9 +97,10 @@ def extract_zip(zip_path: Path, out_dir: Optional[Path] = None) -> Path:
     """
     root = project_root()
     out_dir = out_dir or (root / "data" / "extracted" / f"{zip_path.stem}_{uuid.uuid4().hex[:8]}")
-    out_dir = ensure_dir(out_dir)
 
     with zipfile.ZipFile(zip_path, "r") as z:
+        _inspect_zip_before_extraction(z, out_dir)
+        out_dir = ensure_dir(out_dir)
         z.extractall(out_dir)
 
     return out_dir
