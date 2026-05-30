@@ -6,6 +6,7 @@ import {
   InventoryDevice,
 } from "@/lib/services/inventory";
 import { sanitizeNetworkName } from "@/lib/services/path-safety";
+import { getSafeErrorMessage } from "@/lib/services/api-response-safety";
 
 export interface InventoryResponse {
   success: boolean;
@@ -40,8 +41,9 @@ export async function GET(request: NextRequest): Promise<NextResponse<InventoryR
       return NextResponse.json({ success: true, networks });
     }
   } catch (error) {
+    console.error("Inventory load error:", error);
     return NextResponse.json(
-      { success: false, error: error instanceof Error ? error.message : "Failed to load inventory" },
+      { success: false, error: getSafeErrorMessage(error, "Failed to load inventory") },
       { status: 500 }
     );
   }
@@ -81,8 +83,9 @@ export async function POST(request: NextRequest): Promise<NextResponse<Inventory
     const newDevice = addDeviceToInventory(safeNetwork, device);
     return NextResponse.json({ success: true, device: newDevice });
   } catch (error) {
+    console.error("Inventory add error:", error);
     return NextResponse.json(
-      { success: false, error: error instanceof Error ? error.message : "Failed to add device" },
+      { success: false, error: getSafeErrorMessage(error, "Failed to add device") },
       { status: 500 }
     );
   }

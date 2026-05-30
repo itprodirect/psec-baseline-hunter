@@ -7,6 +7,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { saveUpload, ensureDir, getDataDir } from "@/lib/services/ingest";
 import { MAX_UPLOAD_SIZE, ZIP_MAGIC_BYTES } from "@/lib/constants/file-patterns";
 import { UploadResponse } from "@/lib/types";
+import { getSafeErrorMessage, toClientDataPath } from "@/lib/services/api-response-safety";
 import * as path from "path";
 
 export async function POST(request: NextRequest): Promise<NextResponse<UploadResponse>> {
@@ -57,12 +58,12 @@ export async function POST(request: NextRequest): Promise<NextResponse<UploadRes
 
     return NextResponse.json({
       success: true,
-      uploadPath,
+      uploadPath: toClientDataPath(uploadPath),
     });
   } catch (error) {
     console.error("Upload error:", error);
     return NextResponse.json(
-      { success: false, error: error instanceof Error ? error.message : "Upload failed" },
+      { success: false, error: getSafeErrorMessage(error, "Upload failed") },
       { status: 500 }
     );
   }

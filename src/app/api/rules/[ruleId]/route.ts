@@ -8,6 +8,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getRuleById, updateRule, deleteRule } from "@/lib/services/rules-registry";
 import { RulesResponse, RuleAction, RiskLevel } from "@/lib/types";
+import { getSafeErrorMessage } from "@/lib/services/api-response-safety";
 
 interface RouteParams {
   params: Promise<{ ruleId: string }>;
@@ -37,7 +38,7 @@ export async function GET(
     return NextResponse.json(
       {
         success: false,
-        error: error instanceof Error ? error.message : "Failed to get rule",
+        error: getSafeErrorMessage(error, "Failed to get rule"),
       },
       { status: 500 }
     );
@@ -91,7 +92,7 @@ export async function PUT(
     return NextResponse.json(
       {
         success: false,
-        error: error instanceof Error ? error.message : "Failed to update rule",
+        error: getSafeErrorMessage(error, "Failed to update rule"),
       },
       { status: 500 }
     );
@@ -121,7 +122,7 @@ export async function DELETE(
     return NextResponse.json(
       {
         success: false,
-        error: error instanceof Error ? error.message : "Failed to delete rule",
+        error: getSafeErrorMessage(error, "Failed to delete rule"),
       },
       { status: 500 }
     );

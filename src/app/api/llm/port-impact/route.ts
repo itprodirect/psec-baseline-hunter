@@ -11,6 +11,7 @@ import {
   generateRuleBasedImpact
 } from "@/lib/llm/prompt-impact";
 import { PortImpactData, PortImpactResponse } from "@/lib/types";
+import { getSafeErrorMessage } from "@/lib/services/api-response-safety";
 
 export async function POST(req: NextRequest) {
   try {
@@ -101,7 +102,7 @@ export async function POST(req: NextRequest) {
     console.error("Port impact API error:", error);
     return NextResponse.json({
       success: false,
-      error: error instanceof Error ? error.message : "Failed to generate port impact"
+      error: getSafeErrorMessage(error, "Failed to generate port impact")
     } as PortImpactResponse, { status: 500 });
   }
 }

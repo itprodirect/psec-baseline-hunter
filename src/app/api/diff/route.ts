@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { computeDiff, computeRiskScore, getRiskScoreLabel } from "@/lib/services/diff-engine";
 import { DiffData } from "@/lib/types";
+import { getSafeErrorMessage } from "@/lib/services/api-response-safety";
 
 export interface DiffRequest {
   baselineRunUid: string;
@@ -59,7 +60,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<DiffRespo
     return NextResponse.json(
       {
         success: false,
-        error: error instanceof Error ? error.message : "Failed to compute diff",
+        error: getSafeErrorMessage(error, "Failed to compute diff"),
       },
       { status: 500 }
     );

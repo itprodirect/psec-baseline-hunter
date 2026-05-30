@@ -5,8 +5,9 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { listRules, createRule } from "@/lib/services/rules-registry";
+import { listRules, createRule, findRule } from "@/lib/services/rules-registry";
 import { RulesResponse, CreateRuleRequest } from "@/lib/types";
+import { getSafeErrorMessage } from "@/lib/services/api-response-safety";
 
 export async function GET(request: NextRequest): Promise<NextResponse<RulesResponse>> {
   try {
@@ -24,7 +25,7 @@ export async function GET(request: NextRequest): Promise<NextResponse<RulesRespo
     return NextResponse.json(
       {
         success: false,
-        error: error instanceof Error ? error.message : "Failed to list rules",
+        error: getSafeErrorMessage(error, "Failed to list rules"),
       },
       { status: 500 }
     );
@@ -78,6 +79,13 @@ export async function POST(request: NextRequest): Promise<NextResponse<RulesResp
       );
     }
 
+    if (findRule(body.port, body.protocol, body.network)) {
+      return NextResponse.json(
+        { success: false, error: "Rule already exists for this port/protocol/network" },
+        { status: 400 }
+      );
+    }
+
     const rule = createRule(body);
 
     return NextResponse.json({
@@ -89,9 +97,9 @@ export async function POST(request: NextRequest): Promise<NextResponse<RulesResp
     return NextResponse.json(
       {
         success: false,
-        error: error instanceof Error ? error.message : "Failed to create rule",
+        error: getSafeErrorMessage(error, "Failed to create rule"),
       },
-      { status: 400 }
+      { status: 500 }
     );
   }
 }

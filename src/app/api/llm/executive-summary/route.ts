@@ -11,6 +11,7 @@ import {
   generateRuleBasedExecutiveSummary
 } from "@/lib/llm/prompt-executive";
 import { ExecutiveSummaryResponse } from "@/lib/types";
+import { getSafeErrorMessage } from "@/lib/services/api-response-safety";
 
 export async function POST(req: NextRequest) {
   try {
@@ -65,7 +66,7 @@ export async function POST(req: NextRequest) {
     console.error("Executive summary API error:", error);
     return NextResponse.json({
       success: false,
-      error: error instanceof Error ? error.message : "Failed to generate executive summary"
+      error: getSafeErrorMessage(error, "Failed to generate executive summary")
     } as ExecutiveSummaryResponse, { status: 500 });
   }
 }

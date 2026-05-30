@@ -11,6 +11,11 @@ import { shortId } from "@/lib/utils/hash";
 import * as fs from "fs";
 import * as path from "path";
 import { resolvePathWithin } from "@/lib/services/path-safety";
+import {
+  getSafeErrorMessage,
+  sanitizeRunManifestForClient,
+  toClientDataPath,
+} from "@/lib/services/api-response-safety";
 
 interface IngestRequestBody {
   zipPath: string;
@@ -80,15 +85,15 @@ export async function POST(request: NextRequest): Promise<NextResponse<IngestRes
 
     return NextResponse.json({
       success: true,
-      extractedPath,
-      runs: registeredRuns,
+      extractedPath: toClientDataPath(extractedPath),
+      runs: registeredRuns.map(sanitizeRunManifestForClient),
       newRuns: newRunCount,
       duplicateRuns: duplicateCount,
     });
   } catch (error) {
     console.error("Ingest error:", error);
     return NextResponse.json(
-      { success: false, error: error instanceof Error ? error.message : "Ingest failed" },
+      { success: false, error: getSafeErrorMessage(error, "Ingest failed") },
       { status: 500 }
     );
   }

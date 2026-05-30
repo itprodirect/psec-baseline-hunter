@@ -8,6 +8,10 @@ import {
   ScorecardSummaryResponse,
 } from "@/lib/llm/prompt-scorecard";
 import { DEFAULT_USER_PROFILE } from "@/lib/types/userProfile";
+import {
+  getSafeErrorMessage,
+  LLM_FALLBACK_ERROR_MESSAGE,
+} from "@/lib/services/api-response-safety";
 
 /**
  * POST /api/llm/scorecard-summary
@@ -58,7 +62,7 @@ export async function POST(
         summary,
         provider: "rule-based",
         isRuleBased: true,
-        error: `LLM unavailable: ${llmResponse.error}`,
+        error: LLM_FALLBACK_ERROR_MESSAGE,
       });
     }
 
@@ -75,7 +79,7 @@ export async function POST(
     return NextResponse.json(
       {
         success: false,
-        error: error instanceof Error ? error.message : "Failed to generate summary",
+        error: getSafeErrorMessage(error, "Failed to generate summary"),
       },
       { status: 500 }
     );

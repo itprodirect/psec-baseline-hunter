@@ -89,9 +89,13 @@ async function callAnthropic(
 
     if (!response.ok) {
       const error = await response.text();
+      console.error("Anthropic API error:", {
+        status: response.status,
+        body: error,
+      });
       return {
         success: false,
-        error: `Anthropic API error: ${response.status} - ${error}`,
+        error: `Anthropic API error (${response.status})`,
         provider: "anthropic",
       };
     }
@@ -107,9 +111,10 @@ async function callAnthropic(
       tokensUsed: data.usage?.input_tokens + data.usage?.output_tokens,
     };
   } catch (error) {
+    console.error("Anthropic API call failed:", error);
     return {
       success: false,
-      error: error instanceof Error ? error.message : "Anthropic API call failed",
+      error: "Anthropic API call failed",
       provider: "anthropic",
     };
   }
@@ -142,9 +147,13 @@ async function callOpenAI(
 
     if (!response.ok) {
       const error = await response.text();
+      console.error("OpenAI API error:", {
+        status: response.status,
+        body: error,
+      });
       return {
         success: false,
-        error: `OpenAI API error: ${response.status} - ${error}`,
+        error: `OpenAI API error (${response.status})`,
         provider: "openai",
       };
     }
@@ -160,9 +169,10 @@ async function callOpenAI(
       tokensUsed: data.usage?.total_tokens,
     };
   } catch (error) {
+    console.error("OpenAI API call failed:", error);
     return {
       success: false,
-      error: error instanceof Error ? error.message : "OpenAI API call failed",
+      error: "OpenAI API call failed",
       provider: "openai",
     };
   }
@@ -180,7 +190,7 @@ export async function callLLM(
   if (config.provider === "none") {
     return {
       success: false,
-      error: "No LLM provider configured. Set ANTHROPIC_API_KEY or OPENAI_API_KEY.",
+      error: "No LLM provider configured",
       provider: "none",
     };
   }
