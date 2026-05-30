@@ -31,6 +31,7 @@ const {
   LLM_RATE_LIMIT_MAX_REQUESTS,
   LLM_RATE_LIMIT_WINDOW_MS,
   resetLLMRateLimitForTesting,
+  SHARED_LLM_RATE_LIMIT_IDENTITY,
 } = require("../src/lib/services/llm-rate-limit.ts");
 const { callLLM } = require("../src/lib/llm/provider.ts");
 
@@ -492,7 +493,7 @@ run("run manifests returned to clients do not include absolute file paths", () =
   assert.match(safeManifest.keyFiles.ports[0], /^data\/extracted\//);
 });
 
-run("LLM rate limit identity prefers forwarded and real IP headers", () => {
+run("LLM rate limit identity ignores proxy headers by default", () => {
   assert.equal(
     getLLMRateLimitIdentity(
       new Headers({
@@ -500,13 +501,45 @@ run("LLM rate limit identity prefers forwarded and real IP headers", () => {
         "x-real-ip": "203.0.113.30",
       })
     ),
-    "198.51.100.10"
+    SHARED_LLM_RATE_LIMIT_IDENTITY
   );
   assert.equal(
     getLLMRateLimitIdentity(new Headers({ "x-real-ip": "203.0.113.30" })),
+    SHARED_LLM_RATE_LIMIT_IDENTITY
+  );
+  assert.equal(
+    getLLMRateLimitIdentity(new Headers()),
+    SHARED_LLM_RATE_LIMIT_IDENTITY
+  );
+});
+
+run("LLM rate limit identity uses x-real-ip in trusted proxy mode", () => {
+  assert.equal(
+    getLLMRateLimitIdentity(
+      new Headers({
+        "x-forwarded-for": "198.51.100.10, 203.0.113.20",
+        "x-real-ip": "203.0.113.30",
+      }),
+      { trustProxyHeaders: true }
+    ),
     "203.0.113.30"
   );
-  assert.equal(getLLMRateLimitIdentity(new Headers()), "unknown");
+});
+
+run("LLM rate limit identity uses rightmost x-forwarded-for in trusted proxy mode", () => {
+  assert.equal(
+    getLLMRateLimitIdentity(
+      new Headers({
+        "x-forwarded-for": "198.51.100.10, 203.0.113.20",
+      }),
+      { trustProxyHeaders: true }
+    ),
+    "203.0.113.20"
+  );
+  assert.equal(
+    getLLMRateLimitIdentity(new Headers(), { trustProxyHeaders: true }),
+    SHARED_LLM_RATE_LIMIT_IDENTITY
+  );
 });
 
 run("LLM rate limit blocks after threshold until the window resets", () => {
@@ -528,6 +561,40 @@ run("LLM rate limit blocks after threshold until the window resets", () => {
 
     nowMs += LLM_RATE_LIMIT_WINDOW_MS;
     assert.equal(consumeLLMRateLimit(request, options).allowed, true);
+  } finally {
+    resetLLMRateLimitForTesting();
+  }
+});
+
+run("LLM rate limit ignores rotating forwarded headers when trusted proxy mode is off", () => {
+  resetLLMRateLimitForTesting();
+  let nowMs = 1_000;
+  const options = {
+    maxRequests: 2,
+    windowMs: LLM_RATE_LIMIT_WINDOW_MS,
+    now: () => nowMs,
+  };
+
+  try {
+    const firstDecision = consumeLLMRateLimit(
+      { headers: new Headers({ "x-forwarded-for": "198.51.100.1" }) },
+      options
+    );
+    const secondDecision = consumeLLMRateLimit(
+      { headers: new Headers({ "x-forwarded-for": "198.51.100.2" }) },
+      options
+    );
+    const thirdDecision = consumeLLMRateLimit(
+      { headers: new Headers({ "x-forwarded-for": "198.51.100.3" }) },
+      options
+    );
+
+    assert.equal(firstDecision.identity, SHARED_LLM_RATE_LIMIT_IDENTITY);
+    assert.equal(firstDecision.allowed, true);
+    assert.equal(secondDecision.identity, SHARED_LLM_RATE_LIMIT_IDENTITY);
+    assert.equal(secondDecision.allowed, true);
+    assert.equal(thirdDecision.identity, SHARED_LLM_RATE_LIMIT_IDENTITY);
+    assert.equal(thirdDecision.allowed, false);
   } finally {
     resetLLMRateLimitForTesting();
   }
@@ -561,7 +628,7 @@ run("LLM POST routes allow normal requests without API keys", async () => {
   resetLLMRateLimitForTesting();
 });
 
-run("LLM POST routes return 429 after the default threshold", async () => {
+run("LLM POST routes return 429 after the default threshold despite rotating forwarded headers", async () => {
   await withoutLLMKeys(async () => {
     await withMutedConsoleLog(async () => {
       const llmRouteCases = await getLLMRouteCases();
@@ -573,7 +640,7 @@ run("LLM POST routes return 429 after the default threshold", async () => {
             createJsonPostRequest(
               routeCase.path,
               routeCase.body(),
-              "203.0.113.200"
+              `203.0.113.${i + 1}`
             )
           );
 
@@ -582,7 +649,7 @@ run("LLM POST routes return 429 after the default threshold", async () => {
         }
 
         const limitedResponse = await routeCase.post(
-          createJsonPostRequest(routeCase.path, routeCase.body(), "203.0.113.200")
+          createJsonPostRequest(routeCase.path, routeCase.body(), "203.0.113.250")
         );
         const limitedBody = await limitedResponse.json();
 

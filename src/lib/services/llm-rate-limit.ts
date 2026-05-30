@@ -1,5 +1,6 @@
 export const LLM_RATE_LIMIT_MAX_REQUESTS = 20;
 export const LLM_RATE_LIMIT_WINDOW_MS = 60_000;
+export const SHARED_LLM_RATE_LIMIT_IDENTITY = "shared";
 
 export const LLM_RATE_LIMIT_ERROR_RESPONSE = {
   success: false,
@@ -10,6 +11,7 @@ export interface LLMRateLimitOptions {
   maxRequests?: number;
   windowMs?: number;
   now?: () => number;
+  trustProxyHeaders?: boolean;
 }
 
 export interface LLMRateLimitDecision {
@@ -24,15 +26,18 @@ interface RateLimitBucket {
 
 const buckets = new Map<string, RateLimitBucket>();
 
-// This per-process limiter intentionally shares one request budget across all LLM POST routes per request identity.
-// In production, it assumes a trusted proxy provides x-forwarded-for or x-real-ip.
-export function getLLMRateLimitIdentity(headers: Headers): string {
-  const forwardedFor = headers.get("x-forwarded-for");
-  if (forwardedFor) {
-    const firstIp = forwardedFor.split(",")[0]?.trim();
-    if (firstIp) {
-      return firstIp;
-    }
+// This per-process limiter intentionally shares one request budget across all LLM POST routes.
+// Forwarded proxy headers are trusted only when explicitly enabled.
+export function getLLMRateLimitIdentity(
+  headers: Headers,
+  options: Pick<LLMRateLimitOptions, "trustProxyHeaders"> = {}
+): string {
+  const trustProxyHeaders =
+    options.trustProxyHeaders ??
+    process.env.LLM_RATE_LIMIT_TRUST_PROXY === "true";
+
+  if (!trustProxyHeaders) {
+    return SHARED_LLM_RATE_LIMIT_IDENTITY;
   }
 
   const realIp = headers.get("x-real-ip")?.trim();
@@ -40,7 +45,19 @@ export function getLLMRateLimitIdentity(headers: Headers): string {
     return realIp;
   }
 
-  return "unknown";
+  const forwardedFor = headers.get("x-forwarded-for");
+  if (forwardedFor) {
+    const forwardedIps = forwardedFor
+      .split(",")
+      .map((ip) => ip.trim())
+      .filter(Boolean);
+    const rightmostIp = forwardedIps[forwardedIps.length - 1];
+    if (rightmostIp) {
+      return rightmostIp;
+    }
+  }
+
+  return SHARED_LLM_RATE_LIMIT_IDENTITY;
 }
 
 export function consumeLLMRateLimit(
@@ -50,7 +67,9 @@ export function consumeLLMRateLimit(
   const maxRequests = options.maxRequests ?? LLM_RATE_LIMIT_MAX_REQUESTS;
   const windowMs = options.windowMs ?? LLM_RATE_LIMIT_WINDOW_MS;
   const nowMs = options.now ? options.now() : Date.now();
-  const identity = getLLMRateLimitIdentity(request.headers);
+  const identity = getLLMRateLimitIdentity(request.headers, {
+    trustProxyHeaders: options.trustProxyHeaders,
+  });
 
   pruneExpiredBuckets(nowMs, windowMs);
 
