@@ -2,6 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { computeDiff, computeRiskScore, getRiskScoreLabel } from "@/lib/services/diff-engine";
 import { DiffData } from "@/lib/types";
 import { getSafeErrorMessage } from "@/lib/services/api-response-safety";
+import {
+  isRequestValidationError,
+  readJsonObject,
+  validateDiffBody,
+} from "@/lib/services/request-validation";
 
 export interface DiffRequest {
   baselineRunUid: string;
@@ -24,15 +29,8 @@ export interface DiffResponse {
  */
 export async function POST(request: NextRequest): Promise<NextResponse<DiffResponse>> {
   try {
-    const body: DiffRequest = await request.json();
+    const body: DiffRequest = validateDiffBody(await readJsonObject(request));
     const { baselineRunUid, currentRunUid } = body;
-
-    if (!baselineRunUid || !currentRunUid) {
-      return NextResponse.json(
-        { success: false, error: "Both baselineRunUid and currentRunUid are required" },
-        { status: 400 }
-      );
-    }
 
     const diffData = computeDiff(baselineRunUid, currentRunUid);
 
@@ -56,6 +54,13 @@ export async function POST(request: NextRequest): Promise<NextResponse<DiffRespo
       },
     });
   } catch (error) {
+    if (isRequestValidationError(error)) {
+      return NextResponse.json(
+        { success: false, error: error.message },
+        { status: 400 }
+      );
+    }
+
     console.error("Diff error:", error);
     return NextResponse.json(
       {

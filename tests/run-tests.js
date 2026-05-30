@@ -163,6 +163,36 @@ function createJsonPostRequest(pathname, body, identity) {
   });
 }
 
+function createJsonRequest(pathname, method, body) {
+  return new Request(`http://localhost${pathname}`, {
+    method,
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+}
+
+function createRawJsonRequest(pathname, method, body) {
+  return new Request(`http://localhost${pathname}`, {
+    method,
+    headers: {
+      "content-type": "application/json",
+    },
+    body,
+  });
+}
+
+async function assertJsonError(response, status, errorPattern, context) {
+  const message = (assertion) =>
+    context ? `${context}: ${assertion}` : undefined;
+  const body = await response.json();
+
+  assert.equal(response.status, status, message(`expected status ${status}`));
+  assert.equal(body.success, false, message("expected success=false"));
+  assert.match(body.error, errorPattern, message("expected matching error"));
+}
+
 async function withoutLLMKeys(fn) {
   const originalAnthropicKey = process.env.ANTHROPIC_API_KEY;
   const originalOpenAIKey = process.env.OPENAI_API_KEY;
@@ -207,6 +237,19 @@ function withTempDir(fn) {
   }
 }
 
+async function withTempCwd(fn) {
+  const originalCwd = process.cwd();
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "psec-route-test-"));
+
+  try {
+    process.chdir(tempDir);
+    await fn(tempDir);
+  } finally {
+    process.chdir(originalCwd);
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
 function writeZip(zipPath, entries) {
   const zip = new AdmZip();
   for (const entry of entries) {
@@ -216,6 +259,96 @@ function writeZip(zipPath, entries) {
     }
   }
   zip.writeZip(zipPath);
+}
+
+function createNmapXml(ports) {
+  return [
+    "<nmaprun>",
+    "<host>",
+    "<status state=\"up\" />",
+    "<address addr=\"10.0.0.1\" addrtype=\"ipv4\" />",
+    "<ports>",
+    ...ports.map(
+      (port) =>
+        `<port protocol="${port.protocol}" portid="${port.port}"><state state="open" /><service name="${port.service}" /></port>`
+    ),
+    "</ports>",
+    "</host>",
+    "</nmaprun>",
+  ].join("");
+}
+
+function writeRunRegistryFixtures() {
+  const dataDir = path.join(process.cwd(), "data");
+  const scansDir = path.join(dataDir, "test-scans");
+  const runsDir = path.join(dataDir, "runs");
+  const baselineRunUid = "baseline-run";
+  const currentRunUid = "current-run";
+  const baselineXmlPath = path.join(scansDir, "baseline.xml");
+  const currentXmlPath = path.join(scansDir, "current.xml");
+
+  fs.mkdirSync(scansDir, { recursive: true });
+  fs.mkdirSync(runsDir, { recursive: true });
+  fs.writeFileSync(
+    baselineXmlPath,
+    createNmapXml([{ port: 80, protocol: "tcp", service: "http" }])
+  );
+  fs.writeFileSync(
+    currentXmlPath,
+    createNmapXml([
+      { port: 80, protocol: "tcp", service: "http" },
+      { port: 3389, protocol: "tcp", service: "ms-wbt-server" },
+    ])
+  );
+
+  fs.writeFileSync(
+    path.join(runsDir, "index.json"),
+    JSON.stringify(
+      {
+        version: 1,
+        runs: {
+          [baselineRunUid]: createRunManifest(
+            baselineRunUid,
+            "2026-02-01T10:00:00.000Z",
+            baselineXmlPath
+          ),
+          [currentRunUid]: createRunManifest(
+            currentRunUid,
+            "2026-02-08T10:00:00.000Z",
+            currentXmlPath
+          ),
+        },
+        lastUpdated: "2026-02-08T10:00:00.000Z",
+      },
+      null,
+      2
+    )
+  );
+
+  return { baselineRunUid, currentRunUid };
+}
+
+function createRunManifest(runUid, timestamp, portsXmlPath) {
+  return {
+    runUid,
+    network: "home-lab",
+    runFolder: path.dirname(portsXmlPath),
+    folderName: runUid,
+    timestamp,
+    runType: "baselinekit_v0",
+    keyFiles: {
+      ports: [portsXmlPath],
+    },
+    contentHash: `${runUid}-hash`,
+    stats: {
+      keyFileCount: 1,
+      hasPortsScan: true,
+      hasHostsUp: false,
+      hasDiscovery: false,
+    },
+    createdAt: timestamp,
+    extractionId: "test-extract",
+  };
 }
 
 run("resolvePathWithin allows paths inside base directory", () => {
@@ -491,6 +624,343 @@ run("run manifests returned to clients do not include absolute file paths", () =
   assert.equal(path.isAbsolute(safeManifest.keyFiles.ports[0]), false);
   assert.match(safeManifest.runFolder, /^data\/extracted\//);
   assert.match(safeManifest.keyFiles.ports[0], /^data\/extracted\//);
+});
+
+run("rules POST rejects invalid ports, enums, strings, and malformed JSON", async () => {
+  const rulesRoute = await import("../src/app/api/rules/route.ts");
+  const baseBody = {
+    port: 443,
+    protocol: "tcp",
+    network: "home-lab",
+    action: "override",
+    customRisk: "P1",
+    reason: "Approved exception",
+  };
+
+  await withTempCwd(async () => {
+    const cases = [
+      {
+        name: "port below range",
+        body: { ...baseBody, port: 0 },
+        error: /port must be an integer from 1 to 65535/,
+      },
+      {
+        name: "port above range",
+        body: { ...baseBody, port: 65536 },
+        error: /port must be an integer from 1 to 65535/,
+      },
+      {
+        name: "non-integer port",
+        body: { ...baseBody, port: 22.5 },
+        error: /port must be an integer from 1 to 65535/,
+      },
+      {
+        name: "invalid action",
+        body: { ...baseBody, action: "allow" },
+        error: /action must be one of: override, whitelist/,
+      },
+      {
+        name: "invalid risk",
+        body: { ...baseBody, customRisk: "P9" },
+        error: /customRisk must be one of: P0, P1, P2/,
+      },
+      {
+        name: "empty network",
+        body: { ...baseBody, network: " " },
+        error: /network is required/,
+      },
+      {
+        name: "too-long reason",
+        body: { ...baseBody, reason: "x".repeat(1001) },
+        error: /reason must be 1000 characters or fewer/,
+      },
+    ];
+
+    for (const testCase of cases) {
+      const response = await rulesRoute.POST(
+        createJsonRequest("/api/rules", "POST", testCase.body)
+      );
+      await assertJsonError(response, 400, testCase.error, testCase.name);
+    }
+
+    const malformedResponse = await rulesRoute.POST(
+      createRawJsonRequest("/api/rules", "POST", "{")
+    );
+    await assertJsonError(malformedResponse, 400, /valid JSON/);
+  });
+});
+
+run("rules POST and PUT preserve valid rule behavior", async () => {
+  const [rulesRoute, ruleRoute] = await Promise.all([
+    import("../src/app/api/rules/route.ts"),
+    import("../src/app/api/rules/[ruleId]/route.ts"),
+  ]);
+
+  await withTempCwd(async () => {
+    for (const port of [1, 65535]) {
+      const response = await rulesRoute.POST(
+        createJsonRequest("/api/rules", "POST", {
+          port,
+          protocol: port === 1 ? "tcp" : "udp",
+          network: `home-lab-${port}`,
+          action: "whitelist",
+          reason: `Valid boundary port ${port}`,
+        })
+      );
+      const body = await response.json();
+
+      assert.equal(response.status, 200);
+      assert.equal(body.success, true);
+      assert.equal(body.rule.port, port);
+    }
+
+    const createResponse = await rulesRoute.POST(
+      createJsonRequest("/api/rules", "POST", {
+        port: 3389,
+        protocol: "tcp",
+        network: "home-lab",
+        action: "override",
+        customRisk: "P0",
+        reason: "Track exposed RDP",
+      })
+    );
+    const createBody = await createResponse.json();
+    const ruleId = createBody.rule.ruleId;
+
+    const invalidUpdateResponse = await ruleRoute.PUT(
+      createJsonRequest(`/api/rules/${ruleId}`, "PUT", {
+        action: "override",
+        customRisk: "P9",
+        reason: "reviewed",
+      }),
+      { params: Promise.resolve({ ruleId }) }
+    );
+    await assertJsonError(invalidUpdateResponse, 400, /customRisk must be one of/);
+
+    const updateResponse = await ruleRoute.PUT(
+      createJsonRequest(`/api/rules/${ruleId}`, "PUT", {
+        action: "override",
+        customRisk: "P1",
+        reason: "Approved with compensating control",
+      }),
+      { params: Promise.resolve({ ruleId }) }
+    );
+    const updateBody = await updateResponse.json();
+
+    assert.equal(updateResponse.status, 200);
+    assert.equal(updateBody.success, true);
+    assert.equal(updateBody.rule.customRisk, "P1");
+    assert.equal(updateBody.rule.reason, "Approved with compensating control");
+  });
+});
+
+run("diff and comparisons POST reject invalid IDs and strings", async () => {
+  const [diffRoute, comparisonsRoute] = await Promise.all([
+    import("../src/app/api/diff/route.ts"),
+    import("../src/app/api/comparisons/route.ts"),
+  ]);
+
+  await withTempCwd(async () => {
+    const invalidDiffResponse = await diffRoute.POST(
+      createJsonRequest("/api/diff", "POST", {
+        baselineRunUid: "bad/id",
+        currentRunUid: "current-run",
+      })
+    );
+    await assertJsonError(invalidDiffResponse, 400, /baselineRunUid may only contain/);
+
+    const emptyDiffResponse = await diffRoute.POST(
+      createJsonRequest("/api/diff", "POST", {
+        baselineRunUid: "",
+        currentRunUid: "current-run",
+      })
+    );
+    await assertJsonError(emptyDiffResponse, 400, /baselineRunUid is required/);
+
+    const sameComparisonResponse = await comparisonsRoute.POST(
+      createJsonRequest("/api/comparisons", "POST", {
+        baselineRunUid: "same-run",
+        currentRunUid: "same-run",
+      })
+    );
+    await assertJsonError(
+      sameComparisonResponse,
+      400,
+      /baselineRunUid and currentRunUid must be different/
+    );
+
+    const longTitleResponse = await comparisonsRoute.POST(
+      createJsonRequest("/api/comparisons", "POST", {
+        baselineRunUid: "baseline-run",
+        currentRunUid: "current-run",
+        title: "x".repeat(121),
+      })
+    );
+    await assertJsonError(longTitleResponse, 400, /title must be 120 characters or fewer/);
+
+    const invalidNotesResponse = await comparisonsRoute.POST(
+      createJsonRequest("/api/comparisons", "POST", {
+        baselineRunUid: "baseline-run",
+        currentRunUid: "current-run",
+        notes: 123,
+      })
+    );
+    await assertJsonError(invalidNotesResponse, 400, /notes must be a string/);
+  });
+});
+
+run("diff and comparisons POST preserve valid payload behavior", async () => {
+  const [diffRoute, comparisonsRoute] = await Promise.all([
+    import("../src/app/api/diff/route.ts"),
+    import("../src/app/api/comparisons/route.ts"),
+  ]);
+
+  await withTempCwd(async () => {
+    const { baselineRunUid, currentRunUid } = writeRunRegistryFixtures();
+
+    const diffResponse = await diffRoute.POST(
+      createJsonRequest("/api/diff", "POST", { baselineRunUid, currentRunUid })
+    );
+    const diffBody = await diffResponse.json();
+
+    assert.equal(diffResponse.status, 200);
+    assert.equal(diffBody.success, true);
+    assert.equal(diffBody.data.portsOpened.length, 1);
+    assert.equal(diffBody.data.portsOpened[0].port, 3389);
+
+    const comparisonResponse = await comparisonsRoute.POST(
+      createJsonRequest("/api/comparisons", "POST", {
+        baselineRunUid,
+        currentRunUid,
+        title: "  Weekly check  ",
+        notes: "  one new RDP exposure  ",
+      })
+    );
+    const comparisonBody = await comparisonResponse.json();
+
+    assert.equal(comparisonResponse.status, 200);
+    assert.equal(comparisonBody.success, true);
+    assert.equal(comparisonBody.comparison.title, "Weekly check");
+    assert.equal(comparisonBody.comparison.notes, "one new RDP exposure");
+  });
+});
+
+run("inventory POST rejects malformed devices and preserves valid adds", async () => {
+  const inventoryRoute = await import("../src/app/api/inventory/route.ts");
+
+  await withTempCwd(async () => {
+    const cases = [
+      {
+        body: [],
+        error: /Request body must be a JSON object/,
+      },
+      {
+        body: { network: " ", device: { ip: "10.0.0.5" } },
+        error: /network is required/,
+      },
+      {
+        body: { network: "home-lab", device: [] },
+        error: /device must be a JSON object/,
+      },
+      {
+        body: { network: "home-lab", device: { ip: 123 } },
+        error: /device.ip must be a string/,
+      },
+      {
+        body: { network: "home-lab", device: { notes: "x".repeat(1001) } },
+        error: /device.notes must be 1000 characters or fewer/,
+      },
+      {
+        body: { network: "home-lab", device: { ip: "", mac: " " } },
+        error: /device must include a non-empty ip or mac/,
+      },
+    ];
+
+    for (const testCase of cases) {
+      const response = await inventoryRoute.POST(
+        createJsonRequest("/api/inventory", "POST", testCase.body)
+      );
+      await assertJsonError(response, 400, testCase.error);
+    }
+
+    const validResponse = await inventoryRoute.POST(
+      createJsonRequest("/api/inventory", "POST", {
+        network: "home-lab",
+        device: {
+          device: "  Router  ",
+          ip: "10.0.0.1",
+          mac: "00-11-22-33-44-55",
+          notes: "Core gateway",
+        },
+      })
+    );
+    const validBody = await validResponse.json();
+
+    assert.equal(validResponse.status, 200);
+    assert.equal(validBody.success, true);
+    assert.equal(validBody.device.device, "Router");
+    assert.equal(validBody.device.mac, "00:11:22:33:44:55");
+  });
+});
+
+run("ingest and parse POST reject invalid bodies and preserve valid file payloads", async () => {
+  const [ingestRoute, parseRoute] = await Promise.all([
+    import("../src/app/api/ingest/route.ts"),
+    import("../src/app/api/parse/route.ts"),
+  ]);
+
+  await withTempCwd(async () => {
+    const invalidIngestResponse = await ingestRoute.POST(
+      createJsonRequest("/api/ingest", "POST", { zipPath: 123 })
+    );
+    await assertJsonError(invalidIngestResponse, 400, /zipPath must be a string/);
+
+    const malformedParseResponse = await parseRoute.POST(
+      createRawJsonRequest("/api/parse", "POST", "{")
+    );
+    await assertJsonError(malformedParseResponse, 400, /valid JSON/);
+
+    const extractedDir = path.join(process.cwd(), "data", "extracted", "sample");
+    const xmlPath = path.join(extractedDir, "ports.xml");
+    fs.mkdirSync(extractedDir, { recursive: true });
+    fs.writeFileSync(
+      xmlPath,
+      createNmapXml([{ port: 443, protocol: "tcp", service: "https" }])
+    );
+
+    const parseResponse = await parseRoute.POST(
+      createJsonRequest("/api/parse", "POST", {
+        xmlPath: path.join("data", "extracted", "sample", "ports.xml"),
+      })
+    );
+    const parseBody = await parseResponse.json();
+
+    assert.equal(parseResponse.status, 200);
+    assert.equal(parseBody.success, true);
+    assert.equal(parseBody.ports[0].port, 443);
+
+    const uploadsDir = path.join(process.cwd(), "data", "uploads");
+    const zipPath = path.join(uploadsDir, "scan.zip");
+    fs.mkdirSync(uploadsDir, { recursive: true });
+    writeZip(zipPath, [
+      {
+        name: "home-lab/rawscans/2026-02-08_1000_baselinekit_v0/ports_top200_open.xml",
+        content: createNmapXml([{ port: 80, protocol: "tcp", service: "http" }]),
+      },
+    ]);
+
+    const ingestResponse = await ingestRoute.POST(
+      createJsonRequest("/api/ingest", "POST", {
+        zipPath: path.join("data", "uploads", "scan.zip"),
+        network: "home-lab",
+      })
+    );
+    const ingestBody = await ingestResponse.json();
+
+    assert.equal(ingestResponse.status, 200);
+    assert.equal(ingestBody.success, true);
+    assert.equal(ingestBody.runs.length, 1);
+  });
 });
 
 run("LLM rate limit identity ignores proxy headers by default", () => {

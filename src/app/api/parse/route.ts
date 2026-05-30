@@ -11,6 +11,11 @@ import { ParseResponse } from "@/lib/types";
 import * as fs from "fs";
 import * as path from "path";
 import { getSafeErrorMessage } from "@/lib/services/api-response-safety";
+import {
+  isRequestValidationError,
+  readJsonObject,
+  validateParseBody,
+} from "@/lib/services/request-validation";
 
 interface ParseRequestBody {
   xmlPath: string;
@@ -18,15 +23,8 @@ interface ParseRequestBody {
 
 export async function POST(request: NextRequest): Promise<NextResponse<ParseResponse>> {
   try {
-    const body: ParseRequestBody = await request.json();
+    const body: ParseRequestBody = validateParseBody(await readJsonObject(request));
     const { xmlPath } = body;
-
-    if (!xmlPath) {
-      return NextResponse.json(
-        { success: false, error: "xmlPath is required" },
-        { status: 400 }
-      );
-    }
 
     // Verify it's an XML file
     if (!xmlPath.toLowerCase().endsWith(".xml")) {
@@ -63,6 +61,13 @@ export async function POST(request: NextRequest): Promise<NextResponse<ParseResp
       topPorts: topPortsList,
     });
   } catch (error) {
+    if (isRequestValidationError(error)) {
+      return NextResponse.json(
+        { success: false, error: error.message },
+        { status: 400 }
+      );
+    }
+
     console.error("Parse error:", error);
     return NextResponse.json(
       { success: false, error: getSafeErrorMessage(error, "Parse failed") },

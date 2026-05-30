@@ -7,6 +7,11 @@ import {
 } from "@/lib/services/inventory";
 import { sanitizeNetworkName } from "@/lib/services/path-safety";
 import { getSafeErrorMessage } from "@/lib/services/api-response-safety";
+import {
+  isRequestValidationError,
+  readJsonObject,
+  validateInventoryAddBody,
+} from "@/lib/services/request-validation";
 
 export interface InventoryResponse {
   success: boolean;
@@ -55,34 +60,18 @@ export async function GET(request: NextRequest): Promise<NextResponse<InventoryR
  */
 export async function POST(request: NextRequest): Promise<NextResponse<InventoryResponse>> {
   try {
-    const body = await request.json();
-    const { network, device } = body;
+    const { network, device } = validateInventoryAddBody(await readJsonObject(request));
 
-    if (!network || typeof network !== "string") {
-      return NextResponse.json(
-        { success: false, error: "Network is required" },
-        { status: 400 }
-      );
-    }
-
-    const safeNetwork = sanitizeNetworkName(network);
-    if (!safeNetwork) {
-      return NextResponse.json(
-        { success: false, error: "Invalid network name" },
-        { status: 400 }
-      );
-    }
-
-    if (!device || (!device.ip && !device.mac)) {
-      return NextResponse.json(
-        { success: false, error: "Device must have at least an IP or MAC address" },
-        { status: 400 }
-      );
-    }
-
-    const newDevice = addDeviceToInventory(safeNetwork, device);
+    const newDevice = addDeviceToInventory(network, device);
     return NextResponse.json({ success: true, device: newDevice });
   } catch (error) {
+    if (isRequestValidationError(error)) {
+      return NextResponse.json(
+        { success: false, error: error.message },
+        { status: 400 }
+      );
+    }
+
     console.error("Inventory add error:", error);
     return NextResponse.json(
       { success: false, error: getSafeErrorMessage(error, "Failed to add device") },
