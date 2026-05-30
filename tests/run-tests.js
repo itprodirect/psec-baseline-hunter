@@ -317,6 +317,33 @@ function createAbortableFetch(onRequest) {
   };
 }
 
+function createAbortableBodyRead(signal, onAbort) {
+  assert.ok(signal instanceof AbortSignal);
+
+  return new Promise((_, reject) => {
+    let watchdog;
+    const abortBodyRead = () => {
+      clearTimeout(watchdog);
+      if (onAbort) {
+        onAbort();
+      }
+      reject(createAbortError());
+    };
+
+    if (signal.aborted) {
+      abortBodyRead();
+      return;
+    }
+
+    watchdog = setTimeout(() => {
+      signal.removeEventListener("abort", abortBodyRead);
+      reject(new Error("Mock response body was not aborted"));
+    }, 250);
+
+    signal.addEventListener("abort", abortBodyRead, { once: true });
+  });
+}
+
 function withTempDir(fn) {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "psec-archive-test-"));
   try {
@@ -1362,6 +1389,92 @@ run("LLM provider aborts slow OpenAI requests and returns success=false", async 
   });
 });
 
+run("LLM provider aborts stalled OpenAI response JSON and returns success=false", async () => {
+  let receivedSignal = false;
+  let bodyReadAborted = false;
+  let fetchCalls = 0;
+
+  await withMutedConsoleMethods(["error"], async () => {
+    await withEnv(
+      {
+        ANTHROPIC_API_KEY: undefined,
+        OPENAI_API_KEY: "test-openai-key",
+        LLM_REQUEST_TIMEOUT_MS: "5",
+      },
+      async () => {
+        await withMockedFetch(async (_url, options = {}) => {
+          fetchCalls += 1;
+          receivedSignal = options.signal instanceof AbortSignal;
+
+          return {
+            ok: true,
+            status: 200,
+            json: () =>
+              createAbortableBodyRead(options.signal, () => {
+                bodyReadAborted = true;
+              }),
+          };
+        }, async () => {
+          const startedAt = Date.now();
+          const response = await callLLM("system", "user");
+          const elapsedMs = Date.now() - startedAt;
+
+          assert.equal(fetchCalls, 1);
+          assert.equal(receivedSignal, true);
+          assert.equal(bodyReadAborted, true);
+          assert.equal(response.success, false);
+          assert.equal(response.provider, "openai");
+          assert.match(response.error, /timed out/);
+          assert.ok(elapsedMs < 250, `expected timeout path under 250ms, got ${elapsedMs}ms`);
+        });
+      }
+    );
+  });
+});
+
+run("LLM provider aborts stalled Anthropic error response text and returns success=false", async () => {
+  let receivedSignal = false;
+  let bodyReadAborted = false;
+  let fetchCalls = 0;
+
+  await withMutedConsoleMethods(["error"], async () => {
+    await withEnv(
+      {
+        ANTHROPIC_API_KEY: "test-anthropic-key",
+        OPENAI_API_KEY: undefined,
+        LLM_REQUEST_TIMEOUT_MS: "5",
+      },
+      async () => {
+        await withMockedFetch(async (_url, options = {}) => {
+          fetchCalls += 1;
+          receivedSignal = options.signal instanceof AbortSignal;
+
+          return {
+            ok: false,
+            status: 502,
+            text: () =>
+              createAbortableBodyRead(options.signal, () => {
+                bodyReadAborted = true;
+              }),
+          };
+        }, async () => {
+          const startedAt = Date.now();
+          const response = await callLLM("system", "user");
+          const elapsedMs = Date.now() - startedAt;
+
+          assert.equal(fetchCalls, 1);
+          assert.equal(receivedSignal, true);
+          assert.equal(bodyReadAborted, true);
+          assert.equal(response.success, false);
+          assert.equal(response.provider, "anthropic");
+          assert.match(response.error, /timed out/);
+          assert.ok(elapsedMs < 250, `expected timeout path under 250ms, got ${elapsedMs}ms`);
+        });
+      }
+    );
+  });
+});
+
 run("LLM POST route falls back when provider request times out", async () => {
   await withMutedConsoleMethods(["error", "warn"], async () => {
     await withEnv(
@@ -1395,6 +1508,52 @@ run("LLM POST route falls back when provider request times out", async () => {
     );
   });
   resetLLMRateLimitForTesting();
+});
+
+run("LLM POST route falls back when provider response body read times out", async () => {
+  await withMutedConsoleMethods(["error", "warn"], async () => {
+    await withEnv(
+      {
+        ANTHROPIC_API_KEY: undefined,
+        OPENAI_API_KEY: "test-openai-key",
+        LLM_REQUEST_TIMEOUT_MS: "5",
+      },
+      async () => {
+        await withMockedFetch(async (_url, options = {}) => {
+          assert.ok(options.signal instanceof AbortSignal);
+
+          return {
+            ok: true,
+            status: 200,
+            json: () => createAbortableBodyRead(options.signal),
+          };
+        }, async () => {
+          resetLLMRateLimitForTesting();
+          try {
+            const llmRouteCases = await getLLMRouteCases();
+            const routeCase = llmRouteCases.find(
+              (candidate) => candidate.name === "scorecard summary"
+            );
+            const response = await routeCase.post(
+              createJsonPostRequest(
+                routeCase.path,
+                routeCase.body(),
+                "198.51.100.82"
+              )
+            );
+            const body = await response.json();
+
+            assert.equal(response.status, 200);
+            assert.equal(body.success, true);
+            assert.equal(body.provider, "rule-based");
+            assert.equal(body.isRuleBased, true);
+          } finally {
+            resetLLMRateLimitForTesting();
+          }
+        });
+      }
+    );
+  });
 });
 
 run("LLM POST route falls back when provider returns an error", async () => {

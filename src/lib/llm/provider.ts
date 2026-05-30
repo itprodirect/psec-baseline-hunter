@@ -68,19 +68,15 @@ export function getLLMMaxTokens(): number {
   );
 }
 
-async function fetchWithTimeout(
-  url: string,
-  init: RequestInit,
-  timeoutMs: number
-): Promise<Response> {
+async function withRequestTimeout<T>(
+  timeoutMs: number,
+  operation: (signal: AbortSignal) => Promise<T>
+): Promise<T> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    return await fetch(url, {
-      ...init,
-      signal: controller.signal,
-    });
+    return await operation(controller.signal);
   } finally {
     clearTimeout(timeoutId);
   }
@@ -144,9 +140,8 @@ async function callAnthropic(
   const timeoutMs = getLLMRequestTimeoutMs();
 
   try {
-    const response = await fetchWithTimeout(
-      "https://api.anthropic.com/v1/messages",
-      {
+    return await withRequestTimeout(timeoutMs, async (signal) => {
+      const response = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -159,33 +154,33 @@ async function callAnthropic(
           system: systemPrompt,
           messages: [{ role: "user", content: userPrompt }],
         }),
-      },
-      timeoutMs
-    );
-
-    if (!response.ok) {
-      const error = await response.text();
-      console.error("Anthropic API error:", {
-        status: response.status,
-        body: error,
+        signal,
       });
+
+      if (!response.ok) {
+        const error = await response.text();
+        console.error("Anthropic API error:", {
+          status: response.status,
+          body: error,
+        });
+        return {
+          success: false,
+          error: `Anthropic API error (${response.status})`,
+          provider: "anthropic",
+        };
+      }
+
+      const data = await response.json();
+      const content = data.content?.[0]?.text || "";
+
       return {
-        success: false,
-        error: `Anthropic API error (${response.status})`,
+        success: true,
+        content,
         provider: "anthropic",
+        model: config.model,
+        tokensUsed: data.usage?.input_tokens + data.usage?.output_tokens,
       };
-    }
-
-    const data = await response.json();
-    const content = data.content?.[0]?.text || "";
-
-    return {
-      success: true,
-      content,
-      provider: "anthropic",
-      model: config.model,
-      tokensUsed: data.usage?.input_tokens + data.usage?.output_tokens,
-    };
+    });
   } catch (error) {
     const timedOut = isAbortError(error);
     console.error("Anthropic API call failed:", {
@@ -215,9 +210,8 @@ async function callOpenAI(
   const timeoutMs = getLLMRequestTimeoutMs();
 
   try {
-    const response = await fetchWithTimeout(
-      "https://api.openai.com/v1/chat/completions",
-      {
+    return await withRequestTimeout(timeoutMs, async (signal) => {
+      const response = await fetch("https://api.openai.com/v1/chat/completions", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -231,33 +225,33 @@ async function callOpenAI(
             { role: "user", content: userPrompt },
           ],
         }),
-      },
-      timeoutMs
-    );
-
-    if (!response.ok) {
-      const error = await response.text();
-      console.error("OpenAI API error:", {
-        status: response.status,
-        body: error,
+        signal,
       });
+
+      if (!response.ok) {
+        const error = await response.text();
+        console.error("OpenAI API error:", {
+          status: response.status,
+          body: error,
+        });
+        return {
+          success: false,
+          error: `OpenAI API error (${response.status})`,
+          provider: "openai",
+        };
+      }
+
+      const data = await response.json();
+      const content = data.choices?.[0]?.message?.content || "";
+
       return {
-        success: false,
-        error: `OpenAI API error (${response.status})`,
+        success: true,
+        content,
         provider: "openai",
+        model: config.model,
+        tokensUsed: data.usage?.total_tokens,
       };
-    }
-
-    const data = await response.json();
-    const content = data.choices?.[0]?.message?.content || "";
-
-    return {
-      success: true,
-      content,
-      provider: "openai",
-      model: config.model,
-      tokensUsed: data.usage?.total_tokens,
-    };
+    });
   } catch (error) {
     const timedOut = isAbortError(error);
     console.error("OpenAI API call failed:", {
