@@ -24,6 +24,8 @@ interface RateLimitBucket {
 
 const buckets = new Map<string, RateLimitBucket>();
 
+// This per-process limiter intentionally shares one request budget across all LLM POST routes per request identity.
+// In production, it assumes a trusted proxy provides x-forwarded-for or x-real-ip.
 export function getLLMRateLimitIdentity(headers: Headers): string {
   const forwardedFor = headers.get("x-forwarded-for");
   if (forwardedFor) {
