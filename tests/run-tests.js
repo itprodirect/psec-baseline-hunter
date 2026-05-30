@@ -12,6 +12,11 @@ const {
   extractZipSafely,
 } = require("../src/lib/services/archive-safety.ts");
 const { buildTopActions } = require("../src/lib/services/diff-actions.ts");
+const {
+  assertInventoryCSVFileSize,
+  assertInventoryCSVRowLimit,
+  InventoryCSVLimitError,
+} = require("../src/lib/services/inventory-csv-safety.ts");
 
 let total = 0;
 let failed = 0;
@@ -211,6 +216,42 @@ run("buildTopActions groups by port/protocol and sorts by affected host count", 
   assert.match(actions[0], /23\/tcp on 3 hosts/);
   assert.match(actions[1], /445\/tcp on 2 hosts/);
   assert.match(actions[2], /3389\/tcp on 1 host/);
+});
+
+run("inventory CSV safety accepts a valid CSV within limits", () => {
+  const csv = [
+    "device,mac,ip",
+    "router,00:11:22:33:44:55,192.168.1.1",
+    "printer,66:77:88:99:AA:BB,192.168.1.20",
+  ].join("\n");
+
+  assert.doesNotThrow(() => assertInventoryCSVFileSize(Buffer.byteLength(csv), { maxBytes: 512 }));
+  assert.doesNotThrow(() => assertInventoryCSVRowLimit(csv, { maxRows: 2 }));
+});
+
+run("inventory CSV safety rejects oversized uploads before file read", () => {
+  assert.throws(
+    () => assertInventoryCSVFileSize(11, { maxBytes: 10 }),
+    (error) =>
+      error instanceof InventoryCSVLimitError &&
+      /CSV file is too large/.test(error.message)
+  );
+});
+
+run("inventory CSV safety rejects too many inventory rows", () => {
+  const csv = [
+    "device,mac,ip",
+    "router,00:11:22:33:44:55,192.168.1.1",
+    "printer,66:77:88:99:AA:BB,192.168.1.20",
+    "laptop,AA:BB:CC:DD:EE:FF,192.168.1.50",
+  ].join("\n");
+
+  assert.throws(
+    () => assertInventoryCSVRowLimit(csv, { maxRows: 2 }),
+    (error) =>
+      error instanceof InventoryCSVLimitError &&
+      /CSV contains too many inventory rows/.test(error.message)
+  );
 });
 
 if (failed > 0) {

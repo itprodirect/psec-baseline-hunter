@@ -6,6 +6,11 @@
 import * as fs from "fs";
 import * as path from "path";
 import { getDataDir, ensureDir } from "./ingest";
+import {
+  assertInventoryCSVFileSize,
+  assertInventoryCSVRowLimit,
+  InventoryCSVLimitOptions,
+} from "./inventory-csv-safety";
 import { resolvePathWithin, sanitizeNetworkName } from "./path-safety";
 
 /**
@@ -111,7 +116,11 @@ function saveInventoryIndex(index: InventoryIndex): void {
  * Parse CSV content with fault tolerance
  * Handles: blank rows, missing values, quoted fields, varied delimiters
  */
-export function parseInventoryCSV(content: string, network: string): InventoryDevice[] {
+export function parseInventoryCSV(
+  content: string,
+  network: string,
+  options: InventoryCSVLimitOptions = {}
+): InventoryDevice[] {
   const lines = content.split(/\r?\n/);
   const devices: InventoryDevice[] = [];
 
@@ -124,6 +133,8 @@ export function parseInventoryCSV(content: string, network: string): InventoryDe
   }
 
   if (headerIndex >= lines.length) return devices;
+
+  assertInventoryCSVRowLimit(content, options);
 
   // Parse header - normalize column names
   const headerLine = lines[headerIndex];
@@ -256,9 +267,17 @@ function normalizeMac(mac: string): string {
  * Import inventory from CSV file
  */
 export function importInventoryCSV(csvPath: string, network: string): InventoryDevice[] {
-  const { networkName, networkDir } = resolveNetworkPath(network);
+  const networkName = sanitizeNetworkName(network);
+  if (!networkName) {
+    throw new Error("Invalid network name");
+  }
+
+  const stat = fs.statSync(csvPath);
+  assertInventoryCSVFileSize(stat.size);
+
   const content = fs.readFileSync(csvPath, "utf-8");
   const devices = parseInventoryCSV(content, networkName);
+  const { networkDir } = resolveNetworkPath(networkName);
 
   // Save to inventory directory
   ensureDir(networkDir);

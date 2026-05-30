@@ -2,6 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 import { promises as fs } from "fs";
 import * as path from "path";
 import { parseInventoryCSV, InventoryDevice, getInventoryDir } from "@/lib/services/inventory";
+import {
+  assertInventoryCSVFileSize,
+  isInventoryCSVLimitError,
+} from "@/lib/services/inventory-csv-safety";
 import { ensureDir } from "@/lib/services/ingest";
 import { sanitizeNetworkName } from "@/lib/services/path-safety";
 
@@ -53,6 +57,8 @@ export async function POST(request: NextRequest): Promise<NextResponse<Inventory
       );
     }
 
+    assertInventoryCSVFileSize(file.size);
+
     // Read file content
     const bytes = await file.arrayBuffer();
     const content = new TextDecoder().decode(bytes);
@@ -97,9 +103,10 @@ export async function POST(request: NextRequest): Promise<NextResponse<Inventory
     });
   } catch (error) {
     console.error("Inventory upload error:", error);
+    const status = isInventoryCSVLimitError(error) ? 400 : 500;
     return NextResponse.json(
       { success: false, error: error instanceof Error ? error.message : "Failed to process CSV" },
-      { status: 500 }
+      { status }
     );
   }
 }
