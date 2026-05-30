@@ -4,9 +4,12 @@
 
 import * as fs from "fs";
 import { PortFinding, DiffData, HostChange, PortChange } from "@/lib/types";
-import { getRunByUid } from "./run-registry";
+import { getRunByUid, type RunManifest } from "./run-registry";
 import { parsePorts } from "./nmap-parser";
 import { getEffectivePortRisk } from "@/lib/constants/risk-ports";
+
+export const AMBIGUOUS_RUN_COMPARISON_ERROR =
+  "baselineRunUid and currentRunUid are ambiguous because both runs are from the same network and minute";
 
 /**
  * Device summary for a single host
@@ -48,6 +51,55 @@ function buildDeviceSummaries(findings: PortFinding[]): Map<string, DeviceSummar
   }
 
   return devices;
+}
+
+function getRunMinuteKey(timestamp: string | null): number | null {
+  if (!timestamp) {
+    return null;
+  }
+
+  const timeMs = Date.parse(timestamp);
+  if (Number.isNaN(timeMs)) {
+    return null;
+  }
+
+  return Math.floor(timeMs / 60_000);
+}
+
+function hasSameNetworkSameMinute(
+  baselineManifest: RunManifest,
+  currentManifest: RunManifest
+): boolean {
+  const baselineMinute = getRunMinuteKey(baselineManifest.timestamp);
+  const currentMinute = getRunMinuteKey(currentManifest.timestamp);
+
+  if (baselineMinute === null || currentMinute === null) {
+    return false;
+  }
+
+  return (
+    baselineManifest.network.trim().toLowerCase() ===
+      currentManifest.network.trim().toLowerCase() &&
+    baselineMinute === currentMinute
+  );
+}
+
+export function getDiffComparisonGuardrailError(
+  baselineRunUid: string,
+  currentRunUid: string
+): string | null {
+  const baselineManifest = getRunByUid(baselineRunUid);
+  const currentManifest = getRunByUid(currentRunUid);
+
+  if (!baselineManifest || !currentManifest) {
+    return null;
+  }
+
+  if (hasSameNetworkSameMinute(baselineManifest, currentManifest)) {
+    return AMBIGUOUS_RUN_COMPARISON_ERROR;
+  }
+
+  return null;
 }
 
 /**

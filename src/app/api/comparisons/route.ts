@@ -9,7 +9,7 @@ import {
   listComparisons,
   saveComparison,
 } from "@/lib/services/comparisons-registry";
-import { computeDiff } from "@/lib/services/diff-engine";
+import { computeDiff, getDiffComparisonGuardrailError } from "@/lib/services/diff-engine";
 import { ComparisonResponse } from "@/lib/types";
 import { getSafeErrorMessage } from "@/lib/services/api-response-safety";
 import {
@@ -48,6 +48,17 @@ export async function POST(
 ): Promise<NextResponse<ComparisonResponse>> {
   try {
     const body = validateSaveComparisonBody(await readJsonObject(request));
+
+    const guardrailError = getDiffComparisonGuardrailError(
+      body.baselineRunUid,
+      body.currentRunUid
+    );
+    if (guardrailError) {
+      return NextResponse.json(
+        { success: false, error: guardrailError },
+        { status: 400 }
+      );
+    }
 
     // Compute the diff
     const diffData = computeDiff(body.baselineRunUid, body.currentRunUid);

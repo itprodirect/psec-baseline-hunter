@@ -94,9 +94,18 @@ export function validateDiffBody(body: JsonObject): {
   baselineRunUid: string;
   currentRunUid: string;
 } {
+  const baselineRunUid = validateResourceId(body.baselineRunUid, "baselineRunUid");
+  const currentRunUid = validateResourceId(body.currentRunUid, "currentRunUid");
+
+  if (baselineRunUid === currentRunUid) {
+    throw new RequestValidationError(
+      "baselineRunUid and currentRunUid must refer to different runs"
+    );
+  }
+
   return {
-    baselineRunUid: validateResourceId(body.baselineRunUid, "baselineRunUid"),
-    currentRunUid: validateResourceId(body.currentRunUid, "currentRunUid"),
+    baselineRunUid,
+    currentRunUid,
   };
 }
 
