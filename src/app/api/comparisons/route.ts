@@ -11,6 +11,7 @@ import {
 } from "@/lib/services/comparisons-registry";
 import { computeDiff } from "@/lib/services/diff-engine";
 import { ComparisonResponse, SaveComparisonRequest } from "@/lib/types";
+import { getSafeErrorMessage } from "@/lib/services/api-response-safety";
 
 export async function GET(
   request: NextRequest
@@ -30,8 +31,7 @@ export async function GET(
     return NextResponse.json(
       {
         success: false,
-        error:
-          error instanceof Error ? error.message : "Failed to list comparisons",
+        error: getSafeErrorMessage(error, "Failed to list comparisons"),
       },
       { status: 500 }
     );
@@ -116,8 +116,7 @@ export async function POST(
     return NextResponse.json(
       {
         success: false,
-        error:
-          error instanceof Error ? error.message : "Failed to save comparison",
+        error: getSafeErrorMessage(error, "Failed to save comparison"),
       },
       { status: 500 }
     );

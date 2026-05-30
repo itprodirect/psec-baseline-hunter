@@ -10,6 +10,7 @@ import { resolvePathWithin } from "@/lib/services/path-safety";
 import { ParseResponse } from "@/lib/types";
 import * as fs from "fs";
 import * as path from "path";
+import { getSafeErrorMessage } from "@/lib/services/api-response-safety";
 
 interface ParseRequestBody {
   xmlPath: string;
@@ -64,7 +65,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<ParseResp
   } catch (error) {
     console.error("Parse error:", error);
     return NextResponse.json(
-      { success: false, error: error instanceof Error ? error.message : "Parse failed" },
+      { success: false, error: getSafeErrorMessage(error, "Parse failed") },
       { status: 500 }
     );
   }

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { promises as fs } from "fs";
 import path from "path";
 import { DemoData, DemoResponse } from "@/lib/types";
+import { getSafeErrorMessage } from "@/lib/services/api-response-safety";
 
 /**
  * GET /api/demo
@@ -23,7 +24,7 @@ export async function GET(): Promise<NextResponse<DemoResponse>> {
     return NextResponse.json(
       {
         success: false,
-        error: error instanceof Error ? error.message : "Failed to load demo data",
+        error: getSafeErrorMessage(error, "Failed to load demo data"),
       },
       { status: 500 }
     );

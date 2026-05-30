@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { buildScorecardData, getScorecardActions } from "@/lib/services/risk-classifier";
 import { ScorecardData } from "@/lib/types";
+import { getSafeErrorMessage } from "@/lib/services/api-response-safety";
 
 export interface ScorecardResponse {
   success: boolean;
@@ -49,7 +50,7 @@ export async function GET(
     return NextResponse.json(
       {
         success: false,
-        error: error instanceof Error ? error.message : "Failed to build scorecard",
+        error: getSafeErrorMessage(error, "Failed to build scorecard"),
       },
       { status: 500 }
     );

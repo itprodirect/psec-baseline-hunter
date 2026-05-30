@@ -9,6 +9,10 @@ import {
   listRunsByNetwork,
   getRegistryStats,
 } from "@/lib/services/run-registry";
+import {
+  getSafeErrorMessage,
+  sanitizeRunManifestForClient,
+} from "@/lib/services/api-response-safety";
 import { RunsListResponseV2 } from "@/lib/types";
 
 export async function GET(request: NextRequest): Promise<NextResponse<RunsListResponseV2>> {
@@ -40,7 +44,7 @@ export async function GET(request: NextRequest): Promise<NextResponse<RunsListRe
 
     return NextResponse.json({
       success: true,
-      runs,
+      runs: runs.map(sanitizeRunManifestForClient),
       stats: {
         totalRuns: stats.totalRuns,
         networks: stats.networks,
@@ -49,7 +53,7 @@ export async function GET(request: NextRequest): Promise<NextResponse<RunsListRe
   } catch (error) {
     console.error("List runs error:", error);
     return NextResponse.json(
-      { success: false, error: error instanceof Error ? error.message : "Failed to list runs" },
+      { success: false, error: getSafeErrorMessage(error, "Failed to list runs") },
       { status: 500 }
     );
   }

@@ -9,6 +9,7 @@ import {
 } from "@/lib/services/inventory-csv-safety";
 import { ensureDir } from "@/lib/services/ingest";
 import { sanitizeNetworkName } from "@/lib/services/path-safety";
+import { getSafeErrorMessage } from "@/lib/services/api-response-safety";
 
 export interface InventoryUploadResponse {
   success: boolean;
@@ -108,7 +109,12 @@ export async function POST(request: NextRequest): Promise<NextResponse<Inventory
     console.error("Inventory upload error:", error);
     const status = isInventoryCSVLimitError(error) ? 400 : 500;
     return NextResponse.json(
-      { success: false, error: error instanceof Error ? error.message : "Failed to process CSV" },
+      {
+        success: false,
+        error: getSafeErrorMessage(error, "Failed to process CSV", {
+          allowClientMessage: isInventoryCSVLimitError,
+        }),
+      },
       { status }
     );
   }

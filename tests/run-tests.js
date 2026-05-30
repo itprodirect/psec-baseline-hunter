@@ -17,21 +17,55 @@ const {
   assertInventoryCSVRequestContentLength,
   assertInventoryCSVRowLimit,
   InventoryCSVLimitError,
+  isInventoryCSVLimitError,
 } = require("../src/lib/services/inventory-csv-safety.ts");
+const {
+  getSafeErrorMessage,
+  sanitizeRunManifestForClient,
+  toClientDataPath,
+} = require("../src/lib/services/api-response-safety.ts");
+const { callLLM } = require("../src/lib/llm/provider.ts");
 
 let total = 0;
 let failed = 0;
+const pending = [];
 
 function run(name, fn) {
   total += 1;
   try {
-    fn();
+    const result = fn();
+    if (result && typeof result.then === "function") {
+      pending.push(
+        result
+          .then(() => {
+            console.log(`PASS: ${name}`);
+          })
+          .catch((error) => {
+            failed += 1;
+            console.error(`FAIL: ${name}`);
+            console.error(error instanceof Error ? error.stack : error);
+          })
+      );
+      return;
+    }
+
     console.log(`PASS: ${name}`);
   } catch (error) {
     failed += 1;
     console.error(`FAIL: ${name}`);
     console.error(error instanceof Error ? error.stack : error);
   }
+}
+
+async function finish() {
+  await Promise.all(pending);
+
+  if (failed > 0) {
+    console.error(`\n${failed}/${total} tests failed`);
+    process.exit(1);
+  }
+
+  console.log(`\n${total} tests passed`);
 }
 
 function createDiffData(riskyExposures) {
@@ -276,9 +310,120 @@ run("inventory CSV safety rejects too many inventory rows", () => {
   );
 });
 
-if (failed > 0) {
-  console.error(`\n${failed}/${total} tests failed`);
-  process.exit(1);
-}
+run("safe API error messages hide unexpected details", () => {
+  const sensitivePath = path.join(os.tmpdir(), "psec-secret", "scan.xml");
+  const rawError = new Error(`ENOENT: no such file or directory, open '${sensitivePath}'`);
 
-console.log(`\n${total} tests passed`);
+  const message = getSafeErrorMessage(rawError, "Upload failed");
+
+  assert.equal(message, "Upload failed");
+  assert.doesNotMatch(message, /psec-secret|scan\.xml|[A-Za-z]:\\/);
+});
+
+run("safe API error messages preserve allow-listed validation messages", () => {
+  const validationError = new InventoryCSVLimitError(
+    "CSV file is too large. Maximum size is 1 MiB."
+  );
+
+  const message = getSafeErrorMessage(validationError, "Failed to process CSV", {
+    allowClientMessage: isInventoryCSVLimitError,
+  });
+
+  assert.equal(message, validationError.message);
+});
+
+run("client data paths are relative for files under the project data directory", () => {
+  const uploadPath = path.join(process.cwd(), "data", "uploads", "scan.zip");
+
+  const clientPath = toClientDataPath(uploadPath);
+
+  assert.equal(clientPath, "data/uploads/scan.zip");
+  assert.equal(path.isAbsolute(clientPath), false);
+});
+
+run("run manifests returned to clients do not include absolute file paths", () => {
+  const runFolder = path.join(
+    process.cwd(),
+    "data",
+    "extracted",
+    "demo",
+    "rawscans",
+    "2026-01-01_0101_baseline"
+  );
+  const manifest = {
+    runUid: "run-1",
+    network: "demo",
+    runFolder,
+    folderName: "2026-01-01_0101_baseline",
+    timestamp: null,
+    runType: "baseline",
+    keyFiles: {
+      ports: [path.join(runFolder, "ports_top200_open.xml")],
+    },
+    contentHash: "hash",
+    stats: {
+      keyFileCount: 1,
+      hasPortsScan: true,
+      hasHostsUp: false,
+      hasDiscovery: false,
+    },
+    createdAt: "2026-01-01T00:00:00.000Z",
+    extractionId: "extract",
+  };
+
+  const safeManifest = sanitizeRunManifestForClient(manifest);
+
+  assert.equal(path.isAbsolute(safeManifest.runFolder), false);
+  assert.equal(path.isAbsolute(safeManifest.keyFiles.ports[0]), false);
+  assert.match(safeManifest.runFolder, /^data\/extracted\//);
+  assert.match(safeManifest.keyFiles.ports[0], /^data\/extracted\//);
+});
+
+run("LLM provider hides upstream bodies in returned errors while logging detail", async () => {
+  const originalFetch = global.fetch;
+  const originalConsoleError = console.error;
+  const originalAnthropicKey = process.env.ANTHROPIC_API_KEY;
+  const originalOpenAIKey = process.env.OPENAI_API_KEY;
+  const providerBody = `{"error":"failure at ${path.join(os.tmpdir(), "provider-secret.json")}"}`;
+  const logs = [];
+
+  global.fetch = async () => new Response(providerBody, { status: 502 });
+  console.error = (...args) => {
+    logs.push(args);
+  };
+  delete process.env.ANTHROPIC_API_KEY;
+  process.env.OPENAI_API_KEY = "test-key";
+
+  try {
+    const response = await callLLM("system", "user");
+
+    assert.equal(response.success, false);
+    assert.equal(response.error, "OpenAI API error (502)");
+    assert.doesNotMatch(response.error, /provider-secret|[A-Za-z]:\\/);
+    assert.ok(
+      logs.some((args) =>
+        args.some((arg) => arg && typeof arg === "object" && arg.body === providerBody)
+      )
+    );
+  } finally {
+    global.fetch = originalFetch;
+    console.error = originalConsoleError;
+
+    if (originalAnthropicKey === undefined) {
+      delete process.env.ANTHROPIC_API_KEY;
+    } else {
+      process.env.ANTHROPIC_API_KEY = originalAnthropicKey;
+    }
+
+    if (originalOpenAIKey === undefined) {
+      delete process.env.OPENAI_API_KEY;
+    } else {
+      process.env.OPENAI_API_KEY = originalOpenAIKey;
+    }
+  }
+});
+
+finish().catch((error) => {
+  console.error(error instanceof Error ? error.stack : error);
+  process.exit(1);
+});

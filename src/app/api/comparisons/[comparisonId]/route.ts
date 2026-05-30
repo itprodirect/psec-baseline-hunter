@@ -10,6 +10,7 @@ import {
   deleteComparison,
 } from "@/lib/services/comparisons-registry";
 import { ComparisonResponse } from "@/lib/types";
+import { getSafeErrorMessage } from "@/lib/services/api-response-safety";
 
 interface RouteParams {
   params: Promise<{ comparisonId: string }>;
@@ -39,8 +40,7 @@ export async function GET(
     return NextResponse.json(
       {
         success: false,
-        error:
-          error instanceof Error ? error.message : "Failed to get comparison",
+        error: getSafeErrorMessage(error, "Failed to get comparison"),
       },
       { status: 500 }
     );
@@ -70,10 +70,7 @@ export async function DELETE(
     return NextResponse.json(
       {
         success: false,
-        error:
-          error instanceof Error
-            ? error.message
-            : "Failed to delete comparison",
+        error: getSafeErrorMessage(error, "Failed to delete comparison"),
       },
       { status: 500 }
     );
