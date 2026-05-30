@@ -1,8 +1,10 @@
 export const MAX_INVENTORY_CSV_BYTES = 1 * 1024 * 1024;
 export const MAX_INVENTORY_CSV_ROWS = 5000;
+const MULTIPART_CONTENT_LENGTH_OVERHEAD_BYTES = 64 * 1024;
 
 export interface InventoryCSVLimitOptions {
   maxBytes?: number;
+  maxMultipartBytes?: number;
   maxRows?: number;
 }
 
@@ -49,6 +51,73 @@ export function assertInventoryCSVFileSize(
   }
 }
 
+export function assertInventoryCSVRequestContentLength(
+  contentLength: string | null,
+  options: InventoryCSVLimitOptions = {}
+): void {
+  if (contentLength === null) {
+    return;
+  }
+
+  const trimmedContentLength = contentLength.trim();
+  if (!/^\d+$/.test(trimmedContentLength)) {
+    throw new InventoryCSVLimitError("CSV upload request size is invalid.");
+  }
+
+  const requestBytes = Number(trimmedContentLength);
+  if (!Number.isSafeInteger(requestBytes)) {
+    throw new InventoryCSVLimitError("CSV upload request size is invalid.");
+  }
+
+  const maxFileBytes = options.maxBytes ?? MAX_INVENTORY_CSV_BYTES;
+  const maxMultipartBytes =
+    options.maxMultipartBytes ?? maxFileBytes + MULTIPART_CONTENT_LENGTH_OVERHEAD_BYTES;
+
+  if (requestBytes > maxMultipartBytes) {
+    throw new InventoryCSVLimitError(
+      `CSV upload request is too large. Maximum request size is ${formatBytes(maxMultipartBytes)}.`
+    );
+  }
+}
+
+/**
+ * Parse a single CSV line, handling quoted fields.
+ */
+export function parseInventoryCSVLine(line: string): string[] {
+  const result: string[] = [];
+  let current = "";
+  let inQuotes = false;
+
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i];
+
+    if (char === '"') {
+      if (inQuotes && line[i + 1] === '"') {
+        current += '"';
+        i++;
+      } else {
+        inQuotes = !inQuotes;
+      }
+    } else if (char === "," && !inQuotes) {
+      result.push(current.trim());
+      current = "";
+    } else {
+      current += char;
+    }
+  }
+
+  result.push(current.trim());
+  return result;
+}
+
+export function hasInventoryCSVValues(line: string): boolean {
+  if (!line.trim()) {
+    return false;
+  }
+
+  return parseInventoryCSVLine(line).some((value) => value.trim());
+}
+
 export function assertInventoryCSVRowLimit(
   content: string,
   options: InventoryCSVLimitOptions = {}
@@ -67,7 +136,7 @@ export function assertInventoryCSVRowLimit(
 
   let rowCount = 0;
   for (let i = headerIndex + 1; i < lines.length; i++) {
-    if (!lines[i].trim()) {
+    if (!hasInventoryCSVValues(lines[i])) {
       continue;
     }
 
