@@ -12,8 +12,17 @@ import {
 } from "@/lib/llm/prompt-executive";
 import { ExecutiveSummaryResponse } from "@/lib/types";
 import { getSafeErrorMessage } from "@/lib/services/api-response-safety";
+import {
+  consumeLLMRateLimit,
+  LLM_RATE_LIMIT_ERROR_RESPONSE,
+} from "@/lib/services/llm-rate-limit";
 
 export async function POST(req: NextRequest) {
+  const rateLimit = consumeLLMRateLimit(req);
+  if (!rateLimit.allowed) {
+    return NextResponse.json(LLM_RATE_LIMIT_ERROR_RESPONSE, { status: 429 });
+  }
+
   try {
     const body = await req.json();
     const { scorecardData, userProfile } = body;
