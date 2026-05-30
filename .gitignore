@@ -36,10 +36,9 @@ tsconfig.tsbuildinfo
 # Streamlit (legacy)
 .streamlit/
 
-# Local data (DO NOT COMMIT)
-data/uploads/
-data/extracted/
-data/runs/
-data/**/*.zip
-data/comparisons/
+# Local generated data (DO NOT COMMIT)
+data/*
+!data/.gitkeep
+!data/demo/
+!data/demo/**
 *.old
