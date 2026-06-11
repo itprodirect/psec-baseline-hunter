@@ -212,6 +212,10 @@ export function buildNormalizedCapture(
     extract.firstTsMs !== null && extract.lastTsMs !== null
       ? Math.max(0, extract.lastTsMs - extract.firstTsMs)
       : null;
+  const trackedDataDropped =
+    extract.droppedFlows > 0 ||
+    extract.droppedExternalIps > 0 ||
+    extract.droppedDnsNames > 0;
 
   const meta = {
     fileName: options.fileName,
@@ -221,7 +225,7 @@ export function buildNormalizedCapture(
     startTime: toIso(extract.firstTsMs),
     endTime: toIso(extract.lastTsMs),
     durationMs,
-    truncated: extract.truncated || extract.droppedFlows > 0,
+    truncated: extract.truncated || trackedDataDropped,
     ignoredPackets: extract.ignoredPackets,
     generatedAt: new Date().toISOString(),
   };

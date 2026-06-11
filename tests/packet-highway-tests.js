@@ -494,7 +494,7 @@ run("parseCapture caps tracked flow count", () => {
 
   assert.equal(extract.flows.size, MAX_TRACKED_FLOWS);
   assert.equal(extract.droppedFlows, 5);
-  assert.equal(extract.truncated, false);
+  assert.equal(extract.truncated, true);
 });
 
 run("parseCapture caps tracked external endpoint count", () => {
@@ -511,6 +511,9 @@ run("parseCapture caps tracked external endpoint count", () => {
 
   assert.equal(extract.externalIps.size, MAX_TRACKED_EXTERNAL_IPS);
   assert.equal(extract.droppedExternalIps, 5);
+  assert.equal(extract.droppedFlows, 0);
+  assert.ok(extract.flows.size < MAX_TRACKED_FLOWS);
+  assert.equal(extract.truncated, true);
 });
 
 run("parseCapture caps tracked DNS name count", () => {
@@ -532,6 +535,9 @@ run("parseCapture caps tracked DNS name count", () => {
 
   assert.equal(extract.dnsQueries.size, MAX_TRACKED_DNS_NAMES);
   assert.equal(extract.droppedDnsNames, 5);
+  assert.equal(extract.droppedFlows, 0);
+  assert.ok(extract.flows.size < MAX_TRACKED_FLOWS);
+  assert.equal(extract.truncated, true);
 });
 
 run("parseDnsQueryName reads question names and bails on compression pointers", () => {
@@ -601,6 +607,47 @@ run("buildNormalizedCapture without inventory marks devices unknown but raises n
   const capture = buildNormalizedCapture(extract, { fileName: "test.pcap" });
   assert.equal(findRule(capture.alerts, "unknown-device"), null);
   assert.ok(capture.summary.lines.some((line) => /device list/i.test(line)));
+});
+
+run("buildNormalizedCapture exports truncated metadata when parser drops capped data", () => {
+  const externalPackets = Array.from({ length: MAX_TRACKED_EXTERNAL_IPS + 5 }, (_, i) => ({
+    tsSec: BASE_SEC,
+    frame: ethFrame(
+      ROUTER_MAC,
+      DEV_A_MAC,
+      0x0800,
+      ipv4Packet(DEV_A_IP, externalTestIp(i), 6, tcpSegment(51000, 443))
+    ),
+  }));
+  const externalCapture = buildNormalizedCapture(parseCapture(pcapFile(externalPackets)), {
+    fileName: "external-cap.pcap",
+  });
+  const restoredExternal = parseNormalizedCaptureFixture(JSON.stringify(externalCapture));
+
+  assert.equal(externalCapture.meta.truncated, true);
+  assert.equal(restoredExternal.meta.truncated, true);
+
+  const dnsPackets = Array.from({ length: MAX_TRACKED_DNS_NAMES + 5 }, (_, i) => ({
+    tsSec: BASE_SEC,
+    frame: ethFrame(
+      ROUTER_MAC,
+      DEV_A_MAC,
+      0x0800,
+      ipv4Packet(
+        DEV_A_IP,
+        ROUTER_IP,
+        17,
+        udpDatagram(40000, 53, dnsQuery(`export${i}.example`))
+      )
+    ),
+  }));
+  const dnsCapture = buildNormalizedCapture(parseCapture(pcapFile(dnsPackets)), {
+    fileName: "dns-cap.pcap",
+  });
+  const restoredDns = parseNormalizedCaptureFixture(JSON.stringify(dnsCapture));
+
+  assert.equal(dnsCapture.meta.truncated, true);
+  assert.equal(restoredDns.meta.truncated, true);
 });
 
 run("parseInventoryCSV maps the documented CSV columns", () => {

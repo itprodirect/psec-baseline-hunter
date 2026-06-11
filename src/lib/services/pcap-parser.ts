@@ -754,6 +754,7 @@ function recordExternalIp(state: CaptureExtract, ip: string, origLen: number): v
   if (!agg) {
     if (state.externalIps.size >= MAX_TRACKED_EXTERNAL_IPS) {
       state.droppedExternalIps += 1;
+      state.truncated = true;
       return;
     }
     agg = { ip, packets: 0, bytes: 0 };
@@ -784,6 +785,7 @@ function recordFlow(
   if (!flow) {
     if (state.flows.size >= MAX_TRACKED_FLOWS) {
       state.droppedFlows += 1;
+      state.truncated = true;
       return;
     }
     flow = {
@@ -828,6 +830,7 @@ function recordDnsQuery(state: CaptureExtract, srcMac: string, name: string, kin
   if (!agg) {
     if (state.dnsQueries.size >= MAX_TRACKED_DNS_NAMES) {
       state.droppedDnsNames += 1;
+      state.truncated = true;
       return;
     }
     agg = { name, count: 0, kind };

@@ -34,7 +34,7 @@ export interface CaptureMeta {
   startTime: string | null;
   endTime: string | null;
   durationMs: number | null;
-  /** True when parsing stopped early (packet/flow caps reached) */
+  /** True when parsing omitted packets or tracked metadata due to caps */
   truncated: boolean;
   /** Packets skipped because they were not parseable Ethernet/IP frames */
   ignoredPackets: number;
