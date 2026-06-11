@@ -4,47 +4,88 @@ const os = require("node:os");
 const path = require("node:path");
 const AdmZip = require("adm-zip");
 
-const {
-  resolvePathWithin,
-  sanitizeNetworkName,
-} = require("../src/lib/services/path-safety.ts");
-const {
-  extractZipSafely,
-} = require("../src/lib/services/archive-safety.ts");
-const { buildTopActions } = require("../src/lib/services/diff-actions.ts");
-const {
-  assertInventoryCSVFileSize,
-  assertInventoryCSVRequestContentLength,
-  assertInventoryCSVRowLimit,
-  InventoryCSVLimitError,
-  isInventoryCSVLimitError,
-} = require("../src/lib/services/inventory-csv-safety.ts");
-const {
-  getSafeErrorMessage,
-  sanitizeRunManifestForClient,
-  toClientDataPath,
-} = require("../src/lib/services/api-response-safety.ts");
-const {
-  consumeLLMRateLimit,
-  getLLMRateLimitIdentity,
-  LLM_RATE_LIMIT_ERROR_RESPONSE,
-  LLM_RATE_LIMIT_MAX_REQUESTS,
-  LLM_RATE_LIMIT_WINDOW_MS,
-  resetLLMRateLimitForTesting,
-  SHARED_LLM_RATE_LIMIT_IDENTITY,
-} = require("../src/lib/services/llm-rate-limit.ts");
-const {
-  callLLM,
-  DEFAULT_LLM_MAX_TOKENS,
-  DEFAULT_LLM_REQUEST_TIMEOUT_MS,
-  LLM_MAX_TOKENS_UPPER_CAP,
-  getLLMMaxTokens,
-  getLLMRequestTimeoutMs,
-} = require("../src/lib/llm/provider.ts");
+let resolvePathWithin;
+let sanitizeNetworkName;
+let extractZipSafely;
+let buildTopActions;
+let assertInventoryCSVFileSize;
+let assertInventoryCSVRequestContentLength;
+let assertInventoryCSVRowLimit;
+let InventoryCSVLimitError;
+let isInventoryCSVLimitError;
+let getSafeErrorMessage;
+let sanitizeRunManifestForClient;
+let toClientDataPath;
+let consumeLLMRateLimit;
+let getLLMRateLimitIdentity;
+let LLM_RATE_LIMIT_ERROR_RESPONSE;
+let LLM_RATE_LIMIT_MAX_REQUESTS;
+let LLM_RATE_LIMIT_WINDOW_MS;
+let resetLLMRateLimitForTesting;
+let SHARED_LLM_RATE_LIMIT_IDENTITY;
+let callLLM;
+let DEFAULT_LLM_MAX_TOKENS;
+let DEFAULT_LLM_REQUEST_TIMEOUT_MS;
+let LLM_MAX_TOKENS_UPPER_CAP;
+let getLLMMaxTokens;
+let getLLMRequestTimeoutMs;
+
+async function loadModules() {
+  const [
+    pathSafety,
+    archiveSafety,
+    diffActions,
+    inventoryCsvSafety,
+    apiResponseSafety,
+    llmRateLimit,
+    llmProvider,
+  ] = await Promise.all([
+    import("../src/lib/services/path-safety.ts"),
+    import("../src/lib/services/archive-safety.ts"),
+    import("../src/lib/services/diff-actions.ts"),
+    import("../src/lib/services/inventory-csv-safety.ts"),
+    import("../src/lib/services/api-response-safety.ts"),
+    import("../src/lib/services/llm-rate-limit.ts"),
+    import("../src/lib/llm/provider.ts"),
+  ]);
+
+  ({ resolvePathWithin, sanitizeNetworkName } = pathSafety);
+  ({ extractZipSafely } = archiveSafety);
+  ({ buildTopActions } = diffActions);
+  ({
+    assertInventoryCSVFileSize,
+    assertInventoryCSVRequestContentLength,
+    assertInventoryCSVRowLimit,
+    InventoryCSVLimitError,
+    isInventoryCSVLimitError,
+  } = inventoryCsvSafety);
+  ({
+    getSafeErrorMessage,
+    sanitizeRunManifestForClient,
+    toClientDataPath,
+  } = apiResponseSafety);
+  ({
+    consumeLLMRateLimit,
+    getLLMRateLimitIdentity,
+    LLM_RATE_LIMIT_ERROR_RESPONSE,
+    LLM_RATE_LIMIT_MAX_REQUESTS,
+    LLM_RATE_LIMIT_WINDOW_MS,
+    resetLLMRateLimitForTesting,
+    SHARED_LLM_RATE_LIMIT_IDENTITY,
+  } = llmRateLimit);
+  ({
+    callLLM,
+    DEFAULT_LLM_MAX_TOKENS,
+    DEFAULT_LLM_REQUEST_TIMEOUT_MS,
+    LLM_MAX_TOKENS_UPPER_CAP,
+    getLLMMaxTokens,
+    getLLMRequestTimeoutMs,
+  } = llmProvider);
+}
 
 let total = 0;
 let failed = 0;
-let testQueue = Promise.resolve();
+let testQueue = loadModules();
 
 function run(name, fn) {
   total += 1;
@@ -1085,6 +1126,16 @@ run("ingest and parse POST reject invalid bodies and preserve valid file payload
     const extractedDir = path.join(process.cwd(), "data", "extracted", "sample");
     const xmlPath = path.join(extractedDir, "ports.xml");
     fs.mkdirSync(extractedDir, { recursive: true });
+
+    const malformedXmlPath = path.join(extractedDir, "broken.xml");
+    fs.writeFileSync(malformedXmlPath, "<nmaprun><host>");
+    const malformedXmlResponse = await parseRoute.POST(
+      createJsonRequest("/api/parse", "POST", {
+        xmlPath: path.join("data", "extracted", "sample", "broken.xml"),
+      })
+    );
+    await assertJsonError(malformedXmlResponse, 400, /not valid Nmap XML/);
+
     fs.writeFileSync(
       xmlPath,
       createNmapXml([{ port: 443, protocol: "tcp", service: "https" }])

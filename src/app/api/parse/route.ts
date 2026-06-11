@@ -4,7 +4,7 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { parsePorts, topPorts } from "@/lib/services/nmap-parser";
+import { isNmapParseError, parsePorts, topPorts } from "@/lib/services/nmap-parser";
 import { getDataDir } from "@/lib/services/ingest";
 import { resolvePathWithin } from "@/lib/services/path-safety";
 import { ParseResponse } from "@/lib/types";
@@ -62,6 +62,12 @@ export async function POST(request: NextRequest): Promise<NextResponse<ParseResp
     });
   } catch (error) {
     if (isRequestValidationError(error)) {
+      return NextResponse.json(
+        { success: false, error: error.message },
+        { status: 400 }
+      );
+    }
+    if (isNmapParseError(error)) {
       return NextResponse.json(
         { success: false, error: error.message },
         { status: 400 }

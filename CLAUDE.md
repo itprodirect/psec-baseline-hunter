@@ -14,16 +14,16 @@
 
 ## Tech Stack
 
-| Layer | Technology |
-|-------|-----------|
-| Framework | Next.js 16 (App Router) |
-| Language | TypeScript 5 |
-| Styling | Tailwind CSS 4 |
-| Components | shadcn/ui |
-| XML Parsing | fast-xml-parser |
-| ZIP Handling | adm-zip |
-| State | React Context (persona), React state (local) |
-| LLM | Anthropic Claude / OpenAI (optional) |
+| Layer        | Technology                                   |
+| ------------ | -------------------------------------------- |
+| Framework    | Next.js 16 (App Router)                      |
+| Language     | TypeScript 5                                 |
+| Styling      | Tailwind CSS 4                               |
+| Components   | shadcn/ui                                    |
+| XML Parsing  | fast-xml-parser                              |
+| ZIP Handling | adm-zip                                      |
+| State        | React Context (persona), React state (local) |
+| LLM          | Anthropic Claude / OpenAI (optional)         |
 
 ---
 
@@ -73,6 +73,7 @@ src/
 ## Current State (January 2026)
 
 ### ✅ Working Features
+
 - Upload ZIP → extract → detect runs → parse Nmap XML
 - Scorecard with risk classification (P0/P1/P2)
 - Personalized Summary Card (LLM + rule-based fallback)
@@ -88,6 +89,7 @@ src/
 - **Traffic Visualizer (V0)** - PCAP/PCAPNG upload → animated "network city" at `/packet-highway` (metadata-only parsing, in-memory, rule-based text; see `docs/TRAFFIC_VISUALIZER.md`)
 
 ### 📋 Next Priorities (Phase 5/6)
+
 1. **LLM Observability** - Integrate wandb for tracking API calls, costs, performance
 2. **S3 Cloud Storage** - Move from local filesystem to cloud storage
 3. **Scheduled Scans** - Automated scan execution and weekly digests
@@ -99,6 +101,7 @@ src/
 ## Key Patterns
 
 ### Risk Classification
+
 ```typescript
 // P0 = Critical, P1 = Admin, P2 = Watch
 const CRITICAL_PORTS = [23, 445, 3389, 5900, 135, 139, 1080];
@@ -107,24 +110,29 @@ const WATCH_PORTS = [22, 80, 443];
 ```
 
 ### Persona System
+
 ```typescript
 interface UserProfile {
-  technicalLevel: 'non_technical' | 'some_technical' | 'technical';
+  technicalLevel: "non_technical" | "some_technical" | "technical";
   professionOrRole: string;
-  context: string[];  // works_from_home, young_children_in_home, etc.
-  audience: 'self' | 'spouse_family' | 'IT_vendor' | 'executive_summary';
-  tone: 'concise' | 'normal' | 'detailed';
+  context: string[]; // works_from_home, young_children_in_home, etc.
+  audience: "self" | "spouse_family" | "IT_vendor" | "executive_summary";
+  tone: "concise" | "normal" | "detailed";
   includeSensitiveDetails: boolean;
 }
 ```
 
 ### LLM Fallback
+
 If no API key is configured, use rule-based summaries:
+
 ```typescript
 // Check for API key
 const hasLLM = process.env.ANTHROPIC_API_KEY || process.env.OPENAI_API_KEY;
 // Use rule-based fallback if no key
-const summary = hasLLM ? await generateLLMSummary() : generateRuleBasedSummary();
+const summary = hasLLM
+  ? await generateLLMSummary()
+  : generateRuleBasedSummary();
 ```
 
 ---
@@ -132,6 +140,7 @@ const summary = hasLLM ? await generateLLMSummary() : generateRuleBasedSummary()
 ## Scanner Integration
 
 ### Expected ZIP Structure
+
 ```
 network-name/
 └── rawscans/
@@ -144,7 +153,9 @@ network-name/
 ```
 
 ### PowerShell Scanner
+
 Located at `scripts/network-scan_v1_3.ps1`:
+
 ```powershell
 # Run with:
 powershell.exe -ExecutionPolicy Bypass -File ".\scripts\network-scan_v1_3.ps1" `
@@ -160,20 +171,24 @@ powershell.exe -ExecutionPolicy Bypass -File ".\scripts\network-scan_v1_3.ps1" `
 ## Coding Guidelines
 
 ### Component Structure
+
 - Use `"use client"` directive for interactive components
 - Keep components under 200 lines; extract hooks for complex logic
 - Colocate component-specific types in the same file
 
 ### State Management
+
 - Use React Context for app-wide state (persona, demo mode)
 - Use local state for component-specific UI state
 - Persist user preferences to localStorage
 
 ### API Routes
+
 - Return consistent shapes: `{ data: T } | { error: string }`
 - Handle errors gracefully; never expose internal paths
 
 ### Git Commits
+
 - Use conventional commits: `feat(scope): message`, `fix(scope): message`
 - Commit after each logical change
 - Push to feature branch, PR to main
@@ -183,16 +198,19 @@ powershell.exe -ExecutionPolicy Bypass -File ".\scripts\network-scan_v1_3.ps1" `
 ## Common Tasks
 
 ### Add a new risk port
+
 1. Edit `src/lib/constants/risk-ports.ts`
 2. Add to appropriate array (CRITICAL_PORTS, ADMIN_PORTS, etc.)
 3. Add action description to `P0_ACTIONS` or `P1_ACTIONS`
 
 ### Add a new persona field
+
 1. Update `src/lib/types/userProfile.ts`
 2. Update persona modal component
 3. Update LLM prompt builder if field affects summary
 
 ### Add a new API route
+
 1. Create folder in `src/app/api/`
 2. Add `route.ts` with handler
 3. Export named functions (GET, POST, etc.)
@@ -202,6 +220,7 @@ powershell.exe -ExecutionPolicy Bypass -File ".\scripts\network-scan_v1_3.ps1" `
 ## Testing
 
 ### Manual Testing Checklist
+
 - [ ] Upload a ZIP → runs detected
 - [ ] Select run → scorecard shows data
 - [ ] Change persona → summary updates
@@ -210,6 +229,7 @@ powershell.exe -ExecutionPolicy Bypass -File ".\scripts\network-scan_v1_3.ps1" `
 - [ ] Export → file downloads
 
 ### Commands
+
 ```bash
 npm run dev       # Start dev server
 npm run build     # Production build (catches type errors)
@@ -220,16 +240,114 @@ npm run lint      # ESLint
 
 ## Documentation Files
 
-| File | Purpose |
-|------|---------|
-| `README.md` | Project overview, quick start |
-| `CLAUDE.md` | AI assistant context (this file) |
-| `CHANGELOG.md` | Version history |
-| `docs/ROADMAP.md` | Feature roadmap |
-| `docs/SCANNING_GUIDE.md` | How to run Nmap scans |
-| `docs/FEATURE_ROADMAP.md` | Prioritized feature list |
+| File                         | Purpose                                           |
+| ---------------------------- | ------------------------------------------------- |
+| `README.md`                  | Project overview, quick start                     |
+| `CLAUDE.md`                  | AI assistant context (this file)                  |
+| `CHANGELOG.md`               | Version history                                   |
+| `docs/ROADMAP.md`            | Feature roadmap                                   |
+| `docs/SCANNING_GUIDE.md`     | How to run Nmap scans                             |
+| `docs/FEATURE_ROADMAP.md`    | Prioritized feature list                          |
 | `docs/TRAFFIC_VISUALIZER.md` | Traffic Visualizer (PCAP) feature & privacy model |
 
 ---
 
-*Last updated: January 27, 2026*
+## Security Guidance: Uploads, Parsers, and Packet Highway
+
+This repo accepts user-supplied network artifacts. Treat all uploaded ZIPs, XML files, PCAPs, PCAPNGs, CSVs, JSON fixtures, and generated analysis outputs as untrusted input.
+
+### Runtime parser risk
+
+- XML parsing is a runtime security boundary because users upload Nmap XML artifacts.
+- PCAP/PCAPNG parsing is also a runtime security boundary because users may upload large or malformed captures.
+- Any parser change must preserve explicit input limits, safe failure behavior, and path-safe error messages.
+
+### Dependency security
+
+When touching dependencies:
+
+1. Run `npm audit`.
+2. Classify findings as:
+   - runtime exposure,
+   - development/build-tool exposure,
+   - transitive/no practical exposure,
+   - false positive or not applicable.
+
+3. Fix runtime exposures first.
+4. Prefer normal semver-compatible upgrades.
+5. Avoid `npm audit fix --force` unless explicitly approved.
+6. If using `overrides`, document:
+   - why the override exists,
+   - what package/version it overrides,
+   - how to remove it later,
+   - the upstream version that should make it unnecessary.
+
+### Packet Highway privacy rules
+
+Do not commit:
+
+- `*.pcap`
+- `*.pcapng`
+- `*.cap`
+- `*.har`
+- `*.etl`
+- Zeek logs such as `conn.log`, `dns.log`, `ssl.log`, `http.log`
+- real device inventory CSV/XLSX files
+- generated raw flow JSON
+- local capture output folders
+
+Real captures and inventories must stay in ignored local paths only.
+
+### Parser output rules
+
+Packet Highway parser output must contain metadata only:
+
+- timestamps
+- MAC addresses
+- IP addresses
+- ports
+- protocol/service classification
+- packet counts
+- byte counts
+- DNS/mDNS/LLMNR query names where present
+
+Do not extract, store, summarize, or display packet payload contents.
+
+### UI wording rules
+
+The UI must not claim it can see encrypted content.
+
+Use wording like:
+
+- “encrypted web/video traffic observed”
+- “metadata suggests this service category”
+- “unusual pattern worth reviewing”
+- “potentially risky”
+
+Avoid wording like:
+
+- “malware detected”
+- “Zoom content”
+- “safe device”
+- “confirmed attack”
+
+unless there is deterministic evidence and the rule explains that evidence.
+
+### Required validation before PR
+
+Run and report:
+
+```bash
+npm ci
+npm audit --audit-level=moderate
+npm test
+npm run lint
+npx tsc --noEmit
+npm run build
+git status --short
+git check-ignore path/to/test.pcap path/to/test.pcapng path/to/test.har path/to/conn.log
+```
+
+Before merging, confirm no raw captures, real inventories, local generated outputs, or sensitive analysis artifacts are staged.
+
+_Last updated: January 27, 2026_

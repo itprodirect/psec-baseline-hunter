@@ -8,7 +8,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "node --experimental-strip-types --loader ./tests/route-loader.mjs tests/run-tests.js && node --experimental-strip-types --loader ./tests/route-loader.mjs tests/packet-highway-tests.js"
+    "test": "node --loader ./tests/route-loader.mjs tests/run-tests.js && node --loader ./tests/route-loader.mjs tests/packet-highway-tests.js"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.15",

@@ -289,10 +289,22 @@ function findRule(alerts, ruleId) {
   return alerts.find((a) => a.ruleId === ruleId) ?? null;
 }
 
+function externalTestIp(index) {
+  return `203.0.${Math.floor(index / 254)}.${(index % 254) + 1}`;
+}
+
 async function main() {
 const {
   services: { classifyService },
-  parser: { parseCapture, parseDnsQueryName, isCaptureParseError, sniffCaptureFormat },
+  parser: {
+    parseCapture,
+    parseDnsQueryName,
+    isCaptureParseError,
+    sniffCaptureFormat,
+    MAX_TRACKED_DNS_NAMES,
+    MAX_TRACKED_EXTERNAL_IPS,
+    MAX_TRACKED_FLOWS,
+  },
   normalizer: { buildNormalizedCapture },
   rules: {
     evaluateTrafficWatchItems,
@@ -301,7 +313,15 @@ const {
     MANY_DNS_QUERIES_PER_DEVICE_THRESHOLD,
     MANY_EXTERNAL_PEERS_THRESHOLD,
   },
-  safety: { parseNormalizedCaptureFixture, getCaptureUploadKind, isTrafficUploadError },
+  safety: {
+    MAX_CAPTURE_BYTES,
+    MAX_FIXTURE_BYTES,
+    assertCaptureRequestContentLength,
+    assertCaptureUploadSize,
+    parseNormalizedCaptureFixture,
+    getCaptureUploadKind,
+    isTrafficUploadError,
+  },
   inventory: { parseInventoryCSV },
   demo: { buildDemoCapture },
 } = await loadModules();
@@ -410,6 +430,108 @@ run("parseCapture rejects garbage, empty, and non-Ethernet captures with friendl
     () => parseCapture(pcapFile([], { linkType: 113 })),
     (error) => isCaptureParseError(error) && /non-Ethernet/.test(error.message)
   );
+});
+
+run("parseCapture rejects malformed classic pcap and pcapng with friendly errors", () => {
+  const malformedPcap = Buffer.alloc(40);
+  malformedPcap.writeUInt32LE(0xa1b2c3d4, 0);
+  malformedPcap.writeUInt16LE(2, 4);
+  malformedPcap.writeUInt16LE(4, 6);
+  malformedPcap.writeUInt32LE(65535, 16);
+  malformedPcap.writeUInt32LE(1, 20);
+  malformedPcap.writeUInt32LE(999, 32);
+  malformedPcap.writeUInt32LE(999, 36);
+
+  assert.throws(
+    () => parseCapture(malformedPcap),
+    (error) =>
+      isCaptureParseError(error) &&
+      /No packets/.test(error.message) &&
+      !/[A-Za-z]:\\|\/home\//.test(error.message)
+  );
+
+  const malformedPcapng = Buffer.alloc(28);
+  malformedPcapng.writeUInt32LE(0x0a0d0d0a, 0);
+  malformedPcapng.writeUInt32LE(28, 4);
+  malformedPcapng.writeUInt32LE(0xdeadbeef, 8);
+
+  assert.throws(
+    () => parseCapture(malformedPcapng),
+    (error) =>
+      isCaptureParseError(error) &&
+      /No packets/.test(error.message) &&
+      !/[A-Za-z]:\\|\/home\//.test(error.message)
+  );
+});
+
+run("parseCapture enforces packet count cap with truncation", () => {
+  const packets = Array.from({ length: 5 }, (_, i) => ({
+    tsSec: BASE_SEC + i,
+    frame: ethFrame(
+      ROUTER_MAC,
+      DEV_A_MAC,
+      0x0800,
+      ipv4Packet(DEV_A_IP, EXTERNAL_IP, 6, tcpSegment(51000, 443))
+    ),
+  }));
+  const extract = parseCapture(pcapFile(packets), { maxPackets: 3 });
+
+  assert.equal(extract.packetCount, 3);
+  assert.equal(extract.truncated, true);
+});
+
+run("parseCapture caps tracked flow count", () => {
+  const packets = Array.from({ length: MAX_TRACKED_FLOWS + 5 }, (_, i) => ({
+    tsSec: BASE_SEC,
+    frame: ethFrame(
+      ROUTER_MAC,
+      DEV_A_MAC,
+      0x0800,
+      ipv4Packet(DEV_A_IP, EXTERNAL_IP, 6, tcpSegment(10000 + i, 443))
+    ),
+  }));
+  const extract = parseCapture(pcapFile(packets));
+
+  assert.equal(extract.flows.size, MAX_TRACKED_FLOWS);
+  assert.equal(extract.droppedFlows, 5);
+  assert.equal(extract.truncated, false);
+});
+
+run("parseCapture caps tracked external endpoint count", () => {
+  const packets = Array.from({ length: MAX_TRACKED_EXTERNAL_IPS + 5 }, (_, i) => ({
+    tsSec: BASE_SEC,
+    frame: ethFrame(
+      ROUTER_MAC,
+      DEV_A_MAC,
+      0x0800,
+      ipv4Packet(DEV_A_IP, externalTestIp(i), 6, tcpSegment(51000, 443))
+    ),
+  }));
+  const extract = parseCapture(pcapFile(packets));
+
+  assert.equal(extract.externalIps.size, MAX_TRACKED_EXTERNAL_IPS);
+  assert.equal(extract.droppedExternalIps, 5);
+});
+
+run("parseCapture caps tracked DNS name count", () => {
+  const packets = Array.from({ length: MAX_TRACKED_DNS_NAMES + 5 }, (_, i) => ({
+    tsSec: BASE_SEC,
+    frame: ethFrame(
+      ROUTER_MAC,
+      DEV_A_MAC,
+      0x0800,
+      ipv4Packet(
+        DEV_A_IP,
+        ROUTER_IP,
+        17,
+        udpDatagram(40000, 53, dnsQuery(`name${i}.example`))
+      )
+    ),
+  }));
+  const extract = parseCapture(pcapFile(packets));
+
+  assert.equal(extract.dnsQueries.size, MAX_TRACKED_DNS_NAMES);
+  assert.equal(extract.droppedDnsNames, 5);
 });
 
 run("parseDnsQueryName reads question names and bails on compression pointers", () => {
@@ -592,6 +714,21 @@ run("getCaptureUploadKind accepts pcap/pcapng/json and rejects others", () => {
   assert.throws(
     () => getCaptureUploadKind("notes.txt"),
     (error) => isTrafficUploadError(error) && /Unsupported file type/.test(error.message)
+  );
+});
+
+run("capture upload safety rejects oversized files and requests", () => {
+  assert.throws(
+    () => assertCaptureUploadSize(MAX_CAPTURE_BYTES + 1, "capture"),
+    (error) => isTrafficUploadError(error) && /File is too large/.test(error.message)
+  );
+  assert.throws(
+    () => assertCaptureUploadSize(MAX_FIXTURE_BYTES + 1, "fixture"),
+    (error) => isTrafficUploadError(error) && /File is too large/.test(error.message)
+  );
+  assert.throws(
+    () => assertCaptureRequestContentLength(String(MAX_CAPTURE_BYTES + 2 * 64 * 1024 + 1024 * 1024 + 1)),
+    (error) => isTrafficUploadError(error) && /Upload request is too large/.test(error.message)
   );
 });
 
