@@ -21,6 +21,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Refactored `scorecard` and `diff` pages into reusable components to reduce page complexity and improve UX consistency.
 - Updated generated Next.js type reference path for current framework output.
 
+### Security
+- Resolved all 8 `npm audit` findings (1 critical, 4 high, 3 moderate); audit is now clean.
+  - `fast-xml-parser` → 5.8.0 (critical): DoS via DOCTYPE entity expansion and numeric-entity bugs — directly relevant here because the app parses user-uploaded Nmap XML.
+  - `next` 16.1.4 → 16.2.9 (high): clears 22 advisories including Server Components DoS, dev-server HMR/Server Actions CSRF bypass via null origin, and image optimizer DoS.
+  - Forced `next`'s bundled `postcss` to ^8.5.10 via npm override (mirrors upstream fix shipped in 16.3.0-canary.6).
+  - Transitive dev-toolchain fixes via `npm audit fix`: `ajv`, `brace-expansion`, `flatted`, `minimatch`, `picomatch`, `postcss` (ReDoS/prototype-pollution issues in lint/build tooling).
+
 ## [0.6.0] - 2026-01-27
 
 ### Added
