@@ -4,7 +4,7 @@ import { useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
-import { LayoutDashboard, Upload, BarChart3, GitCompare, Shield, FileSpreadsheet, Settings, History, Menu } from "lucide-react";
+import { LayoutDashboard, Upload, BarChart3, GitCompare, Shield, FileSpreadsheet, Settings, History, Menu, Car } from "lucide-react";
 import { PersonaToggle } from "./persona-toggle";
 import { Button } from "@/components/ui/button";
 import {
@@ -43,6 +43,12 @@ const NAV_ITEMS = [
     href: "/history",
     icon: History,
     description: "Saved comparisons",
+  },
+  {
+    title: "Traffic Visualizer",
+    href: "/packet-highway",
+    icon: Car,
+    description: "Watch traffic as a city",
   },
   {
     title: "Custom Rules",
