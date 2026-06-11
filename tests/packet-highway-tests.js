@@ -7,6 +7,8 @@
  */
 
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
 
 let total = 0;
 let failed = 0;
@@ -173,7 +175,7 @@ function pcapngFile(packets) {
 // Library modules are loaded via dynamic import() so the route-loader's
 // @/ alias resolution applies (require() of TS bypasses async loader hooks).
 async function loadModules() {
-  const [services, parser, normalizer, rules, safety, inventory, demo] = await Promise.all([
+  const [services, parser, normalizer, rules, safety, inventory, demo, trustNotices] = await Promise.all([
     import("../src/lib/constants/traffic-services.ts"),
     import("../src/lib/services/pcap-parser.ts"),
     import("../src/lib/services/traffic-normalizer.ts"),
@@ -181,8 +183,9 @@ async function loadModules() {
     import("../src/lib/services/capture-upload-safety.ts"),
     import("../src/lib/services/inventory.ts"),
     import("../src/lib/demo/packet-highway-demo.ts"),
+    import("../src/components/packet-highway/TrustNotices.tsx"),
   ]);
-  return { services, parser, normalizer, rules, safety, inventory, demo };
+  return { services, parser, normalizer, rules, safety, inventory, demo, trustNotices };
 }
 
 // Test network: device A + device B behind a router
@@ -324,6 +327,7 @@ const {
   },
   inventory: { parseInventoryCSV },
   demo: { buildDemoCapture },
+  trustNotices: { ExportMetadataNotice, PartialAnalysisNotice },
 } = await loadModules();
 
 // ---------------------------------------------------------------------------
@@ -648,6 +652,33 @@ run("buildNormalizedCapture exports truncated metadata when parser drops capped 
 
   assert.equal(dnsCapture.meta.truncated, true);
   assert.equal(restoredDns.meta.truncated, true);
+});
+
+run("packet highway trust notices explain partial results and export metadata", async () => {
+  const React = await import("react");
+  const { renderToStaticMarkup } = await import("react-dom/server");
+
+  const partialMarkup = renderToStaticMarkup(React.createElement(PartialAnalysisNotice));
+  const exportMarkup = renderToStaticMarkup(React.createElement(ExportMetadataNotice));
+
+  assert.match(partialMarkup, /Partial analysis/);
+  assert.match(partialMarkup, /metrics and saved JSON/);
+  assert.match(partialMarkup, /group or cap endpoint rendering/);
+  assert.match(exportMarkup, /device identifiers, IPs, names, and DNS lookups/);
+});
+
+run("packet highway page clears stale analysis before a new analyze attempt", () => {
+  const pageSource = fs.readFileSync(
+    path.join(process.cwd(), "src", "app", "(dashboard)", "packet-highway", "page.tsx"),
+    "utf8"
+  );
+
+  assert.match(
+    pageSource,
+    /setIsAnalyzing\(true\);\s*setServerError\(null\);\s*setCapture\(null\);\s*setIsDemo\(false\);\s*setSelectedDeviceId\(null\);/s
+  );
+  assert.match(pageSource, /<ExportMetadataNotice \/>/);
+  assert.match(pageSource, /capture\.meta\.truncated && <PartialAnalysisNotice \/>/);
 });
 
 run("parseInventoryCSV maps the documented CSV columns", () => {

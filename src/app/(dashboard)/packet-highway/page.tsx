@@ -21,6 +21,10 @@ import { Legend } from "@/components/packet-highway/Legend";
 import { SummaryPanel } from "@/components/packet-highway/SummaryPanel";
 import { DeviceDetails } from "@/components/packet-highway/DeviceDetails";
 import { DnsPanel, FlowTable } from "@/components/packet-highway/FlowTable";
+import {
+  ExportMetadataNotice,
+  PartialAnalysisNotice,
+} from "@/components/packet-highway/TrustNotices";
 
 export default function PacketHighwayPage() {
   const [capture, setCapture] = useState<NormalizedCapture | null>(null);
@@ -33,6 +37,8 @@ export default function PacketHighwayPage() {
   const handleAnalyze = useCallback(async (captureFile: File, inventory: File | null) => {
     setIsAnalyzing(true);
     setServerError(null);
+    setCapture(null);
+    setIsDemo(false);
     setSelectedDeviceId(null);
     try {
       const formData = new FormData();
@@ -86,24 +92,27 @@ export default function PacketHighwayPage() {
           </p>
         </div>
         {capture && (
-          <div className="flex gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setRevealSensitive((r) => !r)}
-              aria-pressed={revealSensitive}
-            >
-              {revealSensitive ? (
-                <EyeOff className="mr-1.5 h-3.5 w-3.5" />
-              ) : (
-                <Eye className="mr-1.5 h-3.5 w-3.5" />
-              )}
-              {revealSensitive ? "Hide technical details" : "Show technical details"}
-            </Button>
-            <Button variant="outline" size="sm" onClick={handleDownload}>
-              <Download className="mr-1.5 h-3.5 w-3.5" />
-              Save analysis (JSON)
-            </Button>
+          <div className="flex max-w-xl flex-col items-start gap-2 sm:items-end sm:text-right">
+            <div className="flex flex-wrap gap-2 sm:justify-end">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setRevealSensitive((r) => !r)}
+                aria-pressed={revealSensitive}
+              >
+                {revealSensitive ? (
+                  <EyeOff className="mr-1.5 h-3.5 w-3.5" />
+                ) : (
+                  <Eye className="mr-1.5 h-3.5 w-3.5" />
+                )}
+                {revealSensitive ? "Hide technical details" : "Show technical details"}
+              </Button>
+              <Button variant="outline" size="sm" onClick={handleDownload}>
+                <Download className="mr-1.5 h-3.5 w-3.5" />
+                Save analysis (JSON)
+              </Button>
+            </div>
+            <ExportMetadataNotice />
           </div>
         )}
       </div>
@@ -123,6 +132,8 @@ export default function PacketHighwayPage() {
               capture to see your network.
             </p>
           )}
+
+          {capture.meta.truncated && <PartialAnalysisNotice />}
 
           <MetricsCards capture={capture} />
 

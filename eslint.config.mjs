@@ -12,6 +12,7 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    ".local/**",
     // Legacy Python/Streamlit (to be removed after migration)
     ".venv/**",
     "app/**",
