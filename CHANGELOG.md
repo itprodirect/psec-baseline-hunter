@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Traffic Visualizer (V0)** - Upload a saved PCAP/PCAPNG and see traffic as an animated "network city" at `/packet-highway`
+  - Dependency-free, metadata-only PCAP/PCAPNG parser (no payload extraction; analyzed in memory, never stored)
+  - Optional device inventory CSV merge with unknown-device flagging
+  - Animated scene: devices as buildings, router as toll plaza, internet as cloud, traffic as vehicles colored by service (DNS, mDNS, SSDP, HTTP/HTTPS, QUIC, SSH, SMB, RDP, ARP, ICMP)
+  - "Who's Driving" legend, metrics cards, device details, flow table, grouped DNS panel
+  - Rule-based plain-English summary and calm deterministic watch rules (no LLM)
+  - Save/reload analysis as normalized JSON; synthetic sample data built through the real pipeline
+  - `.gitignore` hardening for captures, Zeek logs, and raw flow exports
+
 ### Changed
 - Refactored `scorecard` and `diff` pages into reusable components to reduce page complexity and improve UX consistency.
 - Updated generated Next.js type reference path for current framework output.

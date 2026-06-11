@@ -85,6 +85,7 @@ src/
 - **Comparison History** - Save and share scan comparisons with unique URLs
 - **Real-World Impact Cards** - Breach examples with financial costs
 - **Executive Summaries** - Business-focused reports for leadership
+- **Traffic Visualizer (V0)** - PCAP/PCAPNG upload → animated "network city" at `/packet-highway` (metadata-only parsing, in-memory, rule-based text; see `docs/TRAFFIC_VISUALIZER.md`)
 
 ### 📋 Next Priorities (Phase 5/6)
 1. **LLM Observability** - Integrate wandb for tracking API calls, costs, performance
@@ -227,6 +228,7 @@ npm run lint      # ESLint
 | `docs/ROADMAP.md` | Feature roadmap |
 | `docs/SCANNING_GUIDE.md` | How to run Nmap scans |
 | `docs/FEATURE_ROADMAP.md` | Prioritized feature list |
+| `docs/TRAFFIC_VISUALIZER.md` | Traffic Visualizer (PCAP) feature & privacy model |
 
 ---
 
