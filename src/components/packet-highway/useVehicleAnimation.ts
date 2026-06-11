@@ -6,7 +6,7 @@
  * into a repeating loop; each vehicle finishes its trip within the loop.
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { AnimationEvent } from "@/lib/types/packet-highway";
 import { SERVICE_CATEGORIES } from "@/lib/constants/traffic-services";
 import {
@@ -58,7 +58,6 @@ export function useVehicleAnimation(
 
   useEffect(() => {
     if (!enabled || prepared.length === 0) {
-      setVehicles([]);
       return;
     }
 
@@ -95,21 +94,29 @@ export function useVehicleAnimation(
     return () => cancelAnimationFrame(rafId);
   }, [prepared, enabled]);
 
-  return vehicles;
+  // While disabled, render nothing; stale state is replaced on the first
+  // animation frame after re-enabling.
+  return enabled && prepared.length > 0 ? vehicles : EMPTY_VEHICLES;
 }
+
+const EMPTY_VEHICLES: ActiveVehicle[] = [];
 
 function easeInOut(t: number): number {
   return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
 }
 
+const REDUCED_MOTION_QUERY = "(prefers-reduced-motion: reduce)";
+
+function subscribeToReducedMotion(callback: () => void): () => void {
+  const query = window.matchMedia(REDUCED_MOTION_QUERY);
+  query.addEventListener("change", callback);
+  return () => query.removeEventListener("change", callback);
+}
+
 export function usePrefersReducedMotion(): boolean {
-  const [reduced, setReduced] = useState(false);
-  useEffect(() => {
-    const query = window.matchMedia("(prefers-reduced-motion: reduce)");
-    setReduced(query.matches);
-    const listener = (event: MediaQueryListEvent) => setReduced(event.matches);
-    query.addEventListener("change", listener);
-    return () => query.removeEventListener("change", listener);
-  }, []);
-  return reduced;
+  return useSyncExternalStore(
+    subscribeToReducedMotion,
+    () => window.matchMedia(REDUCED_MOTION_QUERY).matches,
+    () => false // SSR: assume motion, corrected on hydration
+  );
 }
