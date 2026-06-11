@@ -5,8 +5,41 @@
 
 import * as fs from "fs";
 import * as path from "path";
-import { XMLParser } from "fast-xml-parser";
+import { XMLParser, XMLValidator } from "fast-xml-parser";
 import { PortFinding, TopPort } from "@/lib/types";
+
+export class NmapParseError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "NmapParseError";
+  }
+}
+
+export function isNmapParseError(error: unknown): error is NmapParseError {
+  return (
+    error instanceof NmapParseError ||
+    (error instanceof Error && error.name === "NmapParseError")
+  );
+}
+
+type XmlRecord = Record<string, unknown>;
+
+function asRecord(value: unknown): XmlRecord | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as XmlRecord)
+    : null;
+}
+
+function asRecordArray(value: unknown): XmlRecord[] {
+  if (Array.isArray(value)) return value.map(asRecord).filter((item): item is XmlRecord => item !== null);
+  const record = asRecord(value);
+  return record ? [record] : [];
+}
+
+function attr(record: XmlRecord | null, name: string): string {
+  const value = record?.[name];
+  return typeof value === "string" ? value : "";
+}
 
 /**
  * Parse Nmap XML file to extract port findings
@@ -16,79 +49,86 @@ export function parsePorts(xmlPath: string): PortFinding[] {
   const xmlContent = fs.readFileSync(xmlPath, "utf-8");
   const sourceXml = path.basename(xmlPath);
 
+  const validation = XMLValidator.validate(xmlContent);
+  if (validation !== true) {
+    throw new NmapParseError("XML file is not valid Nmap XML.");
+  }
+
   const parser = new XMLParser({
     ignoreAttributes: false,
     attributeNamePrefix: "@_",
+    processEntities: false,
     isArray: (name) => {
       // These elements can appear multiple times
       return ["host", "address", "hostname", "port"].includes(name);
     },
   });
 
-  const result = parser.parse(xmlContent);
+  let result: unknown;
+  try {
+    result = parser.parse(xmlContent);
+  } catch {
+    throw new NmapParseError("XML file could not be parsed as Nmap XML.");
+  }
   const findings: PortFinding[] = [];
 
   // Navigate to hosts
-  const nmaprun = result.nmaprun;
+  const root = asRecord(result);
+  const nmaprun = asRecord(root?.nmaprun);
   if (!nmaprun) {
     return findings;
   }
 
-  const hosts = nmaprun.host || [];
-  const hostArray = Array.isArray(hosts) ? hosts : [hosts];
+  const hostArray = asRecordArray(nmaprun.host);
 
   for (const host of hostArray) {
     // Check host status
-    const status = host.status;
-    if (status && status["@_state"] !== "up") {
+    const status = asRecord(host.status);
+    if (status && attr(status, "@_state") !== "up") {
       continue;
     }
 
     // Get IP address
     let ip = "";
-    const addresses = host.address || [];
-    const addressArray = Array.isArray(addresses) ? addresses : [addresses];
+    const addressArray = asRecordArray(host.address);
     for (const addr of addressArray) {
-      if (addr["@_addrtype"] === "ipv4") {
-        ip = addr["@_addr"] || "";
+      if (attr(addr, "@_addrtype") === "ipv4") {
+        ip = attr(addr, "@_addr");
         break;
       }
     }
 
     // Get hostname
     let hostname = "";
-    const hostnames = host.hostnames;
+    const hostnames = asRecord(host.hostnames);
     if (hostnames) {
-      const hostnameList = hostnames.hostname || [];
-      const hostnameArray = Array.isArray(hostnameList) ? hostnameList : [hostnameList];
+      const hostnameArray = asRecordArray(hostnames.hostname);
       if (hostnameArray.length > 0) {
-        hostname = hostnameArray[0]["@_name"] || "";
+        hostname = attr(hostnameArray[0], "@_name");
       }
     }
 
     // Get ports
-    const ports = host.ports;
+    const ports = asRecord(host.ports);
     if (!ports) {
       continue;
     }
 
-    const portList = ports.port || [];
-    const portArray = Array.isArray(portList) ? portList : [portList];
+    const portArray = asRecordArray(ports.port);
 
     for (const port of portArray) {
-      const protocol = port["@_protocol"] || "";
-      const portidStr = port["@_portid"] || "";
+      const protocol = attr(port, "@_protocol");
+      const portidStr = attr(port, "@_portid");
       const portid = parseInt(portidStr, 10);
 
       // Get state
-      const stateEl = port.state;
-      const state = stateEl ? (stateEl["@_state"] || "") : "";
+      const state = attr(asRecord(port.state), "@_state");
 
       // Get service info
-      const svc = port.service;
-      const service = svc ? (svc["@_name"] || "") : "";
-      const product = svc ? (svc["@_product"] || "") : "";
-      const version = svc ? (svc["@_version"] || "") : "";
+      const svc = asRecord(port.service);
+      const service = attr(svc, "@_name");
+      const product = attr(svc, "@_product");
+      const version = attr(svc, "@_version");
 
       findings.push({
         ip,

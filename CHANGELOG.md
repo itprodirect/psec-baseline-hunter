@@ -7,9 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Traffic Visualizer (V0)** - Upload a saved PCAP/PCAPNG and see traffic as an animated "network city" at `/packet-highway`
+  - Dependency-free, metadata-only PCAP/PCAPNG parser (no payload extraction; analyzed in memory, never stored)
+  - Optional device inventory CSV merge with unknown-device flagging
+  - Animated scene: devices as buildings, router as toll plaza, internet as cloud, traffic as vehicles colored by service (DNS, mDNS, SSDP, HTTP/HTTPS, QUIC, SSH, SMB, RDP, ARP, ICMP)
+  - "Who's Driving" legend, metrics cards, device details, flow table, grouped DNS panel
+  - Rule-based plain-English summary and calm deterministic watch rules (no LLM)
+  - Save/reload analysis as normalized JSON; synthetic sample data built through the real pipeline
+  - `.gitignore` hardening for captures, Zeek logs, and raw flow exports
+
 ### Changed
 - Refactored `scorecard` and `diff` pages into reusable components to reduce page complexity and improve UX consistency.
 - Updated generated Next.js type reference path for current framework output.
+
+### Security
+- Dependency hardening keeps `npm audit --audit-level=moderate` clean on the current lockfile.
+  - `fast-xml-parser` → 5.8.0: runtime-sensitive because the app parses user-uploaded Nmap XML.
+  - `next` 16.1.4 → 16.2.9: keeps the app on the patched 16.x line for Next.js runtime and development-server advisories relevant to deployment posture.
+  - Forced `next`'s bundled `postcss` to ^8.5.10 via npm override; remove this override once the stable Next.js dependency tree includes `postcss` >= 8.5.10 without it and `npm audit --audit-level=moderate` remains clean.
+  - Refreshed transitive lint/build dependencies including `ajv`, `brace-expansion`, `flatted`, `minimatch`, `picomatch`, and `postcss`.
 
 ## [0.6.0] - 2026-01-27
 

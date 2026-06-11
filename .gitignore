@@ -28,6 +28,7 @@ Thumbs.db
 
 # Claude Code
 .claude/
+.local/
 
 # Build artifacts
 tsconfig.tsbuildinfo
@@ -42,3 +43,25 @@ data/*
 !data/demo/
 !data/demo/**
 *.old
+
+# Packet captures & raw traffic data (NEVER COMMIT - may contain private network details)
+# These rules come last so they also apply inside data/demo/.
+*.pcap
+*.pcapng
+*.cap
+*.har
+*.etl
+*.etlx
+*.pkt
+*.snoop
+*.zeek
+zeek-logs/
+conn.log
+dns.log
+http.log
+# Real device inventories and generated raw flow exports stay local-only
+local-samples/
+*.flows.json
+*-raw-flows.json
+device-inventory.local.csv
+*.inventory.local.csv
