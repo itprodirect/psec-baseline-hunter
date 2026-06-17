@@ -153,7 +153,7 @@ export function parseCapture(bytes: Uint8Array, limits: ParseLimits = {}): Captu
   };
 
   if (format === "pcap") {
-    parseClassicPcap(bytes, onPacket);
+    parseClassicPcap(bytes, onPacket, state);
   } else {
     parsePcapng(bytes, onPacket, state);
   }
@@ -199,7 +199,11 @@ function createExtract(format: "pcap" | "pcapng"): CaptureExtract {
 
 type PacketCallback = (tsMs: number | null, frame: Uint8Array, origLen: number) => boolean;
 
-function parseClassicPcap(bytes: Uint8Array, onPacket: PacketCallback): void {
+function parseClassicPcap(
+  bytes: Uint8Array,
+  onPacket: PacketCallback,
+  state: CaptureExtract
+): void {
   if (bytes.length < 24) {
     throw new CaptureParseError("This capture file is too short to contain a PCAP header.");
   }
@@ -230,12 +234,16 @@ function parseClassicPcap(bytes: Uint8Array, onPacket: PacketCallback): void {
     const inclLen = view.getUint32(offset + 8, le);
     const origLen = view.getUint32(offset + 12, le);
     offset += 16;
-    if (inclLen > bytes.length - offset || inclLen > 0x7fffffff) break; // truncated tail
+    if (inclLen > bytes.length - offset || inclLen > 0x7fffffff) {
+      markMalformedPartialParse(state);
+      break;
+    }
     const frame = bytes.subarray(offset, offset + inclLen);
     offset += inclLen;
     const tsMs = tsSec * 1000 + (nano ? tsFrac / 1e6 : tsFrac / 1e3);
     if (!onPacket(tsMs, frame, origLen || inclLen)) return;
   }
+  if (offset < bytes.length) markMalformedPartialParse(state);
 }
 
 interface PcapngInterface {
@@ -269,12 +277,16 @@ function parsePcapng(bytes: Uint8Array, onPacket: PacketCallback, state: Capture
       } else if (m[0] === 0x1a && m[1] === 0x2b && m[2] === 0x3c && m[3] === 0x4d) {
         le = false;
       } else {
-        break; // corrupt section header
+        markMalformedPartialParse(state);
+        break;
       }
       sawSection = true;
       interfaces = []; // interfaces are scoped to their section
       const blockLen = view.getUint32(offset + 4, le);
-      if (blockLen < 12 || blockLen % 4 !== 0 || offset + blockLen > bytes.length) break;
+      if (blockLen < 12 || blockLen % 4 !== 0 || offset + blockLen > bytes.length) {
+        markMalformedPartialParse(state);
+        break;
+      }
       offset += blockLen;
       continue;
     }
@@ -284,7 +296,10 @@ function parsePcapng(bytes: Uint8Array, onPacket: PacketCallback, state: Capture
     }
 
     const blockLen = view.getUint32(offset + 4, le);
-    if (blockLen < 12 || offset + blockLen > bytes.length) break;
+    if (blockLen < 12 || offset + blockLen > bytes.length) {
+      markMalformedPartialParse(state);
+      break;
+    }
     const padded = blockLen % 4 === 0 ? blockLen : blockLen + (4 - (blockLen % 4));
 
     if (blockType === 0x00000001) {
@@ -334,8 +349,11 @@ function parsePcapng(bytes: Uint8Array, onPacket: PacketCallback, state: Capture
     offset += padded;
   }
 
-  // Unused but kept for symmetry with classic parser error paths
-  void state;
+  if (offset < bytes.length) markMalformedPartialParse(state);
+}
+
+function markMalformedPartialParse(state: CaptureExtract): void {
+  if (state.packetCount > 0) state.truncated = true;
 }
 
 const EMPTY_FRAME = new Uint8Array(0);
