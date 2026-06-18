@@ -153,7 +153,7 @@ export function parseCapture(bytes: Uint8Array, limits: ParseLimits = {}): Captu
   };
 
   if (format === "pcap") {
-    parseClassicPcap(bytes, onPacket);
+    parseClassicPcap(bytes, onPacket, state);
   } else {
     parsePcapng(bytes, onPacket, state);
   }
@@ -199,7 +199,11 @@ function createExtract(format: "pcap" | "pcapng"): CaptureExtract {
 
 type PacketCallback = (tsMs: number | null, frame: Uint8Array, origLen: number) => boolean;
 
-function parseClassicPcap(bytes: Uint8Array, onPacket: PacketCallback): void {
+function parseClassicPcap(
+  bytes: Uint8Array,
+  onPacket: PacketCallback,
+  state: CaptureExtract
+): void {
   if (bytes.length < 24) {
     throw new CaptureParseError("This capture file is too short to contain a PCAP header.");
   }
@@ -230,12 +234,16 @@ function parseClassicPcap(bytes: Uint8Array, onPacket: PacketCallback): void {
     const inclLen = view.getUint32(offset + 8, le);
     const origLen = view.getUint32(offset + 12, le);
     offset += 16;
-    if (inclLen > bytes.length - offset || inclLen > 0x7fffffff) break; // truncated tail
+    if (inclLen > bytes.length - offset || inclLen > 0x7fffffff) {
+      markMalformedPartialParse(state);
+      break;
+    }
     const frame = bytes.subarray(offset, offset + inclLen);
     offset += inclLen;
     const tsMs = tsSec * 1000 + (nano ? tsFrac / 1e6 : tsFrac / 1e3);
     if (!onPacket(tsMs, frame, origLen || inclLen)) return;
   }
+  if (offset < bytes.length) markMalformedPartialParse(state);
 }
 
 interface PcapngInterface {
@@ -243,6 +251,15 @@ interface PcapngInterface {
   /** timestamp units per second */
   unitsPerSecond: bigint;
 }
+
+const PCAPNG_SECTION_HEADER_BLOCK = 0x0a0d0d0a;
+const PCAPNG_INTERFACE_DESCRIPTION_BLOCK = 0x00000001;
+const PCAPNG_SIMPLE_PACKET_BLOCK = 0x00000003;
+const PCAPNG_ENHANCED_PACKET_BLOCK = 0x00000006;
+const PCAPNG_SECTION_HEADER_MIN_LENGTH = 28;
+const PCAPNG_INTERFACE_DESCRIPTION_MIN_LENGTH = 20;
+const PCAPNG_SIMPLE_PACKET_MIN_LENGTH = 16;
+const PCAPNG_ENHANCED_PACKET_MIN_LENGTH = 32;
 
 function parsePcapng(bytes: Uint8Array, onPacket: PacketCallback, state: CaptureExtract): void {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
@@ -269,12 +286,20 @@ function parsePcapng(bytes: Uint8Array, onPacket: PacketCallback, state: Capture
       } else if (m[0] === 0x1a && m[1] === 0x2b && m[2] === 0x3c && m[3] === 0x4d) {
         le = false;
       } else {
-        break; // corrupt section header
+        markMalformedPartialParse(state);
+        break;
       }
       sawSection = true;
       interfaces = []; // interfaces are scoped to their section
       const blockLen = view.getUint32(offset + 4, le);
-      if (blockLen < 12 || blockLen % 4 !== 0 || offset + blockLen > bytes.length) break;
+      if (
+        blockLen < PCAPNG_SECTION_HEADER_MIN_LENGTH ||
+        blockLen % 4 !== 0 ||
+        offset + blockLen > bytes.length
+      ) {
+        markMalformedPartialParse(state);
+        break;
+      }
       offset += blockLen;
       continue;
     }
@@ -284,10 +309,18 @@ function parsePcapng(bytes: Uint8Array, onPacket: PacketCallback, state: Capture
     }
 
     const blockLen = view.getUint32(offset + 4, le);
-    if (blockLen < 12 || offset + blockLen > bytes.length) break;
+    if (blockLen < 12 || offset + blockLen > bytes.length) {
+      markMalformedPartialParse(state);
+      break;
+    }
+    const minBlockLen = pcapngKnownBlockMinLength(blockType);
+    if (minBlockLen !== null && blockLen < minBlockLen) {
+      markMalformedPartialParse(state);
+      break;
+    }
     const padded = blockLen % 4 === 0 ? blockLen : blockLen + (4 - (blockLen % 4));
 
-    if (blockType === 0x00000001) {
+    if (blockType === PCAPNG_INTERFACE_DESCRIPTION_BLOCK) {
       // Interface Description Block
       if (blockLen >= 20) {
         const linkType = view.getUint16(offset + 8, le);
@@ -296,7 +329,7 @@ function parsePcapng(bytes: Uint8Array, onPacket: PacketCallback, state: Capture
           unitsPerSecond: readTsResolution(bytes, view, le, offset, blockLen),
         });
       }
-    } else if (blockType === 0x00000006) {
+    } else if (blockType === PCAPNG_ENHANCED_PACKET_BLOCK) {
       // Enhanced Packet Block
       if (blockLen >= 32) {
         const ifaceId = view.getUint32(offset + 8, le);
@@ -317,7 +350,7 @@ function parsePcapng(bytes: Uint8Array, onPacket: PacketCallback, state: Capture
           }
         }
       }
-    } else if (blockType === 0x00000003) {
+    } else if (blockType === PCAPNG_SIMPLE_PACKET_BLOCK) {
       // Simple Packet Block (no timestamp)
       if (blockLen >= 16) {
         const origLen = view.getUint32(offset + 8, le);
@@ -334,8 +367,26 @@ function parsePcapng(bytes: Uint8Array, onPacket: PacketCallback, state: Capture
     offset += padded;
   }
 
-  // Unused but kept for symmetry with classic parser error paths
-  void state;
+  if (offset < bytes.length) markMalformedPartialParse(state);
+}
+
+function markMalformedPartialParse(state: CaptureExtract): void {
+  if (state.packetCount > 0) state.truncated = true;
+}
+
+function pcapngKnownBlockMinLength(blockType: number): number | null {
+  switch (blockType) {
+    case PCAPNG_SECTION_HEADER_BLOCK:
+      return PCAPNG_SECTION_HEADER_MIN_LENGTH;
+    case PCAPNG_INTERFACE_DESCRIPTION_BLOCK:
+      return PCAPNG_INTERFACE_DESCRIPTION_MIN_LENGTH;
+    case PCAPNG_SIMPLE_PACKET_BLOCK:
+      return PCAPNG_SIMPLE_PACKET_MIN_LENGTH;
+    case PCAPNG_ENHANCED_PACKET_BLOCK:
+      return PCAPNG_ENHANCED_PACKET_MIN_LENGTH;
+    default:
+      return null;
+  }
 }
 
 const EMPTY_FRAME = new Uint8Array(0);

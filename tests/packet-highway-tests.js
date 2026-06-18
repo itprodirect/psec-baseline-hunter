@@ -468,6 +468,91 @@ run("parseCapture rejects malformed classic pcap and pcapng with friendly errors
   );
 });
 
+run("parseCapture marks classic pcap valid-prefix malformed tail as truncated", () => {
+  const validPrefix = pcapFile([
+    {
+      tsSec: BASE_SEC,
+      frame: ethFrame(
+        ROUTER_MAC,
+        DEV_A_MAC,
+        0x0800,
+        ipv4Packet(DEV_A_IP, EXTERNAL_IP, 6, tcpSegment(51000, 443))
+      ),
+    },
+  ]);
+  const malformedRecord = Buffer.alloc(16);
+  malformedRecord.writeUInt32LE(BASE_SEC + 1, 0);
+  malformedRecord.writeUInt32LE(0, 4);
+  malformedRecord.writeUInt32LE(999, 8);
+  malformedRecord.writeUInt32LE(999, 12);
+
+  const capture = buildNormalizedCapture(parseCapture(Buffer.concat([validPrefix, malformedRecord])), {
+    fileName: "partial-tail.pcap",
+  });
+
+  assert.equal(capture.meta.packetCount, 1);
+  assert.equal(capture.meta.truncated, true);
+});
+
+run("parseCapture marks pcapng valid-prefix corrupt block as truncated", () => {
+  const tsMicros = 1_750_000_000_000_000n;
+  const validPrefix = pcapngFile([
+    {
+      tsMicros,
+      frame: ethFrame(
+        ROUTER_MAC,
+        DEV_A_MAC,
+        0x0800,
+        ipv4Packet(DEV_A_IP, EXTERNAL_IP, 6, tcpSegment(51000, 443))
+      ),
+    },
+  ]);
+  const corruptBlock = Buffer.alloc(12);
+  corruptBlock.writeUInt32LE(6, 0);
+  corruptBlock.writeUInt32LE(999, 4);
+  corruptBlock.writeUInt32LE(0, 8);
+
+  const capture = buildNormalizedCapture(parseCapture(Buffer.concat([validPrefix, corruptBlock])), {
+    fileName: "partial-tail.pcapng",
+  });
+
+  assert.equal(capture.meta.packetCount, 1);
+  assert.equal(capture.meta.truncated, true);
+});
+
+run("parseCapture marks pcapng valid-prefix undersized enhanced packet block as truncated", () => {
+  const tsMicros = 1_750_000_000_000_000n;
+  const undersizedEnhancedPacketBlock = Buffer.alloc(12);
+  undersizedEnhancedPacketBlock.writeUInt32LE(6, 0);
+  undersizedEnhancedPacketBlock.writeUInt32LE(12, 4);
+  undersizedEnhancedPacketBlock.writeUInt32LE(12, 8);
+
+  assert.throws(
+    () => parseCapture(Buffer.concat([pcapngFile([]), undersizedEnhancedPacketBlock])),
+    (error) => isCaptureParseError(error) && /No packets/.test(error.message)
+  );
+
+  const validPrefix = pcapngFile([
+    {
+      tsMicros,
+      frame: ethFrame(
+        ROUTER_MAC,
+        DEV_A_MAC,
+        0x0800,
+        ipv4Packet(DEV_A_IP, EXTERNAL_IP, 6, tcpSegment(51000, 443))
+      ),
+    },
+  ]);
+
+  const capture = buildNormalizedCapture(
+    parseCapture(Buffer.concat([validPrefix, undersizedEnhancedPacketBlock])),
+    { fileName: "undersized-epb.pcapng" }
+  );
+
+  assert.equal(capture.meta.packetCount, 1);
+  assert.equal(capture.meta.truncated, true);
+});
+
 run("parseCapture enforces packet count cap with truncation", () => {
   const packets = Array.from({ length: 5 }, (_, i) => ({
     tsSec: BASE_SEC + i,
