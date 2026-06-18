@@ -147,7 +147,7 @@ export function UploadPanel({ onAnalyze, onLoadDemo, isAnalyzing, serverError }:
             </Button>
             <Button variant="outline" onClick={onLoadDemo} disabled={isAnalyzing}>
               <Play className="mr-1.5 h-3.5 w-3.5" />
-              Try the sample
+              Load 60-second sample
             </Button>
           </div>
         </div>
@@ -158,7 +158,10 @@ export function UploadPanel({ onAnalyze, onLoadDemo, isAnalyzing, serverError }:
         </p>
 
         {displayError && (
-          <div className="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
+          <div
+            role="alert"
+            className="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive"
+          >
             <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
             <span>{displayError}</span>
           </div>
@@ -167,9 +170,10 @@ export function UploadPanel({ onAnalyze, onLoadDemo, isAnalyzing, serverError }:
         <div className="flex items-start gap-2 rounded-md bg-muted/60 p-3 text-xs text-muted-foreground">
           <Lock className="mt-0.5 h-3.5 w-3.5 shrink-0" />
           <span>
-            <strong>Private by design:</strong> your capture is analyzed in memory and never stored.
-            Only traffic metadata is read — addresses, ports, timing, and looked-up names. The
-            contents of your messages, emails, and pages are never extracted or displayed.
+            <strong>Privacy note:</strong> this app intentionally analyzes captures in memory and
+            does not save the raw capture file. It reads traffic metadata - addresses, ports,
+            timing, and looked-up names. Message, email, and page contents are not extracted for
+            display.
           </span>
         </div>
       </CardContent>

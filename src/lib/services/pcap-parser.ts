@@ -15,8 +15,8 @@
 import type { DnsKind, TrafficProtocol } from "@/lib/types/packet-highway";
 
 // ---------------------------------------------------------------------------
-// Limits (exported for tests). Hitting a cap sets `truncated` rather than
-// failing, so very large captures still produce a useful partial picture.
+// Limits (exported for tests). Hitting a cap, or finding a malformed tail
+// after valid packets, sets `truncated` rather than failing the whole capture.
 // ---------------------------------------------------------------------------
 export const MAX_PARSED_PACKETS = 200_000;
 export const MAX_TRACKED_FLOWS = 5_000;
@@ -309,7 +309,7 @@ function parsePcapng(bytes: Uint8Array, onPacket: PacketCallback, state: Capture
     }
 
     const blockLen = view.getUint32(offset + 4, le);
-    if (blockLen < 12 || offset + blockLen > bytes.length) {
+    if (blockLen < 12 || blockLen % 4 !== 0 || offset + blockLen > bytes.length) {
       markMalformedPartialParse(state);
       break;
     }

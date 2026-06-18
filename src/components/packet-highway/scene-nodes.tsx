@@ -54,8 +54,16 @@ export function GatewayNode({ node, selected, onSelect }: {
 }) {
   const cx = node.x + node.w / 2;
   const name = node.device ? getDeviceDisplayName(node.device) : "Router / Gateway";
+  const selectable = node.device !== undefined;
   return (
-    <g onClick={onSelect} style={{ cursor: node.device ? "pointer" : "default" }}>
+    <g
+      onClick={() => selectable && onSelect()}
+      onKeyDown={(event) => selectable && activateOnKeyboard(event, onSelect)}
+      tabIndex={selectable ? 0 : undefined}
+      role={selectable ? "button" : undefined}
+      aria-label={selectable ? `Show details for ${name}` : undefined}
+      style={{ cursor: selectable ? "pointer" : "default" }}
+    >
       <title>{name} — every trip to the internet passes through this toll plaza</title>
       {/* plaza canopy */}
       <rect
@@ -155,9 +163,13 @@ export function BuildingNode({ node, selected, onSelect }: {
   return (
     <g
       onClick={() => !isOverflow && device && onSelect(device.id)}
+      onKeyDown={(event) =>
+        !isOverflow && device && activateOnKeyboard(event, () => onSelect(device.id))
+      }
+      tabIndex={!isOverflow && device ? 0 : undefined}
       style={{ cursor: isOverflow ? "default" : "pointer" }}
-      role={isOverflow ? undefined : "button"}
-      aria-label={isOverflow ? undefined : `Show details for ${name}`}
+      role={!isOverflow && device ? "button" : undefined}
+      aria-label={!isOverflow && device ? `Show details for ${name}` : undefined}
     >
       <title>
         {isOverflow
@@ -218,4 +230,13 @@ export function BuildingNode({ node, selected, onSelect }: {
 
 function truncate(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+function activateOnKeyboard(
+  event: React.KeyboardEvent<SVGGElement>,
+  action: () => void
+): void {
+  if (event.key !== "Enter" && event.key !== " ") return;
+  event.preventDefault();
+  action();
 }

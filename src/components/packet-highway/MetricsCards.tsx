@@ -11,6 +11,9 @@ import { formatTrafficBytes } from "@/lib/utils/traffic-format";
 
 export function MetricsCards({ capture }: { capture: NormalizedCapture }) {
   const watchItems = capture.alerts.filter((a) => a.level !== "info").length;
+  const deviceCount = capture.summary.stats.deviceCount;
+  const knownDeviceCount = capture.summary.stats.knownDeviceCount;
+  const unknownDeviceCount = Math.max(0, deviceCount - knownDeviceCount);
 
   const metrics = [
     {
@@ -21,10 +24,12 @@ export function MetricsCards({ capture }: { capture: NormalizedCapture }) {
     },
     {
       label: "Devices",
-      value: String(capture.summary.stats.deviceCount),
+      value: String(deviceCount),
       sub:
-        capture.summary.stats.knownDeviceCount > 0
-          ? `${capture.summary.stats.knownDeviceCount} on your list`
+        knownDeviceCount > 0
+          ? unknownDeviceCount > 0
+            ? `${knownDeviceCount} recognized, ${unknownDeviceCount} not in list`
+            : `${knownDeviceCount} recognized`
           : "on your network",
       icon: MonitorSmartphone,
     },

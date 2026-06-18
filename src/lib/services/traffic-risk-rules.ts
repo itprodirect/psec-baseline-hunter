@@ -180,7 +180,7 @@ export function evaluateTrafficWatchItems(input: TrafficRuleInput): TrafficAlert
       "unencrypted-http",
       "review",
       "Unencrypted web traffic seen",
-      `${listNames(uniqueDeviceIds(httpFlows, deviceById))} used old-style unencrypted web connections (HTTP)${external ? " with the internet" : ""}. Anything typed on those pages isn't private. Many gadgets use HTTP for updates, but avoid logging into anything over it.`,
+      `${listNames(uniqueDeviceIds(httpFlows, deviceById))} used old-style unencrypted web connections (HTTP)${external ? " with the internet" : ""}. HTTP traffic can expose page activity on the network. Many gadgets use HTTP for setup or updates, but avoid logging into anything over it.`,
       uniqueDeviceIds(httpFlows, deviceById),
       httpFlows.slice(0, 10).map((f) => f.id)
     );

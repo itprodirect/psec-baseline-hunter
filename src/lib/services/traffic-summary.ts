@@ -31,8 +31,9 @@ export interface SummaryInput {
 }
 
 export function buildTrafficSummary(input: SummaryInput): TrafficSummary {
-  const realDevices = input.devices.filter((d) => d.role === "device" || d.role === "gateway");
+  const realDevices = input.devices.filter((d) => d.role === "device");
   const knownCount = realDevices.filter((d) => d.isKnown).length;
+  const unknownCount = Math.max(0, realDevices.length - knownCount);
 
   const categoryBytes: Partial<Record<ServiceCategory, number>> = {};
   for (const flow of input.flows) {
@@ -102,13 +103,22 @@ export function buildTrafficSummary(input: SummaryInput): TrafficSummary {
     lines.push(
       "Tip: upload a device list (CSV) and the visualizer will flag devices that aren't on it."
     );
+  } else if (unknownCount > 0 && knownCount > 0) {
+    lines.push(
+      `${countNoun(knownCount, "device")} matched your uploaded device list; ` +
+        `${countNoun(unknownCount, "device")} ${wasWere(unknownCount)} not in the list.`
+    );
+  } else if (unknownCount > 0) {
+    lines.push(
+      `${countNoun(unknownCount, "device")} ${wasWere(unknownCount)} not in the uploaded device list.`
+    );
   } else if (knownCount > 0) {
     lines.push(`${countNoun(knownCount, "device")} matched your uploaded device list.`);
   }
 
   if (input.meta.truncated) {
     lines.push(
-      "This is a large capture, so the analysis covers the first portion of it — the picture above may not include everything."
+      "Only part of this capture was analyzed because it hit a limit or ended after a malformed tail; the picture above may not include everything."
     );
   }
 
@@ -141,4 +151,8 @@ export function buildTrafficSummary(input: SummaryInput): TrafficSummary {
 
 function countNoun(count: number, noun: string): string {
   return `${count.toLocaleString()} ${noun}${count === 1 ? "" : "s"}`;
+}
+
+function wasWere(count: number): "was" | "were" {
+  return count === 1 ? "was" : "were";
 }
