@@ -844,6 +844,24 @@ run("packet highway scene and upload accessibility wiring stays in place", () =>
   assert.match(highwaySceneSource, /Animation off \(reduced motion\)/);
 });
 
+run("packet highway sample copy describes a walkthrough, not capture duration", () => {
+  const uploadSource = fs.readFileSync(
+    path.join(process.cwd(), "src", "components", "packet-highway", "UploadPanel.tsx"),
+    "utf8"
+  );
+  const docsSource = fs.readFileSync(
+    path.join(process.cwd(), "docs", "TRAFFIC_VISUALIZER.md"),
+    "utf8"
+  );
+
+  assert.match(uploadSource, /Load guided sample/);
+  assert.doesNotMatch(uploadSource, /60-second sample/);
+  assert.match(docsSource, /60-second walkthrough/);
+  assert.match(docsSource, /synthetic sample itself\s+represents several minutes of traffic/);
+  assert.doesNotMatch(docsSource, /60-second sample/);
+  assert.doesNotMatch(docsSource, /Load 60-second sample/);
+});
+
 run("parseInventoryCSV maps the documented CSV columns", () => {
   const csv = [
     "Device,MAC Address,Vendor,IP Address,Hostnames,Status,Notes,Security Recs",

@@ -147,7 +147,7 @@ export function UploadPanel({ onAnalyze, onLoadDemo, isAnalyzing, serverError }:
             </Button>
             <Button variant="outline" onClick={onLoadDemo} disabled={isAnalyzing}>
               <Play className="mr-1.5 h-3.5 w-3.5" />
-              Load 60-second sample
+              Load guided sample
             </Button>
           </div>
         </div>

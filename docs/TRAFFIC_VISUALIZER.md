@@ -16,7 +16,7 @@ things worth reviewing — calmly, without scary language.
 | Device inventory (optional) | `.csv` — columns like `Device, MAC Address, Vendor, IP Address, Hostnames, Status, Notes, Security Recs` | 1 MB |
 | Saved analysis | `.json` exported by the page ("Save analysis"); treated as saved analysis data, not raw-capture proof | 10 MB |
 
-A built-in sample ("Load 60-second sample") uses fully synthetic data —
+A built-in sample ("Load guided sample") uses fully synthetic data —
 TEST-NET IPs, locally administered MACs, and `example.*` domains.
 
 ## Privacy model
@@ -67,9 +67,12 @@ broadcast chatter. To see the whole network, capture on a router/mirror port.
 Wording is intentionally conservative: "unusual" / "worth reviewing", never
 "malware" — a capture alone is not strong enough evidence for verdicts.
 
-## 60-second sample script
+## 60-second walkthrough script
 
-1. Open `/packet-highway` and choose **Load 60-second sample**.
+This walkthrough is meant to take about 60 seconds; the synthetic sample itself
+represents several minutes of traffic.
+
+1. Open `/packet-highway` and choose **Load guided sample**.
 2. The page loads fully synthetic sample data and selects the not-in-list
    device.
 3. Read the selected device panel: the device is missing from the sample device
@@ -107,7 +110,7 @@ tests/packet-highway-tests.js          # synthetic-capture test suite
 
 ## Manual smoke checklist
 
-- Load the 60-second sample; verify the synthetic source notice, metrics, scene,
+- Load the guided sample; verify the synthetic source notice, metrics, scene,
   selected unknown-device panel, watch items, and export metadata notice appear.
 - Confirm the sample shows no partial-analysis notice.
 - Toggle **Show technical details** on and off; full identifiers should reveal
