@@ -14,22 +14,26 @@ things worth reviewing — calmly, without scary language.
 |-------|---------|-------|
 | Packet capture | `.pcap`, `.pcapng` (Ethernet link type) | 50 MB |
 | Device inventory (optional) | `.csv` — columns like `Device, MAC Address, Vendor, IP Address, Hostnames, Status, Notes, Security Recs` | 1 MB |
-| Saved analysis | `.json` exported by the page ("Save analysis") | 10 MB |
+| Saved analysis | `.json` exported by the page ("Save analysis"); treated as saved analysis data, not raw-capture proof | 10 MB |
 
-A built-in sample ("Try the sample") uses fully synthetic data — TEST-NET IPs,
-locally administered MACs, and `example.*` domains.
+A built-in sample ("Load guided sample") uses fully synthetic data —
+TEST-NET IPs, locally administered MACs, and `example.*` domains.
 
 ## Privacy model
 
 - **Metadata only.** The parser reads timestamps, MAC/IP addresses, ports,
   protocols, packet/byte counts, and DNS/mDNS/LLMNR *query names*. Packet
-  payload content is never extracted, stored, or displayed.
-- **Nothing is written to disk.** The capture is analyzed in memory by
-  `POST /api/packet-highway/analyze` and discarded; only the normalized
-  metadata JSON is returned to the browser.
+  payload content is not intentionally extracted, stored, or displayed.
+- **No intentional raw-capture storage by this app.** The capture is analyzed
+  in memory by `POST /api/packet-highway/analyze`; the app returns normalized
+  metadata JSON and does not save the raw capture file. Browsers, frameworks,
+  or hosting layers may still buffer uploads while the request is processed.
 - **Sensitive details are hidden by default.** Full MACs, IPs, ports, and DNS
   names appear only after toggling "Show technical details". DNS names are
   grouped by domain by default.
+- **Saved JSON is not evidence of a raw capture.** JSON imports are rebuilt
+  through a whitelist and marked as `fixture`, but they can be edited outside
+  the app and CSV inventory matching is not reapplied to them.
 - **API errors never expose filesystem paths** (uses the shared
   `getSafeErrorMessage` allow-listing pattern).
 - `.gitignore` blocks `*.pcap`, `*.pcapng`, `*.cap`, `*.har`, `*.etl`, Zeek
@@ -63,6 +67,20 @@ broadcast chatter. To see the whole network, capture on a router/mirror port.
 Wording is intentionally conservative: "unusual" / "worth reviewing", never
 "malware" — a capture alone is not strong enough evidence for verdicts.
 
+## 60-second walkthrough script
+
+This walkthrough is meant to take about 60 seconds; the synthetic sample itself
+represents several minutes of traffic.
+
+1. Open `/packet-highway` and choose **Load guided sample**.
+2. The page loads fully synthetic sample data and selects the not-in-list
+   device.
+3. Read the selected device panel: the device is missing from the sample device
+   list, and its related watch items explain why it is worth reviewing.
+4. Read **Watch items** for the two intended observations: a device not in the
+   device list, and old-style unencrypted HTTP traffic.
+5. Toggle **Show technical details** only if you need full MAC/IP/DNS details.
+
 ## Architecture
 
 ```
@@ -84,7 +102,24 @@ tests/packet-highway-tests.js          # synthetic-capture test suite
 
 - Ethernet captures only (no 802.11 monitor mode, Linux SLL, or raw IP).
 - Parsing caps: 200k packets, 5k flows, 2k external IPs, 500 DNS names —
-  larger captures are analyzed partially and marked `truncated`.
+  larger captures are analyzed partially and marked `truncated`. Malformed or
+  truncated tails after a valid prefix are also surfaced as partial.
 - Gateway detection is a heuristic (the MAC fronting the most external IPs).
 - No DNS answer parsing yet, so external endpoints show as IPs, not site names.
 - IPv6 is summarized (devices/flows tracked; no SLAAC/ND analysis).
+
+## Manual smoke checklist
+
+- Load the guided sample; verify the synthetic source notice, metrics, scene,
+  selected unknown-device panel, watch items, and export metadata notice appear.
+- Confirm the sample shows no partial-analysis notice.
+- Toggle **Show technical details** on and off; full identifiers should reveal
+  only while enabled.
+- Upload a saved JSON analysis; verify it is labeled as saved analysis JSON, not
+  raw-capture evidence.
+- Load or construct a synthetic saved JSON with `meta.truncated: true`; verify
+  the partial notice says the view may be incomplete.
+- Enable reduced-motion emulation; verify the static flow lines remain visible
+  and the animation control changes to the reduced-motion notice.
+- Upload an unsupported or malformed file; verify the error is friendly, stale
+  prior analysis clears, and no filesystem path is shown.

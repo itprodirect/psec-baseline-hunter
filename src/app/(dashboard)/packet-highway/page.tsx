@@ -22,6 +22,7 @@ import { SummaryPanel } from "@/components/packet-highway/SummaryPanel";
 import { DeviceDetails } from "@/components/packet-highway/DeviceDetails";
 import { DnsPanel, FlowTable } from "@/components/packet-highway/FlowTable";
 import {
+  AnalysisSourceNotice,
   ExportMetadataNotice,
   PartialAnalysisNotice,
 } from "@/components/packet-highway/TrustNotices";
@@ -64,10 +65,11 @@ export default function PacketHighwayPage() {
   }, []);
 
   const handleLoadDemo = useCallback(() => {
+    const demoCapture = buildDemoCapture();
     setServerError(null);
-    setSelectedDeviceId(null);
-    setCapture(buildDemoCapture());
+    setCapture(demoCapture);
     setIsDemo(true);
+    setSelectedDeviceId(findFirstUnknownDeviceId(demoCapture));
   }, []);
 
   const handleDownload = useCallback(() => {
@@ -126,12 +128,7 @@ export default function PacketHighwayPage() {
 
       {capture && (
         <>
-          {isDemo && (
-            <p className="rounded-md border border-dashed bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
-              You&apos;re looking at sample data (synthetic addresses and names). Upload your own
-              capture to see your network.
-            </p>
-          )}
+          <AnalysisSourceNotice capture={capture} isDemo={isDemo} />
 
           {capture.meta.truncated && <PartialAnalysisNotice />}
 
@@ -163,4 +160,8 @@ export default function PacketHighwayPage() {
       )}
     </div>
   );
+}
+
+function findFirstUnknownDeviceId(capture: NormalizedCapture): string | null {
+  return capture.devices.find((device) => device.role === "device" && !device.isKnown)?.id ?? null;
 }

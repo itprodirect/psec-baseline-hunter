@@ -5,9 +5,9 @@
  *  - capture: .pcap / .pcapng file, or a .json normalized analysis export
  *  - inventory: optional device list .csv
  *
- * PRIVACY: the capture is parsed entirely in memory and never written to
- * disk. The response contains metadata only (no payload bytes), and error
- * messages never expose internal filesystem paths.
+ * PRIVACY: this route intentionally parses captures in memory and does not
+ * write raw capture files to disk. The response contains metadata only (no
+ * payload bytes), and error messages never expose internal filesystem paths.
  */
 
 import { NextRequest, NextResponse } from "next/server";

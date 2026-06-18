@@ -34,6 +34,15 @@ export function DeviceDetails({ capture, deviceId, revealSensitive, onClose }: D
   const deviceFlows = capture.flows
     .filter((f) => f.fromId === device.id || f.toId === device.id)
     .slice(0, 8);
+  const hasDeviceList =
+    capture.summary.stats.knownDeviceCount > 0 ||
+    capture.alerts.some((alert) => alert.ruleId === "unknown-device");
+  const displayName = getDeviceDisplayName(device);
+  const title =
+    device.role === "device" && !device.isKnown && hasDeviceList ? "Unknown device" : displayName;
+  const relatedAlerts = capture.alerts
+    .filter((alert) => alert.deviceIds.includes(device.id))
+    .slice(0, 3);
 
   const facts: { label: string; value: string }[] = [
     {
@@ -60,7 +69,10 @@ export function DeviceDetails({ capture, deviceId, revealSensitive, onClose }: D
     <Card>
       <CardHeader className="flex flex-row items-start justify-between space-y-0 pb-3">
         <div>
-          <CardTitle className="text-base">🏢 {getDeviceDisplayName(device)}</CardTitle>
+          <CardTitle className="text-base">🏢 {title}</CardTitle>
+          {title !== displayName && (
+            <p className="mt-1 text-xs text-muted-foreground">{displayName}</p>
+          )}
           <div className="mt-1.5 flex flex-wrap gap-1.5">
             {device.role === "gateway" && <Badge variant="secondary">Gateway</Badge>}
             {device.isKnown ? (
@@ -102,6 +114,22 @@ export function DeviceDetails({ capture, deviceId, revealSensitive, onClose }: D
           <p className="rounded-md bg-muted/60 p-2.5 text-sm text-muted-foreground">
             📒 {device.notes}
           </p>
+        )}
+
+        {relatedAlerts.length > 0 && (
+          <div className="rounded-md bg-muted/60 p-3">
+            <div className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+              Why this is worth reviewing
+            </div>
+            <ul className="space-y-2">
+              {relatedAlerts.map((alert) => (
+                <li key={alert.id} className="text-sm">
+                  <span className="font-medium">{alert.title}</span>
+                  <span className="text-muted-foreground"> - {alert.detail}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
         )}
 
         {deviceFlows.length > 0 && (

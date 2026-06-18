@@ -3,7 +3,7 @@
  *
  * The normalized capture model is METADATA ONLY: timestamps, addresses,
  * ports, protocols, counts, and DNS/mDNS query names. Packet payload
- * content is never extracted, stored, or shipped to the client.
+ * content is not intentionally extracted, stored, or shipped to the client.
  */
 
 export type TrafficProtocol = "tcp" | "udp" | "icmp" | "arp" | "other";
@@ -34,7 +34,11 @@ export interface CaptureMeta {
   startTime: string | null;
   endTime: string | null;
   durationMs: number | null;
-  /** True when parsing omitted packets or tracked metadata due to caps */
+  /**
+   * True when the analyzer only produced a partial view: parser caps stopped
+   * reading packets, output caps dropped tracked metadata, or a malformed /
+   * truncated tail was found after at least one packet was processed.
+   */
   truncated: boolean;
   /** Packets skipped because they were not parseable Ethernet/IP frames */
   ignoredPackets: number;

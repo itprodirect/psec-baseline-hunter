@@ -327,7 +327,7 @@ const {
   },
   inventory: { parseInventoryCSV },
   demo: { buildDemoCapture },
-  trustNotices: { ExportMetadataNotice, PartialAnalysisNotice },
+  trustNotices: { AnalysisSourceNotice, ExportMetadataNotice, PartialAnalysisNotice },
 } = await loadModules();
 
 // ---------------------------------------------------------------------------
@@ -515,6 +515,33 @@ run("parseCapture marks pcapng valid-prefix corrupt block as truncated", () => {
   const capture = buildNormalizedCapture(parseCapture(Buffer.concat([validPrefix, corruptBlock])), {
     fileName: "partial-tail.pcapng",
   });
+
+  assert.equal(capture.meta.packetCount, 1);
+  assert.equal(capture.meta.truncated, true);
+});
+
+run("parseCapture marks pcapng valid-prefix non-aligned unknown block as truncated", () => {
+  const tsMicros = 1_750_000_000_000_000n;
+  const validPrefix = pcapngFile([
+    {
+      tsMicros,
+      frame: ethFrame(
+        ROUTER_MAC,
+        DEV_A_MAC,
+        0x0800,
+        ipv4Packet(DEV_A_IP, EXTERNAL_IP, 6, tcpSegment(51000, 443))
+      ),
+    },
+  ]);
+  const nonAlignedUnknownBlock = Buffer.alloc(14);
+  nonAlignedUnknownBlock.writeUInt32LE(0x00000bad, 0);
+  nonAlignedUnknownBlock.writeUInt32LE(14, 4);
+  nonAlignedUnknownBlock.writeUInt32LE(14, 10);
+
+  const capture = buildNormalizedCapture(
+    parseCapture(Buffer.concat([validPrefix, nonAlignedUnknownBlock])),
+    { fileName: "partial-unknown-block.pcapng" }
+  );
 
   assert.equal(capture.meta.packetCount, 1);
   assert.equal(capture.meta.truncated, true);
@@ -745,11 +772,35 @@ run("packet highway trust notices explain partial results and export metadata", 
 
   const partialMarkup = renderToStaticMarkup(React.createElement(PartialAnalysisNotice));
   const exportMarkup = renderToStaticMarkup(React.createElement(ExportMetadataNotice));
+  const sampleMarkup = renderToStaticMarkup(
+    React.createElement(AnalysisSourceNotice, { capture: buildDemoCapture(), isDemo: true })
+  );
+  const rawCapture = buildNormalizedCapture(parseCapture(buildTestPcap()), {
+    fileName: "scan.pcap",
+  });
+  const rawMarkup = renderToStaticMarkup(
+    React.createElement(AnalysisSourceNotice, { capture: rawCapture, isDemo: false })
+  );
+  const importedMarkup = renderToStaticMarkup(
+    React.createElement(AnalysisSourceNotice, {
+      capture: parseNormalizedCaptureFixture(JSON.stringify(buildDemoCapture())),
+      isDemo: false,
+    })
+  );
 
   assert.match(partialMarkup, /Partial analysis/);
-  assert.match(partialMarkup, /metrics and saved JSON/);
+  assert.match(partialMarkup, /analysis limit or ended after a malformed or truncated tail/);
+  assert.match(partialMarkup, /Metrics and saved JSON/);
   assert.match(partialMarkup, /group or cap endpoint rendering/);
   assert.match(exportMarkup, /device identifiers, IPs, names, and DNS lookups/);
+  assert.match(sampleMarkup, /Sample data/);
+  assert.match(sampleMarkup, /fully synthetic sample/);
+  assert.match(sampleMarkup, /not-in-list device/);
+  assert.match(rawMarkup, /Raw capture analysis/);
+  assert.match(rawMarkup, /does not intentionally save the raw capture file/);
+  assert.match(importedMarkup, /Saved analysis JSON/);
+  assert.match(importedMarkup, /not raw-capture evidence/);
+  assert.match(importedMarkup, /CSV inventory is not reapplied/);
 });
 
 run("packet highway page clears stale analysis before a new analyze attempt", () => {
@@ -763,7 +814,52 @@ run("packet highway page clears stale analysis before a new analyze attempt", ()
     /setIsAnalyzing\(true\);\s*setServerError\(null\);\s*setCapture\(null\);\s*setIsDemo\(false\);\s*setSelectedDeviceId\(null\);/s
   );
   assert.match(pageSource, /<ExportMetadataNotice \/>/);
+  assert.match(pageSource, /<AnalysisSourceNotice capture=\{capture\} isDemo=\{isDemo\} \/>/);
   assert.match(pageSource, /capture\.meta\.truncated && <PartialAnalysisNotice \/>/);
+  assert.match(
+    pageSource,
+    /const demoCapture = buildDemoCapture\(\);\s*setServerError\(null\);\s*setCapture\(demoCapture\);\s*setIsDemo\(true\);\s*setSelectedDeviceId\(findFirstUnknownDeviceId\(demoCapture\)\);/s
+  );
+});
+
+run("packet highway scene and upload accessibility wiring stays in place", () => {
+  const sceneNodesSource = fs.readFileSync(
+    path.join(process.cwd(), "src", "components", "packet-highway", "scene-nodes.tsx"),
+    "utf8"
+  );
+  const uploadSource = fs.readFileSync(
+    path.join(process.cwd(), "src", "components", "packet-highway", "UploadPanel.tsx"),
+    "utf8"
+  );
+  const highwaySceneSource = fs.readFileSync(
+    path.join(process.cwd(), "src", "components", "packet-highway", "HighwayScene.tsx"),
+    "utf8"
+  );
+
+  assert.match(sceneNodesSource, /activateOnKeyboard/);
+  assert.match(sceneNodesSource, /tabIndex=\{selectable \? 0 : undefined\}/);
+  assert.match(sceneNodesSource, /tabIndex=\{!isOverflow && device \? 0 : undefined\}/);
+  assert.match(uploadSource, /role="alert"/);
+  assert.match(highwaySceneSource, /usePrefersReducedMotion/);
+  assert.match(highwaySceneSource, /Animation off \(reduced motion\)/);
+});
+
+run("packet highway sample copy describes a walkthrough, not capture duration", () => {
+  const uploadSource = fs.readFileSync(
+    path.join(process.cwd(), "src", "components", "packet-highway", "UploadPanel.tsx"),
+    "utf8"
+  );
+  const docsSource = fs.readFileSync(
+    path.join(process.cwd(), "docs", "TRAFFIC_VISUALIZER.md"),
+    "utf8"
+  );
+
+  assert.match(uploadSource, /Load guided sample/);
+  assert.doesNotMatch(uploadSource, /60-second sample/);
+  assert.match(docsSource, /60-second walkthrough/);
+  assert.match(docsSource, /synthetic sample itself\s+represents several minutes of traffic/);
+  assert.doesNotMatch(docsSource, /60-second sample/);
+  assert.doesNotMatch(docsSource, /Load 60-second sample/);
 });
 
 run("parseInventoryCSV maps the documented CSV columns", () => {
@@ -900,6 +996,9 @@ run("demo capture round-trips through the fixture validator", () => {
   assert.ok(demo.devices.length >= 7);
   assert.ok(findRule(demo.alerts, "unknown-device"));
   assert.ok(findRule(demo.alerts, "unencrypted-http"));
+  assert.equal(demo.summary.stats.deviceCount, 6);
+  assert.equal(demo.summary.stats.knownDeviceCount, 5);
+  assert.ok(demo.summary.lines.some((line) => /1 device was not in the list/.test(line)));
 
   const restored = parseNormalizedCaptureFixture(JSON.stringify(demo));
   assert.equal(restored.devices.length, demo.devices.length);
@@ -1021,6 +1120,39 @@ run("analyze API analyzes a synthetic pcap with inventory CSV end-to-end", async
   const known = body.data.devices.find((d) => d.name === "Work Laptop");
   assert.ok(known);
   assert.equal(known.isKnown, true);
+});
+
+run("analyze API returns partial results for a valid-prefix malformed capture", async () => {
+  const route = await import("../src/app/api/packet-highway/analyze/route.ts");
+  const validPrefix = pcapFile([
+    {
+      tsSec: BASE_SEC,
+      frame: ethFrame(
+        ROUTER_MAC,
+        DEV_A_MAC,
+        0x0800,
+        ipv4Packet(DEV_A_IP, EXTERNAL_IP, 6, tcpSegment(51000, 443))
+      ),
+    },
+  ]);
+  const malformedRecord = Buffer.alloc(16);
+  malformedRecord.writeUInt32LE(BASE_SEC + 1, 0);
+  malformedRecord.writeUInt32LE(0, 4);
+  malformedRecord.writeUInt32LE(999, 8);
+  malformedRecord.writeUInt32LE(999, 12);
+
+  const response = await route.POST(
+    createAnalyzeRequest([
+      { field: "capture", name: "partial-tail.pcap", content: Buffer.concat([validPrefix, malformedRecord]) },
+    ])
+  );
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(body.success, true);
+  assert.equal(body.data.meta.packetCount, 1);
+  assert.equal(body.data.meta.truncated, true);
+  assert.doesNotMatch(JSON.stringify(body), /[A-Za-z]:\\|\/home\//);
 });
 
 run("analyze API accepts a previously exported normalized JSON fixture", async () => {
