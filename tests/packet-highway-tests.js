@@ -520,6 +520,39 @@ run("parseCapture marks pcapng valid-prefix corrupt block as truncated", () => {
   assert.equal(capture.meta.truncated, true);
 });
 
+run("parseCapture marks pcapng valid-prefix undersized enhanced packet block as truncated", () => {
+  const tsMicros = 1_750_000_000_000_000n;
+  const undersizedEnhancedPacketBlock = Buffer.alloc(12);
+  undersizedEnhancedPacketBlock.writeUInt32LE(6, 0);
+  undersizedEnhancedPacketBlock.writeUInt32LE(12, 4);
+  undersizedEnhancedPacketBlock.writeUInt32LE(12, 8);
+
+  assert.throws(
+    () => parseCapture(Buffer.concat([pcapngFile([]), undersizedEnhancedPacketBlock])),
+    (error) => isCaptureParseError(error) && /No packets/.test(error.message)
+  );
+
+  const validPrefix = pcapngFile([
+    {
+      tsMicros,
+      frame: ethFrame(
+        ROUTER_MAC,
+        DEV_A_MAC,
+        0x0800,
+        ipv4Packet(DEV_A_IP, EXTERNAL_IP, 6, tcpSegment(51000, 443))
+      ),
+    },
+  ]);
+
+  const capture = buildNormalizedCapture(
+    parseCapture(Buffer.concat([validPrefix, undersizedEnhancedPacketBlock])),
+    { fileName: "undersized-epb.pcapng" }
+  );
+
+  assert.equal(capture.meta.packetCount, 1);
+  assert.equal(capture.meta.truncated, true);
+});
+
 run("parseCapture enforces packet count cap with truncation", () => {
   const packets = Array.from({ length: 5 }, (_, i) => ({
     tsSec: BASE_SEC + i,
