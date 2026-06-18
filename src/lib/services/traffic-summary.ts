@@ -55,7 +55,7 @@ export function buildTrafficSummary(input: SummaryInput): TrafficSummary {
   const totalBytes = Object.values(categoryBytes).reduce((a, b) => a + b, 0);
   if (totalBytes > 0 && encryptedBytes / totalBytes > 0.5) {
     lines.push(
-      `Most traffic (${Math.round((encryptedBytes / totalBytes) * 100)}%) was encrypted — that's the healthy norm.` +
+      `Most traffic (${Math.round((encryptedBytes / totalBytes) * 100)}%) was encrypted — a common pattern for modern apps.` +
         (httpBytes > 0 ? ` A small amount of unencrypted web traffic was also seen (see watch items).` : "")
     );
   } else if (httpBytes > 0) {
@@ -131,7 +131,7 @@ export function buildTrafficSummary(input: SummaryInput): TrafficSummary {
   } else if (reviewCount > 0) {
     headline = `Nothing alarming — ${countNoun(reviewCount, "thing")} worth reviewing when you have a minute.`;
   } else {
-    headline = "This looks like routine network activity. Nothing stood out.";
+    headline = "No watch items fired for the processed metadata.";
   }
 
   return {

@@ -88,7 +88,7 @@ export function UploadPanel({ onAnalyze, onLoadDemo, isAnalyzing, serverError }:
           <div className="px-4 text-center">
             {isAnalyzing ? (
               <>
-                <Loader2 className="mx-auto h-8 w-8 animate-spin text-primary" />
+                <Loader2 className="mx-auto h-8 w-8 animate-spin text-primary motion-reduce:animate-none" />
                 <p className="mt-2 text-sm font-medium">Analyzing traffic…</p>
               </>
             ) : captureFile ? (
@@ -142,7 +142,7 @@ export function UploadPanel({ onAnalyze, onLoadDemo, isAnalyzing, serverError }:
               onClick={() => captureFile && onAnalyze(captureFile, csvFile)}
               disabled={!captureFile || isAnalyzing}
             >
-              {isAnalyzing && <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />}
+              {isAnalyzing && <Loader2 className="mr-1.5 h-4 w-4 animate-spin motion-reduce:animate-none" />}
               Analyze traffic
             </Button>
             <Button variant="outline" onClick={onLoadDemo} disabled={isAnalyzing}>

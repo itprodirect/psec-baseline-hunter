@@ -9,6 +9,7 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { AnimationEvent } from "@/lib/types/packet-highway";
 import { SERVICE_CATEGORIES } from "@/lib/constants/traffic-services";
+import type { TrafficAttentionState } from "@/lib/utils/traffic-attention";
 import {
   computeVehiclePath,
   measurePath,
@@ -28,6 +29,7 @@ export interface ActiveVehicle {
   r: number;
   color: string;
   flowId: string;
+  attentionState: TrafficAttentionState;
 }
 
 interface PreparedEvent {
@@ -41,7 +43,8 @@ interface PreparedEvent {
 export function useVehicleAnimation(
   events: AnimationEvent[],
   layout: SceneLayout,
-  enabled: boolean
+  enabled: boolean,
+  attentionByFlowId: ReadonlyMap<string, TrafficAttentionState> = EMPTY_ATTENTION_BY_FLOW_ID
 ): ActiveVehicle[] {
   const [vehicles, setVehicles] = useState<ActiveVehicle[]>([]);
   const lastFrameRef = useRef(0);
@@ -84,6 +87,7 @@ export function useVehicleAnimation(
           r: item.event.size === 1 ? 4 : item.event.size === 2 ? 5.5 : 7,
           color: SERVICE_CATEGORIES[item.event.category].color,
           flowId: item.event.flowId,
+          attentionState: attentionByFlowId.get(item.event.flowId) ?? "routine",
         });
       }
 
@@ -92,7 +96,7 @@ export function useVehicleAnimation(
 
     rafId = requestAnimationFrame(frame);
     return () => cancelAnimationFrame(rafId);
-  }, [prepared, enabled]);
+  }, [attentionByFlowId, prepared, enabled]);
 
   // While disabled, render nothing; stale state is replaced on the first
   // animation frame after re-enabling.
@@ -100,6 +104,7 @@ export function useVehicleAnimation(
 }
 
 const EMPTY_VEHICLES: ActiveVehicle[] = [];
+const EMPTY_ATTENTION_BY_FLOW_ID = new Map<string, TrafficAttentionState>();
 
 function easeInOut(t: number): number {
   return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;

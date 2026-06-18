@@ -12,6 +12,12 @@ import { Button } from "@/components/ui/button";
 import type { NormalizedCapture } from "@/lib/types/packet-highway";
 import { SERVICE_CATEGORIES } from "@/lib/constants/traffic-services";
 import {
+  buildTrafficAttentionIndex,
+  getTrafficAttentionStrokeDasharray,
+  getTrafficAttentionStrokeWidthBoost,
+  type TrafficAttentionState,
+} from "@/lib/utils/traffic-attention";
+import {
   computeSceneLayout,
   computeVehiclePath,
   SCENE_H,
@@ -32,7 +38,11 @@ export function HighwayScene({ capture, selectedDeviceId, onSelectDevice }: High
   const animating = !prefersReducedMotion && !paused;
 
   const layout = useMemo(() => computeSceneLayout(capture), [capture]);
-  const vehicles = useVehicleAnimation(capture.animationEvents, layout, animating);
+  const attentionIndex = useMemo(() => buildTrafficAttentionIndex(capture), [capture]);
+  const attentionByFlowId = useMemo(() => {
+    return new Map(capture.flows.map((flow) => [flow.id, attentionIndex.getFlow(flow).state]));
+  }, [attentionIndex, capture.flows]);
+  const vehicles = useVehicleAnimation(capture.animationEvents, layout, animating, attentionByFlowId);
 
   // Faint roads for the busiest flows give context even when paused
   const flowRoads = useMemo(() => {
@@ -45,10 +55,14 @@ export function HighwayScene({ capture, selectedDeviceId, onSelectDevice }: High
           id: flow.id,
           d: points.map((p, i) => `${i === 0 ? "M" : "L"}${p.x},${p.y}`).join(" "),
           color: SERVICE_CATEGORIES[flow.category].color,
-          width: 1 + Math.min(5, Math.log10(Math.max(10, flow.bytes)) - 1),
+          attentionState: attentionIndex.getFlow(flow).state,
+          width:
+            1 +
+            Math.min(5, Math.log10(Math.max(10, flow.bytes)) - 1) +
+            getTrafficAttentionStrokeWidthBoost(attentionIndex.getFlow(flow).state),
         };
       });
-  }, [capture.flows, layout]);
+  }, [attentionIndex, capture.flows, layout]);
 
   const externalCount = capture.externalEndpoints.filter((e) => !e.isAggregate).length;
 
@@ -57,8 +71,8 @@ export function HighwayScene({ capture, selectedDeviceId, onSelectDevice }: High
       <svg
         viewBox={`0 0 ${SCENE_W} ${SCENE_H}`}
         className="h-auto w-full"
-        role="img"
-        aria-label="Animated map of your network: devices as buildings, the router as a toll plaza, and traffic as vehicles traveling to the internet"
+        role="group"
+        aria-label="Interactive Packet Highway map: device silhouettes, inferred gateway, and observed traffic metadata"
       >
         {/* sky + ground */}
         <rect x={0} y={0} width={SCENE_W} height={170} style={{ fill: "var(--muted)", opacity: 0.4 }} />
@@ -103,6 +117,7 @@ export function HighwayScene({ capture, selectedDeviceId, onSelectDevice }: High
               fill="none"
               stroke={road.color}
               strokeWidth={road.width}
+              strokeDasharray={getTrafficAttentionStrokeDasharray(road.attentionState)}
               strokeLinecap="round"
             />
           ))}
@@ -127,20 +142,19 @@ export function HighwayScene({ capture, selectedDeviceId, onSelectDevice }: High
         {/* vehicles */}
         <g>
           {vehicles.map((v) => (
-            <circle
+            <VehicleMarker
               key={v.key}
-              cx={v.x}
-              cy={v.y}
+              x={v.x}
+              y={v.y}
               r={v.r}
-              fill={v.color}
-              stroke="var(--background)"
-              strokeWidth={1.2}
+              color={v.color}
+              attentionState={v.attentionState}
             />
           ))}
         </g>
       </svg>
 
-      <div className="absolute right-3 top-3 flex items-center gap-2">
+      <div className="absolute left-3 right-3 top-3 flex items-center justify-end gap-2 sm:left-auto">
         {prefersReducedMotion ? (
           <span className="rounded-md bg-muted px-2 py-1 text-xs text-muted-foreground">
             Animation off (reduced motion) — line thickness shows traffic volume
@@ -158,5 +172,68 @@ export function HighwayScene({ capture, selectedDeviceId, onSelectDevice }: High
         )}
       </div>
     </div>
+  );
+}
+
+function VehicleMarker({
+  x,
+  y,
+  r,
+  color,
+  attentionState,
+}: {
+  x: number;
+  y: number;
+  r: number;
+  color: string;
+  attentionState: TrafficAttentionState;
+}) {
+  if (attentionState === "watch") {
+    return (
+      <path
+        d={`M${x},${y - r - 2} L${x + r + 2},${y + r + 1} L${x - r - 2},${y + r + 1} Z`}
+        fill={color}
+        stroke="#d97706"
+        strokeWidth={1.6}
+      />
+    );
+  }
+  if (attentionState === "review") {
+    return (
+      <rect
+        x={x - r}
+        y={y - r}
+        width={r * 2}
+        height={r * 2}
+        rx={2}
+        transform={`rotate(45 ${x} ${y})`}
+        fill={color}
+        stroke="#d97706"
+        strokeWidth={1.5}
+      />
+    );
+  }
+  if (attentionState === "unclassified") {
+    return (
+      <circle
+        cx={x}
+        cy={y}
+        r={r}
+        fill="var(--card)"
+        stroke={color}
+        strokeWidth={1.8}
+        strokeDasharray="2 3"
+      />
+    );
+  }
+  return (
+    <circle
+      cx={x}
+      cy={y}
+      r={r}
+      fill={color}
+      stroke="var(--background)"
+      strokeWidth={1.2}
+    />
   );
 }

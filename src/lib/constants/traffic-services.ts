@@ -20,18 +20,18 @@ export interface ServiceCategoryInfo {
 
 export const SERVICE_CATEGORIES: Record<ServiceCategory, ServiceCategoryInfo> = {
   https: {
-    label: "Secure web (HTTPS)",
+    label: "Encrypted web (HTTPS)",
     vehicle: "Sedan",
     emoji: "🚗",
     color: "#10b981",
-    description: "Everyday encrypted browsing and apps. The windows are tinted — outsiders can't read what's inside.",
+    description: "Everyday encrypted browsing and apps. Payloads are typically encrypted, but metadata is still visible.",
   },
   quic: {
     label: "Modern web (QUIC)",
     vehicle: "Electric car",
     emoji: "🏎️",
     color: "#14b8a6",
-    description: "A newer kind of encrypted web traffic, often video streaming (YouTube, Netflix).",
+    description: "A newer kind of encrypted web traffic, often used by streaming and apps.",
   },
   http: {
     label: "Unencrypted web (HTTP)",
@@ -52,14 +52,14 @@ export const SERVICE_CATEGORIES: Record<ServiceCategory, ServiceCategoryInfo> = 
     vehicle: "Neighborhood flyer van",
     emoji: "📢",
     color: "#8b5cf6",
-    description: "Devices announcing themselves to the local network ('I'm a printer!'). Stays inside the house.",
+    description: "Devices announcing themselves to the local network segment, such as printers or speakers.",
   },
   llmnr: {
     label: "Name calls (LLMNR)",
     vehicle: "Megaphone cart",
     emoji: "🛺",
     color: "#a855f7",
-    description: "An older Windows way of shouting names on the local network. Usually safe to turn off.",
+    description: "An older Windows way of calling names on the local network. Worth noting when it appears.",
   },
   ssdp: {
     label: "Smart-home discovery (SSDP)",

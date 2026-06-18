@@ -5,12 +5,16 @@
  * masked by default; the page-level toggle reveals technical detail.
  */
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import type { NormalizedCapture } from "@/lib/types/packet-highway";
 import { SERVICE_CATEGORIES } from "@/lib/constants/traffic-services";
+import {
+  buildTrafficAttentionIndex,
+  type TrafficAttention,
+} from "@/lib/utils/traffic-attention";
 import {
   buildNodeLabeler,
   formatTrafficBytes,
@@ -28,6 +32,7 @@ export function FlowTable({
 }) {
   const [expanded, setExpanded] = useState(false);
   const labelOf = buildNodeLabeler(capture, revealSensitive);
+  const attentionIndex = useMemo(() => buildTrafficAttentionIndex(capture), [capture]);
   const rows = expanded ? capture.flows.slice(0, 100) : capture.flows.slice(0, INITIAL_ROWS);
 
   return (
@@ -37,36 +42,43 @@ export function FlowTable({
       </CardHeader>
       <CardContent>
         <div className="overflow-x-auto">
-          <table className="w-full text-sm">
+          <table className="w-full text-sm" aria-label="Busiest traffic conversations">
             <thead>
               <tr className="border-b text-left text-xs uppercase tracking-wide text-muted-foreground">
-                <th className="py-2 pr-3 font-medium">From</th>
-                <th className="py-2 pr-3 font-medium">To</th>
-                <th className="py-2 pr-3 font-medium">Type</th>
-                <th className="py-2 pr-3 text-right font-medium">Packets</th>
-                <th className="py-2 text-right font-medium">Data</th>
+                <th scope="col" className="py-2 pr-3 font-medium">From</th>
+                <th scope="col" className="py-2 pr-3 font-medium">To</th>
+                <th scope="col" className="py-2 pr-3 font-medium">Type</th>
+                <th scope="col" className="py-2 pr-3 font-medium">Attention</th>
+                <th scope="col" className="py-2 pr-3 text-right font-medium">Packets</th>
+                <th scope="col" className="py-2 text-right font-medium">Data</th>
               </tr>
             </thead>
             <tbody>
-              {rows.map((flow) => (
-                <tr key={flow.id} className="border-b last:border-0">
-                  <td className="max-w-[180px] truncate py-2 pr-3">{labelOf(flow.fromId)}</td>
-                  <td className="max-w-[180px] truncate py-2 pr-3">{labelOf(flow.toId)}</td>
-                  <td className="py-2 pr-3">
-                    <Badge variant="outline" className="gap-1 whitespace-nowrap font-normal">
-                      <span
-                        className="inline-block h-2 w-2 rounded-full"
-                        style={{ backgroundColor: SERVICE_CATEGORIES[flow.category].color }}
-                        aria-hidden
-                      />
-                      {SERVICE_CATEGORIES[flow.category].label}
-                      {flow.port !== null && revealSensitive ? ` :${flow.port}` : ""}
-                    </Badge>
-                  </td>
-                  <td className="py-2 pr-3 text-right tabular-nums">{flow.packets.toLocaleString()}</td>
-                  <td className="py-2 text-right tabular-nums">{formatTrafficBytes(flow.bytes)}</td>
-                </tr>
-              ))}
+              {rows.map((flow) => {
+                const attention = attentionIndex.getFlow(flow);
+                return (
+                  <tr key={flow.id} className="border-b last:border-0">
+                    <td className="max-w-[180px] truncate py-2 pr-3">{labelOf(flow.fromId)}</td>
+                    <td className="max-w-[180px] truncate py-2 pr-3">{labelOf(flow.toId)}</td>
+                    <td className="py-2 pr-3">
+                      <Badge variant="outline" className="gap-1 whitespace-nowrap font-normal">
+                        <span
+                          className="inline-block h-2 w-2 rounded-full"
+                          style={{ backgroundColor: SERVICE_CATEGORIES[flow.category].color }}
+                          aria-hidden
+                        />
+                        {SERVICE_CATEGORIES[flow.category].label}
+                        {flow.port !== null && revealSensitive ? ` :${flow.port}` : ""}
+                      </Badge>
+                    </td>
+                    <td className="py-2 pr-3">
+                      <AttentionBadge attention={attention} />
+                    </td>
+                    <td className="py-2 pr-3 text-right tabular-nums">{flow.packets.toLocaleString()}</td>
+                    <td className="py-2 text-right tabular-nums">{formatTrafficBytes(flow.bytes)}</td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -82,6 +94,24 @@ export function FlowTable({
         )}
       </CardContent>
     </Card>
+  );
+}
+
+function AttentionBadge({ attention }: { attention: TrafficAttention }) {
+  const markerClass =
+    attention.state === "watch"
+      ? "rounded-sm border-amber-600 bg-amber-500/20"
+      : attention.state === "review"
+        ? "rounded-full border-dashed border-amber-600 bg-muted"
+        : attention.state === "unclassified"
+          ? "rounded-full border-dotted border-muted-foreground bg-card"
+          : "rounded-full border-border bg-muted";
+
+  return (
+    <Badge variant="outline" className="gap-1.5 whitespace-nowrap font-normal">
+      <span className={`inline-block h-2.5 w-4 border ${markerClass}`} aria-hidden />
+      {attention.label}
+    </Badge>
   );
 }
 

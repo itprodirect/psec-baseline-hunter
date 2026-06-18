@@ -89,8 +89,7 @@ export default function PacketHighwayPage() {
         <div>
           <h1 className="text-2xl font-bold">Traffic Visualizer</h1>
           <p className="text-sm text-muted-foreground">
-            See who&apos;s on your network and where traffic goes — as a city of buildings,
-            roads, and vehicles. No jargon required.
+            Explore devices and traffic observed in this capture as a calm map of evidence.
           </p>
         </div>
         {capture && (
