@@ -175,7 +175,19 @@ function pcapngFile(packets) {
 // Library modules are loaded via dynamic import() so the route-loader's
 // @/ alias resolution applies (require() of TS bypasses async loader hooks).
 async function loadModules() {
-  const [services, parser, normalizer, rules, safety, inventory, demo, trustNotices] = await Promise.all([
+  const [
+    services,
+    parser,
+    normalizer,
+    rules,
+    safety,
+    inventory,
+    demo,
+    trustNotices,
+    archetypes,
+    attention,
+    sceneLayout,
+  ] = await Promise.all([
     import("../src/lib/constants/traffic-services.ts"),
     import("../src/lib/services/pcap-parser.ts"),
     import("../src/lib/services/traffic-normalizer.ts"),
@@ -184,8 +196,23 @@ async function loadModules() {
     import("../src/lib/services/inventory.ts"),
     import("../src/lib/demo/packet-highway-demo.ts"),
     import("../src/components/packet-highway/TrustNotices.tsx"),
+    import("../src/lib/utils/packet-highway-device-archetypes.ts"),
+    import("../src/lib/utils/traffic-attention.ts"),
+    import("../src/components/packet-highway/scene-layout.ts"),
   ]);
-  return { services, parser, normalizer, rules, safety, inventory, demo, trustNotices };
+  return {
+    services,
+    parser,
+    normalizer,
+    rules,
+    safety,
+    inventory,
+    demo,
+    trustNotices,
+    archetypes,
+    attention,
+    sceneLayout,
+  };
 }
 
 // Test network: device A + device B behind a router
@@ -288,6 +315,43 @@ function ruleFlow(overrides = {}) {
   };
 }
 
+function visualCapture({ devices = [ruleDevice()], flows = [], alerts = [] } = {}) {
+  return {
+    version: 1,
+    meta: {
+      fileName: "visual-test.pcap",
+      format: "fixture",
+      packetCount: 0,
+      byteCount: 0,
+      startTime: null,
+      endTime: null,
+      durationMs: null,
+      truncated: false,
+      ignoredPackets: 0,
+      generatedAt: "2026-06-01T00:00:00.000Z",
+    },
+    devices,
+    externalEndpoints: [],
+    flows,
+    animationEvents: [],
+    dnsQueries: [],
+    summary: {
+      headline: "",
+      lines: [],
+      stats: {
+        deviceCount: devices.filter((d) => d.role === "device").length,
+        knownDeviceCount: devices.filter((d) => d.role === "device" && d.isKnown).length,
+        externalEndpointCount: 0,
+        flowCount: flows.length,
+        dnsQueryCount: 0,
+        uniqueDnsNames: 0,
+        categoryBytes: {},
+      },
+    },
+    alerts,
+  };
+}
+
 function findRule(alerts, ruleId) {
   return alerts.find((a) => a.ruleId === ruleId) ?? null;
 }
@@ -328,6 +392,9 @@ const {
   inventory: { parseInventoryCSV },
   demo: { buildDemoCapture },
   trustNotices: { AnalysisSourceNotice, ExportMetadataNotice, PartialAnalysisNotice },
+  archetypes: { inferDeviceArchetype },
+  attention: { buildTrafficAttentionIndex, TRAFFIC_ATTENTION_LEGEND },
+  sceneLayout: { computeSceneLayout, computeVehiclePath, SCENE_W, SCENE_H, MAX_BUILDINGS },
 } = await loadModules();
 
 // ---------------------------------------------------------------------------
@@ -820,6 +887,94 @@ run("packet highway page clears stale analysis before a new analyze attempt", ()
     pageSource,
     /const demoCapture = buildDemoCapture\(\);\s*setServerError\(null\);\s*setCapture\(demoCapture\);\s*setIsDemo\(true\);\s*setSelectedDeviceId\(findFirstUnknownDeviceId\(demoCapture\)\);/s
   );
+});
+
+run("packet highway V1 infers demo device archetypes without model or brand claims", () => {
+  const demo = buildDemoCapture();
+  const byName = (name) => demo.devices.find((device) => device.name === name);
+
+  assert.equal(inferDeviceArchetype(demo.devices.find((device) => device.role === "gateway")).archetype, "gateway");
+  assert.equal(inferDeviceArchetype(byName("Dad's Phone")).archetype, "phone");
+  assert.equal(inferDeviceArchetype(byName("Family Laptop")).archetype, "computer");
+  assert.equal(inferDeviceArchetype(byName("Living Room TV")).archetype, "display");
+  assert.equal(inferDeviceArchetype(byName("Kitchen Speaker")).archetype, "speaker");
+  assert.equal(inferDeviceArchetype(byName("Office Printer")).archetype, "printer");
+
+  const mystery = demo.devices.find((device) => device.role === "device" && !device.isKnown);
+  assert.equal(inferDeviceArchetype(mystery).archetype, "unknown");
+
+  assert.equal(
+    inferDeviceArchetype(ruleDevice({ isKnown: true, vendor: "Apple", name: null })).archetype,
+    "generic"
+  );
+
+  const weak = inferDeviceArchetype(
+    ruleDevice({ categories: ["quic"], externalPeerCount: 2, isKnown: false })
+  );
+  assert.equal(weak.archetype, "unknown");
+  assert.equal(weak.strength, "weak");
+  assert.equal(weak.weakCandidate, "display");
+});
+
+run("packet highway V1 maps traffic attention from existing evidence", () => {
+  const flows = [
+    ruleFlow({ id: "flow-https", category: "https", port: 443 }),
+    ruleFlow({ id: "flow-other", category: "other", port: null }),
+    ruleFlow({ id: "flow-http", category: "http", port: 80 }),
+    ruleFlow({ id: "flow-rdp", category: "rdp", port: 3389, scope: "external" }),
+  ];
+  const capture = visualCapture({
+    flows,
+    alerts: [
+      {
+        id: "alert-1",
+        ruleId: "manual-review",
+        level: "review",
+        title: "Linked review item",
+        detail: "Synthetic test alert",
+        deviceIds: [],
+        flowIds: ["flow-https"],
+      },
+    ],
+  });
+  const index = buildTrafficAttentionIndex(capture);
+
+  assert.equal(index.getFlow(flows[0]).state, "review");
+  assert.equal(index.getFlow(flows[1]).state, "unclassified");
+  assert.equal(index.getFlow(flows[2]).state, "review");
+  assert.equal(index.getFlow(flows[3]).state, "watch");
+
+  const legendText = JSON.stringify(TRAFFIC_ATTENTION_LEGEND);
+  assert.doesNotMatch(legendText, /safe|malicious|good|bad|attack/i);
+});
+
+run("packet highway V1 scene layout stays bounded while preserving gateway routes", () => {
+  const demo = buildDemoCapture();
+  const layout = computeSceneLayout(demo);
+
+  assert.ok(layout.buildings.length <= MAX_BUILDINGS + 1);
+  for (const building of layout.buildings) {
+    assert.ok(building.x >= 0);
+    assert.ok(building.y >= 0);
+    assert.ok(building.x + building.w <= SCENE_W);
+    assert.ok(building.y + building.h <= SCENE_H);
+  }
+
+  const externalFlow = demo.flows.find((flow) => flow.scope === "external");
+  const pathPoints = computeVehiclePath(layout, externalFlow.fromId, externalFlow.toId);
+  assert.deepEqual(pathPoints[1], layout.gateway.anchor);
+});
+
+run("packet highway V1 legend explains visual channels without toy vehicle language", () => {
+  const legendSource = fs.readFileSync(
+    path.join(process.cwd(), "src", "components", "packet-highway", "Legend.tsx"),
+    "utf8"
+  );
+
+  assert.match(legendSource, /Device shapes/);
+  assert.match(legendSource, /Traffic type/);
+  assert.match(legendSource, /Attention markers/);
+  assert.doesNotMatch(legendSource, /Who's Driving|Each vehicle|info\.emoji|info\.vehicle/);
 });
 
 run("packet highway scene and upload accessibility wiring stays in place", () => {
