@@ -42,11 +42,15 @@ export function Legend({ capture }: { capture: NormalizedCapture }) {
             <div className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
               Device shapes
             </div>
-            <ul className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+            <ul className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
               {deviceArchetypes.map((archetype) => (
-                <li key={archetype} className="flex items-center gap-2 text-sm">
-                  <DeviceGlyphIcon archetype={archetype} className="h-7 w-7 shrink-0 text-foreground" />
-                  <span>{getDeviceArchetypeLabel(archetype)}</span>
+                <li key={archetype} className="flex items-center gap-2">
+                  <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border bg-card">
+                    <DeviceGlyphIcon archetype={archetype} size={22} className="text-foreground" />
+                  </span>
+                  <span className="min-w-0 text-sm leading-tight">
+                    {getDeviceArchetypeLabel(archetype)}
+                  </span>
                 </li>
               ))}
             </ul>

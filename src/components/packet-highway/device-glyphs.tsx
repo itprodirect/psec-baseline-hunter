@@ -19,10 +19,17 @@ export function DeviceGlyph({ archetype, x = 0, y = 0, size = 64 }: DeviceGlyphP
 
 export function DeviceGlyphIcon({
   archetype,
+  size = 22,
   ...props
-}: SVGProps<SVGSVGElement> & { archetype: PacketHighwayDeviceArchetype }) {
+}: SVGProps<SVGSVGElement> & {
+  archetype: PacketHighwayDeviceArchetype;
+  size?: number;
+}) {
+  // Explicit width/height keep the icon at a fixed pixel size: the glyph has
+  // only a viewBox, so without intrinsic dimensions it stretches to fill its
+  // container instead of rendering as a small legend icon.
   return (
-    <svg viewBox="0 0 64 64" aria-hidden {...props}>
+    <svg viewBox="0 0 64 64" width={size} height={size} aria-hidden {...props}>
       {renderGlyph(archetype)}
     </svg>
   );
