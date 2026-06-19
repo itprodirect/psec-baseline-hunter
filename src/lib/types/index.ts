@@ -9,6 +9,7 @@ export type { UserProfile };
 export type * from "./observation-bundle";
 export type * from "./observation-registry";
 export type * from "./observation-comparison";
+export type * from "./network-activity";
 
 /**
  * Metadata about a scan run folder

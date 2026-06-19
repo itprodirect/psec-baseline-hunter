@@ -47,6 +47,8 @@ let computeObservationBundleContentHash;
 let ObservationRegistryTimestampError;
 let compareObservationBundlesV1;
 let isObservationComparisonError;
+let buildNetworkActivity;
+let buildSyntheticNetworkActivityScenario;
 
 async function loadModules() {
   const [
@@ -60,6 +62,7 @@ async function loadModules() {
     observationBundle,
     observationRegistry,
     observationComparison,
+    networkActivity,
   ] = await Promise.all([
     import("../src/lib/services/path-safety.ts"),
     import("../src/lib/services/archive-safety.ts"),
@@ -71,6 +74,7 @@ async function loadModules() {
     import("../src/lib/services/observation-bundle.ts"),
     import("../src/lib/services/observation-registry.ts"),
     import("../src/lib/services/observation-comparison.ts"),
+    import("../src/lib/services/network-activity.ts"),
   ]);
 
   ({ resolvePathWithin, sanitizeNetworkName } = pathSafety);
@@ -129,6 +133,10 @@ async function loadModules() {
     compareObservationBundlesV1,
     isObservationComparisonError,
   } = observationComparison);
+  ({
+    buildNetworkActivity,
+    buildSyntheticNetworkActivityScenario,
+  } = networkActivity);
 }
 
 let total = 0;
@@ -2961,6 +2969,273 @@ run("observation comparison invalid comparisons fail clearly", () => {
       ),
     (error) => isObservationComparisonError(error) && error.code === "ambiguous_comparison"
   );
+});
+
+run("network activity guided scenario is synthetic, evidence-linked, and redacted by default", () => {
+  const activity = buildSyntheticNetworkActivityScenario({
+    evaluatedAt: "2026-06-19T16:00:00.000Z",
+  });
+
+  assert.equal(activity.status, "ready");
+  assert.equal(activity.source, "synthetic-guided-scenario");
+  assert.ok(activity.scenario);
+  assert.ok(activity.period);
+  assert.ok(activity.events.length >= 5);
+  assert.equal(activity.reviewCount, activity.events.length);
+
+  const eventTypes = new Set(activity.events.map((event) => event.type));
+  assert.ok(eventTypes.has("new-device-observed"));
+  assert.ok(eventTypes.has("previously-observed-device-not-observed"));
+  assert.ok(eventTypes.has("identity-uncertain-possibly-same-device"));
+  assert.ok(eventTypes.has("service-or-port-opened"));
+  assert.ok(eventTypes.has("service-or-port-closed"));
+  assert.ok(eventTypes.has("important-device-metadata-changed"));
+
+  for (const event of activity.events) {
+    assert.equal(event.periodHref, "#comparison-period");
+    assert.match(event.evidenceId, /^evidence-chg-/);
+  }
+
+  const publicText = activity.events
+    .map((event) =>
+      [
+        event.title,
+        event.summary,
+        event.reviewReason,
+        event.confidenceLabel,
+        event.evidenceSummary,
+      ].join(" ")
+    )
+    .join("\n");
+  assert.doesNotMatch(publicText, /192\.0\.2\.|02:00:00|00:00:00|\b(?:22|443|9100)\b/);
+  assert.doesNotMatch(publicText, /malicious|malware|hacked|attack/i);
+
+  const technicalText = JSON.stringify(activity.events.map((event) => event.technicalEvidence));
+  assert.match(technicalText, /192\.0\.2\./);
+  assert.match(technicalText, /02:00:00/);
+  assert.match(technicalText, /\b443\b/);
+});
+
+run("network activity chooses the latest valid same-site observation comparison", async () => {
+  await withTempCwd(async () => {
+    registerObservationBundle(
+      createComparisonBundle({
+        observationId: "obs-other-site",
+        siteId: "site-other-activity",
+        networkName: "other-activity-lab",
+        observedAt: "2026-05-02T10:00:00.000Z",
+        devices: [
+          {
+            deviceId: "other-device",
+            ips: ["192.0.2.90"],
+            macs: ["02:00:00:00:00:90"],
+          },
+        ],
+      }),
+      { importedAt: "2026-05-02T10:05:00.000Z", evaluatedAt: "2026-05-05T00:00:00.000Z" }
+    );
+    registerObservationBundle(
+      createComparisonBundle({
+        observationId: "obs-activity-baseline",
+        siteId: "site-activity-lab",
+        networkName: "activity-lab",
+        observedAt: "2026-05-01T10:00:00.000Z",
+        devices: [
+          {
+            deviceId: "activity-laptop",
+            ips: ["192.0.2.10"],
+            macs: ["02:00:00:00:00:10"],
+            ports: [{ port: 80, protocol: "tcp", service: "http" }],
+          },
+        ],
+      }),
+      { importedAt: "2026-05-01T10:05:00.000Z", evaluatedAt: "2026-05-05T00:00:00.000Z" }
+    );
+    registerObservationBundle(
+      createComparisonBundle({
+        observationId: "obs-activity-current",
+        siteId: "site-activity-lab",
+        networkName: "activity-lab",
+        observedAt: "2026-05-04T10:00:00.000Z",
+        devices: [
+          {
+            deviceId: "activity-laptop",
+            ips: ["192.0.2.11"],
+            macs: ["02:00:00:00:00:10"],
+            ports: [
+              { port: 80, protocol: "tcp", service: "http" },
+              { port: 443, protocol: "tcp", service: "https" },
+            ],
+          },
+        ],
+      }),
+      { importedAt: "2026-05-04T10:05:00.000Z", evaluatedAt: "2026-05-05T00:00:00.000Z" }
+    );
+
+    const activity = buildNetworkActivity({
+      evaluatedAt: "2026-05-05T00:00:00.000Z",
+    });
+
+    assert.equal(activity.status, "ready");
+    assert.equal(activity.site.networkName, "activity-lab");
+    assert.equal(activity.period.currentObservationId, "obs-activity-current");
+    assert.equal(activity.latestObservation.observationId, "obs-activity-current");
+    assert.ok(activity.events.some((event) => event.type === "service-or-port-opened"));
+    assert.ok(activity.events.some((event) => event.type === "important-device-metadata-changed"));
+  });
+});
+
+run("network activity states cover empty, one-observation, and no-change cases truthfully", async () => {
+  await withTempCwd(async () => {
+    const empty = buildNetworkActivity({ evaluatedAt: "2026-05-05T00:00:00.000Z" });
+    assert.equal(empty.status, "empty");
+    assert.match(empty.summary, /No observations/);
+    assert.equal(empty.reviewCount, 0);
+
+    registerObservationBundle(
+      createComparisonBundle({
+        observationId: "obs-activity-single",
+        siteId: "site-single-activity",
+        networkName: "single-activity-lab",
+        observedAt: "2026-05-01T10:00:00.000Z",
+        devices: [],
+      }),
+      { importedAt: "2026-05-01T10:05:00.000Z", evaluatedAt: "2026-05-05T00:00:00.000Z" }
+    );
+
+    const oneObservation = buildNetworkActivity({
+      evaluatedAt: "2026-05-05T00:00:00.000Z",
+    });
+    assert.equal(oneObservation.status, "one-observation");
+    assert.match(oneObservation.summary, /requires at least two observations/);
+  });
+
+  await withTempCwd(async () => {
+    const baseline = createComparisonBundle({
+      observationId: "obs-no-change-baseline",
+      siteId: "site-no-change-activity",
+      networkName: "no-change-activity-lab",
+      observedAt: "2026-05-01T10:00:00.000Z",
+      devices: [
+        {
+          deviceId: "no-change-device",
+          ips: ["192.0.2.10"],
+          macs: ["02:00:00:00:00:10"],
+          ports: [{ port: 80, protocol: "tcp", service: "http" }],
+        },
+      ],
+    });
+    const current = createComparisonBundle({
+      observationId: "obs-no-change-current",
+      siteId: "site-no-change-activity",
+      networkName: "no-change-activity-lab",
+      observedAt: "2026-05-02T10:00:00.000Z",
+      devices: [
+        {
+          deviceId: "no-change-device",
+          ips: ["192.0.2.10"],
+          macs: ["02:00:00:00:00:10"],
+          ports: [{ port: 80, protocol: "tcp", service: "http" }],
+        },
+      ],
+    });
+    registerObservationBundle(baseline, {
+      importedAt: "2026-05-01T10:05:00.000Z",
+      evaluatedAt: "2026-05-03T00:00:00.000Z",
+    });
+    registerObservationBundle(current, {
+      importedAt: "2026-05-02T10:05:00.000Z",
+      evaluatedAt: "2026-05-03T00:00:00.000Z",
+    });
+
+    const activity = buildNetworkActivity({
+      evaluatedAt: "2026-05-03T00:00:00.000Z",
+    });
+
+    assert.equal(activity.status, "ready");
+    assert.equal(activity.events.length, 0);
+    assert.equal(activity.reviewCount, 0);
+    assert.match(activity.summary, /No meaningful changes/);
+    assert.match(activity.summary, /not an all-clear/);
+  });
+});
+
+run("network activity surfaces partial and stale limitations near no-change results", async () => {
+  await withTempCwd(async () => {
+    registerObservationBundle(
+      createComparisonBundle({
+        observationId: "obs-limited-baseline",
+        siteId: "site-limited-activity",
+        networkName: "limited-activity-lab",
+        observedAt: "2026-01-01T10:00:00.000Z",
+        devices: [
+          {
+            deviceId: "limited-device",
+            ips: ["192.0.2.10"],
+            macs: ["02:00:00:00:00:10"],
+            ports: [{ port: 80, protocol: "tcp", service: "http" }],
+          },
+        ],
+      }),
+      { importedAt: "2026-01-01T10:05:00.000Z", evaluatedAt: "2026-03-15T00:00:00.000Z" }
+    );
+    registerObservationBundle(
+      createComparisonBundle({
+        observationId: "obs-limited-current",
+        siteId: "site-limited-activity",
+        networkName: "limited-activity-lab",
+        observedAt: "2026-01-02T10:00:00.000Z",
+        missingSources: ["ports", "hosts_up"],
+        devices: [
+          {
+            deviceId: "limited-device",
+            ips: ["192.0.2.10"],
+            macs: ["02:00:00:00:00:10"],
+          },
+        ],
+      }),
+      { importedAt: "2026-01-02T10:05:00.000Z", evaluatedAt: "2026-03-15T00:00:00.000Z" }
+    );
+
+    const activity = buildNetworkActivity({
+      evaluatedAt: "2026-03-15T00:00:00.000Z",
+    });
+    const limitationCodes = new Set(activity.limitations.map((limitation) => limitation.code));
+    const limitationText = activity.limitations.map((limitation) => limitation.message).join("\n");
+
+    assert.equal(activity.status, "ready");
+    assert.equal(activity.events.length, 0);
+    assert.ok(limitationCodes.has("partial-coverage"));
+    assert.ok(limitationCodes.has("port-coverage-incomplete"));
+    assert.ok(limitationCodes.has("stale-data"));
+    assert.ok(limitationCodes.has("current-missing-sources"));
+    assert.match(limitationText, /missing port scan, host-up list/);
+    assert.doesNotMatch(activity.summary, /all clear/i);
+  });
+});
+
+run("activity API serves the guided scenario and bounded request errors", async () => {
+  const activityRoute = await import("../src/app/api/activity/route.ts");
+
+  const guidedResponse = await activityRoute.GET(
+    new Request("http://localhost/api/activity?scenario=guided")
+  );
+  const guidedBody = await guidedResponse.json();
+
+  assert.equal(guidedResponse.status, 200);
+  assert.equal(guidedBody.success, true);
+  assert.equal(guidedBody.activity.source, "synthetic-guided-scenario");
+  assert.ok(guidedBody.activity.scenario);
+
+  const invalidScenarioResponse = await activityRoute.GET(
+    new Request("http://localhost/api/activity?scenario=raw")
+  );
+  await assertJsonError(invalidScenarioResponse, 400, /scenario must be guided/);
+
+  const invalidDateResponse = await activityRoute.GET(
+    new Request("http://localhost/api/activity?asOf=2026-05-01T00:00:00")
+  );
+  await assertJsonError(invalidDateResponse, 400, /explicit offset/);
 });
 
 run("observations API imports, reads, lists, and returns safe bounded errors", async () => {
