@@ -310,13 +310,6 @@ function planDeviceMatches(
       evidenceKinds: ["mac-address"],
       summary: "Device identity matched by stable hashed-MAC evidence.",
     },
-    {
-      confidence: "medium",
-      ruleId: "identity.hostname-vendor",
-      keys: (device) => device.hostnameVendorKeys,
-      evidenceKinds: ["hostname", "vendor"],
-      summary: "Device identity matched by hostname and vendor evidence.",
-    },
   ];
 
   for (const tier of tiers) {
@@ -347,6 +340,31 @@ function planDeviceMatches(
         blockedCurrent.add(deviceKey(match.current));
       }
     }
+  }
+
+  const hostnameVendorCandidates = buildCandidates(
+    baselineDevices,
+    currentDevices,
+    combinedSet(matchedBaseline, blockedBaseline),
+    combinedSet(matchedCurrent, blockedCurrent),
+    "medium",
+    "identity.hostname-vendor",
+    (device) => device.hostnameVendorKeys,
+    ["hostname", "vendor"],
+    "Hostname and vendor evidence overlapped, but reported labels alone are not stable identity proof."
+  );
+  const hostnameVendorSelected = selectUniqueCandidates(hostnameVendorCandidates);
+  const hostnameVendorUncertain = [
+    ...hostnameVendorSelected.confirmed,
+    ...hostnameVendorSelected.ambiguous,
+  ];
+  if (hostnameVendorSelected.ambiguous.length > 0) {
+    ambiguousIdentity = true;
+  }
+  uncertain.push(...hostnameVendorUncertain);
+  for (const match of hostnameVendorUncertain) {
+    blockedBaseline.add(deviceKey(match.baseline));
+    blockedCurrent.add(deviceKey(match.current));
   }
 
   const lowConfidenceCandidates = buildCandidates(

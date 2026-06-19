@@ -2255,6 +2255,93 @@ run("observation comparison keeps ambiguous hashed MAC evidence uncertain despit
   assert.equal(findComparisonEvent(result, "important-device-metadata-changed"), undefined);
   assertNoConfirmedAndUncertainPairs(result);
 });
+run("observation comparison keeps unique hostname vendor evidence uncertain", () => {
+  const baseline = createComparisonBundle({
+    observationId: "obs-hostname-vendor-baseline",
+    observedAt: "2026-05-01T10:00:00.000Z",
+    devices: [
+      {
+        deviceId: "dev-131313131313",
+        hostnames: ["shared-printer.local"],
+        vendors: ["Example Printers"],
+        ports: [{ port: 9100, protocol: "tcp", service: "jetdirect" }],
+      },
+    ],
+  });
+  const current = createComparisonBundle({
+    observationId: "obs-hostname-vendor-current",
+    observedAt: "2026-05-02T10:00:00.000Z",
+    devices: [
+      {
+        deviceId: "dev-141414141414",
+        hostnames: ["shared-printer.local"],
+        vendors: ["Example Printers"],
+        ports: [
+          { port: 9100, protocol: "tcp", service: "jetdirect" },
+          { port: 443, protocol: "tcp", service: "https" },
+        ],
+      },
+    ],
+  });
+
+  const result = compareObservationBundlesV1(baseline, current);
+  const uncertain = findComparisonEvent(result, "identity-uncertain-possibly-same-device");
+
+  assert.ok(uncertain);
+  assert.equal(uncertain.confidence, "medium");
+  assert.equal(uncertain.identityEvidence.ruleId, "identity.hostname-vendor");
+  assert.deepEqual(comparisonEventTypes(result), ["identity-uncertain-possibly-same-device"]);
+  assert.equal(findComparisonEvent(result, "service-or-port-opened"), undefined);
+  assert.equal(findComparisonEvent(result, "service-or-port-closed"), undefined);
+  assert.equal(findComparisonEvent(result, "important-device-metadata-changed"), undefined);
+  assertNoConfirmedAndUncertainPairs(result);
+});
+
+run("observation comparison keeps hostname vendor evidence with different MAC and IP uncertain", () => {
+  const baseline = createComparisonBundle({
+    observationId: "obs-hostname-vendor-different-baseline",
+    observedAt: "2026-05-01T10:00:00.000Z",
+    devices: [
+      {
+        deviceId: "dev-151515151515",
+        ips: ["192.0.2.150"],
+        macs: ["02:00:00:00:01:50"],
+        hostnames: ["reused-label.local"],
+        vendors: ["Example Devices"],
+        ports: [{ port: 80, protocol: "tcp", service: "http" }],
+      },
+    ],
+  });
+  const current = createComparisonBundle({
+    observationId: "obs-hostname-vendor-different-current",
+    observedAt: "2026-05-02T10:00:00.000Z",
+    devices: [
+      {
+        deviceId: "dev-161616161616",
+        ips: ["192.0.2.151"],
+        macs: ["02:00:00:00:01:51"],
+        hostnames: ["reused-label.local"],
+        vendors: ["Example Devices"],
+        ports: [
+          { port: 80, protocol: "tcp", service: "http" },
+          { port: 8443, protocol: "tcp", service: "https-alt" },
+        ],
+      },
+    ],
+  });
+
+  const result = compareObservationBundlesV1(baseline, current);
+  const uncertain = findComparisonEvent(result, "identity-uncertain-possibly-same-device");
+
+  assert.ok(uncertain);
+  assert.equal(uncertain.confidence, "medium");
+  assert.equal(uncertain.identityEvidence.ruleId, "identity.hostname-vendor");
+  assert.deepEqual(comparisonEventTypes(result), ["identity-uncertain-possibly-same-device"]);
+  assert.equal(findComparisonEvent(result, "service-or-port-opened"), undefined);
+  assert.equal(findComparisonEvent(result, "service-or-port-closed"), undefined);
+  assert.equal(findComparisonEvent(result, "important-device-metadata-changed"), undefined);
+  assertNoConfirmedAndUncertainPairs(result);
+});
 run("observation comparison reports service open and closed changes on confirmed matches", () => {
   const baseline = createComparisonBundle({
     observationId: "obs-port-baseline",
