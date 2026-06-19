@@ -785,8 +785,42 @@ function buildDeviceInfo(bundle: ObservationBundleV1, device: ObservationDevice)
 
 function explicitDeviceIdentityKey(device: ObservationDevice): string[] {
   const id = normalizeIdentityValue(device.deviceId);
-  if (!id || /^dev-(?:[a-f0-9]{12}|unknown)$/i.test(id)) return [];
+  if (!id || /^dev-(?:[a-f0-9]{12}|unknown)$/i.test(id) || looksLikeIpDerivedDeviceId(id)) {
+    return [];
+  }
   return [id];
+}
+
+function looksLikeIpDerivedDeviceId(value: string): boolean {
+  return containsIpv4DerivedToken(value) || containsIpv6LikeToken(value);
+}
+
+function containsIpv4DerivedToken(value: string): boolean {
+  const matches = value.matchAll(
+    /(?:^|[^0-9])(\d{1,3})[._-](\d{1,3})[._-](\d{1,3})[._-](\d{1,3})(?=$|[^0-9])/g
+  );
+
+  for (const match of matches) {
+    const octets = match.slice(1, 5).map((part) => Number.parseInt(part, 10));
+    if (octets.every((octet) => octet >= 0 && octet <= 255)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function containsIpv6LikeToken(value: string): boolean {
+  return value.split(/[^0-9a-f:]+/i).some(isIpv6LikeToken);
+}
+
+function isIpv6LikeToken(value: string): boolean {
+  if (!value.includes(":") || !/^[0-9a-f:]+$/i.test(value)) return false;
+  const parts = value.split(":");
+  if (value.includes("::")) {
+    return parts.some(Boolean);
+  }
+  return parts.length >= 3 && parts.every((part) => part.length > 0 && part.length <= 4);
 }
 
 function observationRef(bundle: ObservationBundleV1): ObservationComparisonObservationRef {

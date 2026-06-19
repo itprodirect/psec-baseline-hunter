@@ -2220,6 +2220,105 @@ run("observation comparison matches persisted device ID as strongest identity ac
   assert.equal(findComparisonEvent(result, "previously-observed-device-not-observed"), undefined);
 });
 
+run("observation comparison does not treat IP-like device IDs as persisted identity", () => {
+  const ipLikeDeviceIds = [
+    "192.168.1.25",
+    "10.0.0.14",
+    "device-192-168-1-25",
+    "dev-192-168-1-25",
+    "ip-192-168-1-25",
+    "host-192-168-1-25",
+    "2001:db8::25",
+    "host-fe80::25",
+  ];
+
+  for (const deviceId of ipLikeDeviceIds) {
+    const baseline = createComparisonBundle({
+      observationId: `obs-ip-like-id-baseline-${deviceId}`,
+      observedAt: "2026-05-01T10:00:00.000Z",
+      devices: [
+        {
+          deviceId,
+          ips: ["192.0.2.200"],
+          ports: [{ port: 80, protocol: "tcp", service: "http" }],
+        },
+      ],
+    });
+    const current = createComparisonBundle({
+      observationId: `obs-ip-like-id-current-${deviceId}`,
+      observedAt: "2026-05-02T10:00:00.000Z",
+      devices: [
+        {
+          deviceId,
+          ips: ["192.0.2.200"],
+          ports: [
+            { port: 80, protocol: "tcp", service: "http" },
+            { port: 443, protocol: "tcp", service: "https" },
+          ],
+        },
+      ],
+    });
+
+    const result = compareObservationBundlesV1(baseline, current);
+    const uncertain = findComparisonEvent(result, "identity-uncertain-possibly-same-device");
+
+    assert.ok(uncertain, deviceId);
+    assert.equal(uncertain.confidence, "low", deviceId);
+    assert.equal(uncertain.identityEvidence.ruleId, "identity.ip-continuity", deviceId);
+    assert.equal(
+      result.events.some((event) => event.identityEvidence.ruleId === "identity.persisted-device-id"),
+      false,
+      deviceId
+    );
+    assert.equal(findComparisonEvent(result, "service-or-port-opened"), undefined, deviceId);
+    assertNoConfirmedAndUncertainPairs(result);
+  }
+});
+
+run("observation comparison keeps IP-like device IDs with changed MAC evidence uncertain", () => {
+  const baseline = createComparisonBundle({
+    observationId: "obs-ip-like-conflict-baseline",
+    observedAt: "2026-05-01T10:00:00.000Z",
+    devices: [
+      {
+        deviceId: "device-192-168-1-25",
+        ips: ["192.168.1.25"],
+        macs: ["02:00:00:00:01:25"],
+        ports: [{ port: 22, protocol: "tcp", service: "ssh" }],
+      },
+    ],
+  });
+  const current = createComparisonBundle({
+    observationId: "obs-ip-like-conflict-current",
+    observedAt: "2026-05-02T10:00:00.000Z",
+    devices: [
+      {
+        deviceId: "device-192-168-1-25",
+        ips: ["192.168.1.25"],
+        macs: ["02:00:00:00:01:26"],
+        ports: [
+          { port: 22, protocol: "tcp", service: "ssh" },
+          { port: 3389, protocol: "tcp", service: "ms-wbt-server" },
+        ],
+      },
+    ],
+  });
+
+  const result = compareObservationBundlesV1(baseline, current);
+  const uncertain = findComparisonEvent(result, "identity-uncertain-possibly-same-device");
+
+  assert.ok(uncertain);
+  assert.equal(uncertain.confidence, "low");
+  assert.equal(uncertain.identityEvidence.ruleId, "identity.ip-continuity");
+  assert.equal(
+    result.events.some((event) => event.identityEvidence.ruleId === "identity.persisted-device-id"),
+    false
+  );
+  assert.equal(findComparisonEvent(result, "service-or-port-opened"), undefined);
+  assert.equal(findComparisonEvent(result, "service-or-port-closed"), undefined);
+  assert.equal(findComparisonEvent(result, "important-device-metadata-changed"), undefined);
+  assertNoConfirmedAndUncertainPairs(result);
+});
 run("observation comparison keeps ambiguous strong MAC evidence uncertain despite weaker identity", () => {
   const { baseline, current } = createAmbiguousMacThenWeakerIdentityComparison();
   const result = compareObservationBundlesV1(baseline, current);
