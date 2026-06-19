@@ -7,6 +7,7 @@
 import type { UserProfile } from "./userProfile";
 export type { UserProfile };
 export type * from "./observation-bundle";
+export type * from "./observation-registry";
 
 /**
  * Metadata about a scan run folder
