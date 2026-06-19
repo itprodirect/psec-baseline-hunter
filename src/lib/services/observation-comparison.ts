@@ -710,6 +710,9 @@ function evidenceMatchesValues(
   const normalizedValue = normalizeIdentityValue(evidence.value);
   if (normalizedValues.has(normalizedValue)) return true;
 
+  const macValue = normalizeMacKey(evidence.value);
+  if (macValue && normalizedValues.has(macValue)) return true;
+
   const hashedMacValue = normalizeHashedMacKey(evidence.value);
   if (hashedMacValue && normalizedValues.has(hashedMacValue)) return true;
 

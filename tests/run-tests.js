@@ -2132,6 +2132,71 @@ run("observation comparison matches strong MAC identity across changed IP", () =
   assert.deepEqual(metadata.details.changedFields, ["ips"]);
 });
 
+run("observation comparison links normalized MAC evidence IDs", () => {
+  const cases = [
+    {
+      name: "hyphenated",
+      normalizedMac: "02:00:00:00:00:10",
+      evidenceMac: "02-00-00-00-00-10",
+    },
+    {
+      name: "uppercase",
+      normalizedMac: "aa:bb:cc:dd:ee:10",
+      evidenceMac: "AA:BB:CC:DD:EE:10",
+    },
+    {
+      name: "dotted",
+      normalizedMac: "aa:bb:cc:dd:ee:11",
+      evidenceMac: "aabb.ccdd.ee11",
+    },
+  ];
+
+  for (const testCase of cases) {
+    const baseline = createComparisonBundle({
+      observationId: `obs-mac-evidence-${testCase.name}-baseline`,
+      observedAt: "2026-05-01T10:00:00.000Z",
+      devices: [
+        {
+          deviceId: `dev-mac-evidence-${testCase.name}-baseline`,
+          ips: ["192.0.2.15"],
+          macs: [testCase.normalizedMac],
+          ports: [{ port: 80, protocol: "tcp", service: "http" }],
+        },
+      ],
+    });
+    const current = createComparisonBundle({
+      observationId: `obs-mac-evidence-${testCase.name}-current`,
+      observedAt: "2026-05-02T10:00:00.000Z",
+      devices: [
+        {
+          deviceId: `dev-mac-evidence-${testCase.name}-current`,
+          ips: ["192.0.2.16"],
+          macs: [testCase.normalizedMac],
+          ports: [
+            { port: 80, protocol: "tcp", service: "http" },
+            { port: 443, protocol: "tcp", service: "https" },
+          ],
+        },
+      ],
+    });
+    baseline.devices[0].identityEvidence = [
+      createComparisonEvidence("mac-address", testCase.evidenceMac, "src-1"),
+    ];
+    current.devices[0].identityEvidence = [
+      createComparisonEvidence("mac-address", testCase.evidenceMac, "src-1"),
+    ];
+
+    const result = compareObservationBundlesV1(baseline, current);
+    const opened = findComparisonEvent(result, "service-or-port-opened");
+
+    assert.ok(opened, testCase.name);
+    assert.equal(opened.identityEvidence.ruleId, "identity.mac", testCase.name);
+    assert.deepEqual(opened.identityEvidence.values, [testCase.normalizedMac], testCase.name);
+    assert.ok(opened.identityEvidence.baselineEvidenceIds.length > 0, testCase.name);
+    assert.ok(opened.identityEvidence.currentEvidenceIds.length > 0, testCase.name);
+  }
+});
+
 run("observation comparison matches stable hashed MAC evidence as strong identity", () => {
   const hashedMac = `sha256:${"a".repeat(64)}`;
   const baseline = createComparisonBundle({
