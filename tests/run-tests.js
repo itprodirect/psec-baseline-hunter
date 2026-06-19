@@ -2786,6 +2786,80 @@ run("observation comparison suppresses absent-device events when current coverag
   assert.equal(findComparisonEvent(result, "previously-observed-device-not-observed"), undefined);
 });
 
+run("observation comparison uses exact stale threshold boundary", () => {
+  const cases = [
+    {
+      id: "exact-threshold",
+      name: "exact threshold",
+      evaluatedAt: "2026-06-07T10:00:00.000Z",
+      expectedBaselineStatus: "fresh",
+      expectStaleGuardrail: false,
+    },
+    {
+      id: "after-threshold",
+      name: "one millisecond after threshold",
+      evaluatedAt: "2026-06-07T10:00:00.001Z",
+      expectedBaselineStatus: "stale",
+      expectStaleGuardrail: true,
+    },
+  ];
+
+  for (const testCase of cases) {
+    const baseline = createComparisonBundle({
+      observationId: `obs-stale-boundary-${testCase.id}-baseline`,
+      observedAt: "2026-05-01T10:00:00.000Z",
+      devices: [
+        {
+          deviceId: `dev-stale-boundary-${testCase.id}-baseline`,
+          ips: ["192.0.2.75"],
+          macs: ["02:00:00:00:00:75"],
+          ports: [{ port: 80, protocol: "tcp", service: "http" }],
+        },
+      ],
+    });
+    const current = createComparisonBundle({
+      observationId: `obs-stale-boundary-${testCase.id}-current`,
+      observedAt: "2026-05-02T10:00:00.000Z",
+      devices: [
+        {
+          deviceId: `dev-stale-boundary-${testCase.id}-current`,
+          ips: ["192.0.2.76"],
+          macs: ["02:00:00:00:00:75"],
+          ports: [
+            { port: 80, protocol: "tcp", service: "http" },
+            { port: 443, protocol: "tcp", service: "https" },
+          ],
+        },
+      ],
+    });
+
+    const result = compareObservationBundlesV1(baseline, current, {
+      evaluatedAt: testCase.evaluatedAt,
+      staleAfterDays: 37,
+    });
+    const opened = findComparisonEvent(result, "service-or-port-opened");
+
+    assert.equal(
+      result.coverageContext.baseline.freshness.status,
+      testCase.expectedBaselineStatus,
+      testCase.name
+    );
+    assert.equal(result.coverageContext.baseline.freshness.ageDays, 37, testCase.name);
+    assert.equal(result.coverageContext.current.freshness.status, "fresh", testCase.name);
+    assert.equal(
+      result.guardrails.some((guardrail) => guardrail.code === "stale-data"),
+      testCase.expectStaleGuardrail,
+      testCase.name
+    );
+    assert.ok(opened, testCase.name);
+    assert.equal(
+      opened.coverageContext.baseline.freshness.status,
+      testCase.expectedBaselineStatus,
+      testCase.name
+    );
+  }
+});
+
 run("observation comparison marks stale observations in guardrails and event coverage context", () => {
   const baseline = createComparisonBundle({
     observationId: "obs-stale-baseline",

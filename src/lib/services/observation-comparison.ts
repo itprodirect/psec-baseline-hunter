@@ -900,7 +900,7 @@ function freshnessContext(
 
   const ageDays = wholeDaysBetween(observedAt, evaluatedAt);
   return {
-    status: ageDays > staleAfterDays ? "stale" : "fresh",
+    status: isAfterStaleThreshold(observedAt, evaluatedAt, staleAfterDays) ? "stale" : "fresh",
     evaluatedAt,
     observedAt,
     staleAfterDays,
@@ -1031,6 +1031,13 @@ function wholeDaysBetween(startIso: string, endIso: string): number {
   const diff = Date.parse(endIso) - Date.parse(startIso);
   if (!Number.isFinite(diff)) return 0;
   return Math.max(0, Math.floor(diff / MS_PER_DAY));
+}
+
+function isAfterStaleThreshold(startIso: string, endIso: string, staleAfterDays: number): boolean {
+  const start = Date.parse(startIso);
+  const end = Date.parse(endIso);
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return false;
+  return end - start > staleAfterDays * MS_PER_DAY;
 }
 
 function normalizeMacKey(value: string): string | null {
