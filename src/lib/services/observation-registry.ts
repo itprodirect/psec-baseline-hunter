@@ -8,7 +8,7 @@ import * as path from "path";
 import { getDataDir, ensureDir } from "./ingest";
 import {
   MAX_OBSERVATION_BUNDLE_JSON_BYTES,
-  parseObservationBundleV1Json,
+  ObservationBundleValidationError,
   sanitizeObservationBundleV1,
 } from "./observation-bundle";
 import { hashString } from "@/lib/utils/hash";
@@ -31,10 +31,11 @@ import type {
 } from "@/lib/types/observation-bundle";
 
 const REGISTRY_VERSION = 1;
+const OBSERVATION_BUNDLE_SCHEMA_VERSION = "psec.observation-bundle.v1";
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const MAX_OBSERVATION_RECORD_JSON_BYTES = MAX_OBSERVATION_BUNDLE_JSON_BYTES * 3;
 const ISO_INSTANT_WITH_ZONE_PATTERN =
-  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/;
+  /^(\d{4})-(\d{2})-(\d{2})T([01]\d|2[0-3]):([0-5]\d):([0-5]\d)(?:\.\d{1,3})?(Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/;
 
 /**
  * Freshness policy: observations are expected every 30 days. A bundle is
@@ -74,6 +75,7 @@ export function registerObservationBundle(
   rawBundle: unknown,
   options: ObservationRegistryImportOptions = {}
 ): RegisterObservationResult {
+  assertRegistryImportTimestamps(rawBundle);
   const bundle = sanitizeObservationBundleV1(rawBundle);
   return saveSanitizedObservationBundle(bundle, options);
 }
@@ -82,8 +84,7 @@ export function registerObservationBundleJson(
   jsonText: string,
   options: ObservationRegistryImportOptions = {}
 ): RegisterObservationResult {
-  const bundle = parseObservationBundleV1Json(jsonText);
-  return saveSanitizedObservationBundle(bundle, options);
+  return registerObservationBundle(parseRegistryObservationBundleJson(jsonText), options);
 }
 
 export function getObservationById(
@@ -200,6 +201,7 @@ function readObservationRecord(
     const raw = JSON.parse(fs.readFileSync(recordPath, "utf-8"));
     if (!isRecord(raw)) return null;
 
+    assertRegistryImportTimestamps(raw.bundle);
     const bundle = sanitizeObservationBundleV1(raw.bundle);
     const contentHash = computeObservationBundleContentHash(bundle);
     const importedAt = isoOrNull(raw.importedAt) ?? new Date().toISOString();
@@ -475,6 +477,41 @@ function timeValue(iso: string | null): number {
   return Number.isNaN(value) ? 0 : value;
 }
 
+function parseRegistryObservationBundleJson(jsonText: string): unknown {
+  if (Buffer.byteLength(jsonText, "utf-8") > MAX_OBSERVATION_BUNDLE_JSON_BYTES) {
+    throw new ObservationBundleValidationError("Observation bundle JSON is too large.");
+  }
+
+  try {
+    return JSON.parse(jsonText);
+  } catch {
+    throw new ObservationBundleValidationError("This file is not valid JSON.");
+  }
+}
+
+function assertRegistryImportTimestamps(raw: unknown): void {
+  if (!isRecord(raw) || raw.schemaVersion !== OBSERVATION_BUNDLE_SCHEMA_VERSION) return;
+  const batch = isRecord(raw.batch) ? raw.batch : null;
+  if (!batch) return;
+
+  assertOptionalBundleTimestamp(batch.startedAt, "batch.startedAt");
+  assertOptionalBundleTimestamp(batch.endedAt, "batch.endedAt");
+  assertRequiredBundleTimestamp(batch.generatedAt, "batch.generatedAt");
+}
+
+function assertOptionalBundleTimestamp(value: unknown, field: string): void {
+  if (value === undefined || value === null) return;
+  assertRequiredBundleTimestamp(value, field);
+}
+
+function assertRequiredBundleTimestamp(value: unknown, field: string): void {
+  if (typeof value !== "string" || !parseStrictExplicitIsoString(value)) {
+    throw new ObservationBundleValidationError(
+      `${field} must be an ISO timestamp with Z or an explicit offset`
+    );
+  }
+}
+
 function stableStringify(value: unknown): string {
   if (value === null || typeof value !== "object") {
     return JSON.stringify(value) ?? "null";
@@ -506,9 +543,26 @@ function isoOrNull(value: unknown): string | null {
     return Number.isNaN(value.getTime()) ? null : value.toISOString();
   }
   if (typeof value !== "string") return null;
-  if (!ISO_INSTANT_WITH_ZONE_PATTERN.test(value)) return null;
+  return parseStrictExplicitIsoString(value);
+}
+
+function parseStrictExplicitIsoString(value: string): string | null {
+  const match = ISO_INSTANT_WITH_ZONE_PATTERN.exec(value);
+  if (!match) return null;
+
+  const year = Number.parseInt(match[1], 10);
+  const month = Number.parseInt(match[2], 10);
+  const day = Number.parseInt(match[3], 10);
+  if (month < 1 || month > 12 || day < 1 || day > daysInMonth(year, month)) {
+    return null;
+  }
+
   const parsed = Date.parse(value);
   return Number.isNaN(parsed) ? null : new Date(parsed).toISOString();
+}
+
+function daysInMonth(year: number, month: number): number {
+  return new Date(Date.UTC(year, month, 0)).getUTCDate();
 }
 
 function optionIsoOrNull(value: unknown, field: string): string | null {

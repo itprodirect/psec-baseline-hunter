@@ -13,6 +13,7 @@ import type {
   ObservationRegistryRecord,
 } from "@/lib/types/observation-registry";
 
+const DEFAULT_OBSERVATION_LIST_LIMIT = 50;
 const MAX_OBSERVATION_LIST_LIMIT = 200;
 const ISO_INSTANT_WITH_ZONE_PATTERN =
   /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/;
@@ -57,9 +58,7 @@ export async function GET(
     if (offset > 0) {
       observations = observations.slice(offset);
     }
-    if (limit !== undefined) {
-      observations = observations.slice(0, limit);
-    }
+    observations = observations.slice(0, limit);
 
     return NextResponse.json({
       success: true,
@@ -177,9 +176,9 @@ function parseOrder(value: string | null): "asc" | "desc" | undefined {
   throw new ObservationApiRequestError("order must be asc or desc");
 }
 
-function parseListLimit(value: string | null): number | undefined {
+function parseListLimit(value: string | null): number {
   const limit = parseNonNegativeInteger(value, "limit");
-  if (limit === null) return undefined;
+  if (limit === null) return DEFAULT_OBSERVATION_LIST_LIMIT;
   if (limit < 1 || limit > MAX_OBSERVATION_LIST_LIMIT) {
     throw new ObservationApiRequestError(
       `limit must be between 1 and ${MAX_OBSERVATION_LIST_LIMIT}`
