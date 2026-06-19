@@ -29,6 +29,11 @@ let DEFAULT_LLM_REQUEST_TIMEOUT_MS;
 let LLM_MAX_TOKENS_UPPER_CAP;
 let getLLMMaxTokens;
 let getLLMRequestTimeoutMs;
+let adaptRunManifestToObservationBundleV1;
+let buildObservationBundleV1FromRun;
+let parseObservationBundleV1Json;
+let isObservationBundleValidationError;
+let MAX_OBSERVATION_BUNDLE_JSON_BYTES;
 
 async function loadModules() {
   const [
@@ -39,6 +44,7 @@ async function loadModules() {
     apiResponseSafety,
     llmRateLimit,
     llmProvider,
+    observationBundle,
   ] = await Promise.all([
     import("../src/lib/services/path-safety.ts"),
     import("../src/lib/services/archive-safety.ts"),
@@ -47,6 +53,7 @@ async function loadModules() {
     import("../src/lib/services/api-response-safety.ts"),
     import("../src/lib/services/llm-rate-limit.ts"),
     import("../src/lib/llm/provider.ts"),
+    import("../src/lib/services/observation-bundle.ts"),
   ]);
 
   ({ resolvePathWithin, sanitizeNetworkName } = pathSafety);
@@ -81,6 +88,13 @@ async function loadModules() {
     getLLMMaxTokens,
     getLLMRequestTimeoutMs,
   } = llmProvider);
+  ({
+    adaptRunManifestToObservationBundleV1,
+    buildObservationBundleV1FromRun,
+    parseObservationBundleV1Json,
+    isObservationBundleValidationError,
+    MAX_OBSERVATION_BUNDLE_JSON_BYTES,
+  } = observationBundle);
 }
 
 let total = 0;
@@ -513,6 +527,131 @@ function createRunManifest(runUid, timestamp, portsXmlPath, network = "home-lab"
   };
 }
 
+function createObservationNmapXml(hosts) {
+  return [
+    "<nmaprun>",
+    ...hosts.map((host) => {
+      const addresses = [
+        host.ip ? `<address addr="${host.ip}" addrtype="ipv4" />` : "",
+        host.mac ? `<address addr="${host.mac}" addrtype="mac"${host.vendor ? ` vendor="${host.vendor}"` : ""} />` : "",
+      ].filter(Boolean).join("");
+      const hostnames = host.hostname
+        ? `<hostnames><hostname name="${host.hostname}" /></hostnames>`
+        : "";
+      const ports = host.ports?.length
+        ? `<ports>${host.ports.map((port) => `<port protocol="${port.protocol}" portid="${port.port}"><state state="open" /><service name="${port.service}" product="${port.product ?? ""}" version="${port.version ?? ""}" /></port>`).join("")}</ports>`
+        : "";
+      return `<host><status state="up" />${addresses}${hostnames}${ports}</host>`;
+    }),
+    "</nmaprun>",
+  ].join("");
+}
+
+function writeObservationRunFixture(options = {}) {
+  const includeOptional = options.includeOptional !== false;
+  const runUid = options.runUid ?? "synthetic-observation-run";
+  const timestamp = options.timestamp ?? "2026-04-01T12:00:00.000Z";
+  const network = options.network ?? "synthetic-lab";
+  const runFolder = path.join(
+    process.cwd(),
+    "data",
+    "extracted",
+    "synthetic-lab",
+    "rawscans",
+    "2026-04-01_1200_baselinekit_v0"
+  );
+  fs.mkdirSync(runFolder, { recursive: true });
+
+  const portsPath = path.join(runFolder, "ports_top200_open.xml");
+  fs.writeFileSync(
+    portsPath,
+    createObservationNmapXml([
+      {
+        ip: "192.0.2.10",
+        mac: "02:00:00:00:00:10",
+        vendor: "Example Devices",
+        hostname: "synthetic-laptop.local",
+        ports: [
+          { port: 443, protocol: "tcp", service: "https", product: "ExampleWeb", version: "1.0" },
+        ],
+      },
+    ])
+  );
+
+  const manifest = createRunManifest(runUid, timestamp, portsPath, network);
+  manifest.runFolder = runFolder;
+  manifest.folderName = path.basename(runFolder);
+
+  if (includeOptional) {
+    const discoveryPath = path.join(runFolder, "discovery_ping_sweep.xml");
+    const hostsUpPath = path.join(runFolder, "hosts_up.txt");
+    const arpPath = path.join(runFolder, "arp_cache.txt");
+    const metadataPath = path.join(runFolder, "scan_metadata.json");
+
+    fs.writeFileSync(
+      discoveryPath,
+      createObservationNmapXml([
+        {
+          ip: "192.0.2.10",
+          mac: "02:00:00:00:00:10",
+          vendor: "Example Devices",
+          hostname: "synthetic-laptop.local",
+          ports: [],
+        },
+        {
+          ip: "192.0.2.20",
+          mac: "02:00:00:00:00:20",
+          vendor: "Example Printers",
+          hostname: "synthetic-printer.local",
+          ports: [],
+        },
+      ])
+    );
+    fs.writeFileSync(hostsUpPath, "192.0.2.10\n192.0.2.20\n");
+    fs.writeFileSync(
+      arpPath,
+      "Interface: 192.0.2.1 --- synthetic\n  192.0.2.10  02-00-00-00-00-10 dynamic\n  192.0.2.20  02-00-00-00-00-20 dynamic\n"
+    );
+    fs.writeFileSync(
+      metadataPath,
+      JSON.stringify(
+        {
+          target: "192.0.2.0/24",
+          collectorHost: "synthetic-collector",
+          startedAt: "2026-04-01T11:59:00.000Z",
+          endedAt: "2026-04-01T12:05:00.000Z",
+          scriptVersion: "synthetic-v1",
+        },
+        null,
+        2
+      )
+    );
+
+    manifest.keyFiles.discovery = [discoveryPath];
+    manifest.keyFiles.hosts_up = [hostsUpPath];
+    manifest.keyFiles.snapshots = [arpPath];
+    manifest.stats.keyFileCount = 4;
+    manifest.stats.hasHostsUp = true;
+    manifest.stats.hasDiscovery = true;
+  }
+
+  const runsDir = path.join(process.cwd(), "data", "runs");
+  fs.mkdirSync(runsDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(runsDir, "index.json"),
+    JSON.stringify(
+      {
+        version: 1,
+        runs: { [runUid]: manifest },
+        lastUpdated: timestamp,
+      },
+      null,
+      2
+    )
+  );
+
+  return manifest;
+}
 run("resolvePathWithin allows paths inside base directory", () => {
   const baseDir = path.resolve("data/uploads");
   const candidate = path.join(baseDir, "scan.zip");
@@ -788,6 +927,112 @@ run("run manifests returned to clients do not include absolute file paths", () =
   assert.match(safeManifest.keyFiles.ports[0], /^data\/extracted\//);
 });
 
+run("observation bundle adapter converts a synthetic registered scan run", async () => {
+  await withTempCwd(async () => {
+    const manifest = writeObservationRunFixture();
+    const bundle = buildObservationBundleV1FromRun(manifest.runUid, {
+      generatedAt: "2026-04-01T12:06:00.000Z",
+    });
+
+    assert.ok(bundle);
+    assert.equal(bundle.schemaVersion, "psec.observation-bundle.v1");
+    assert.equal(bundle.observationId, "obs-synthetic-observation-run");
+    assert.equal(bundle.site.networkName, "synthetic-lab");
+    assert.equal(bundle.site.networkScope, "192.0.2.0/24");
+    assert.equal(bundle.batch.startedAt, "2026-04-01T11:59:00.000Z");
+    assert.equal(bundle.batch.endedAt, "2026-04-01T12:05:00.000Z");
+    assert.equal(bundle.coverage.status, "complete");
+    assert.deepEqual(bundle.coverage.missingSources, []);
+
+    const laptop = bundle.devices.find((device) => device.ips.includes("192.0.2.10"));
+    assert.ok(laptop);
+    assert.ok(laptop.macs.includes("02:00:00:00:00:10"));
+    assert.ok(laptop.hostnames.includes("synthetic-laptop.local"));
+    assert.ok(laptop.vendors.includes("Example Devices"));
+    assert.ok(laptop.openPorts.some((port) => port.port === 443 && port.service === "https"));
+
+    const evidenceKinds = new Set(laptop.identityEvidence.map((evidence) => evidence.kind));
+    assert.ok(evidenceKinds.has("ip-address"));
+    assert.ok(evidenceKinds.has("mac-address"));
+    assert.ok(evidenceKinds.has("hostname"));
+    assert.ok(evidenceKinds.has("vendor"));
+    assert.ok(evidenceKinds.has("host-up"));
+    assert.ok(evidenceKinds.has("arp-neighbor"));
+
+    for (const source of bundle.sources) {
+      if (source.fileName) {
+        assert.equal(path.basename(source.fileName), source.fileName);
+        assert.equal(path.isAbsolute(source.fileName), false);
+      }
+    }
+
+    const serialized = JSON.stringify(bundle);
+    assert.doesNotMatch(serialized, /[A-Za-z]:\\|\/home\/|\/tmp\//);
+    assert.doesNotMatch(serialized, /<nmaprun>|rawscans|Interface: 192\.0\.2\.1/);
+  });
+});
+
+run("observation bundle adapter treats missing optional artifacts as partial coverage", async () => {
+  await withTempCwd(async () => {
+    const manifest = writeObservationRunFixture({ includeOptional: false });
+    const bundle = adaptRunManifestToObservationBundleV1(manifest, {
+      generatedAt: "2026-04-01T12:06:00.000Z",
+    });
+
+    assert.equal(bundle.coverage.status, "partial");
+    assert.equal(bundle.coverage.score, 0.35);
+    assert.deepEqual(bundle.coverage.presentSources, ["ports"]);
+    assert.ok(bundle.coverage.missingSources.includes("discovery"));
+    assert.ok(bundle.coverage.missingSources.includes("hosts_up"));
+    assert.ok(bundle.coverage.missingSources.includes("arp_snapshot"));
+    assert.ok(bundle.coverage.missingSources.includes("scan_metadata"));
+    assert.match(bundle.coverage.notes.join("\n"), /No discovery XML was available/);
+    assert.ok(bundle.batch.partial);
+    assert.equal(bundle.devices.length, 1);
+  });
+});
+
+run("observation bundle import validation rejects invalid JSON and sanitizes unsafe fields", async () => {
+  await withTempCwd(async () => {
+    const manifest = writeObservationRunFixture();
+    const bundle = buildObservationBundleV1FromRun(manifest.runUid, {
+      generatedAt: "2026-04-01T12:06:00.000Z",
+    });
+    const tampered = JSON.parse(JSON.stringify(bundle));
+    const pathLikeFileName = ["C:", "Users", "user", "private", "ports_top200_open.xml"].join("\\");
+    tampered.sources[1].fileName = pathLikeFileName;
+    tampered.sources[1].unknownField = "drop me";
+    tampered.devices[0].unknownField = "drop me";
+    tampered.devices[0].identityEvidence.push({
+      evidenceId: "ev-secret",
+      kind: "hostname",
+      value: "token=synthetic-not-for-output",
+      sourceId: tampered.sources[1].sourceId,
+      confidence: "reported",
+    });
+    tampered.notes = ["password=not-for-output", "kept synthetic note"];
+
+    const restored = parseObservationBundleV1Json(JSON.stringify(tampered));
+    assert.equal(restored.sources[1].fileName, "ports_top200_open.xml");
+    assert.equal("unknownField" in restored.sources[1], false);
+    assert.equal("unknownField" in restored.devices[0], false);
+    assert.doesNotMatch(JSON.stringify(restored), /token=synthetic|password=|private/);
+    assert.deepEqual(restored.notes, ["kept synthetic note"]);
+
+    assert.throws(
+      () => parseObservationBundleV1Json("{broken"),
+      (error) => isObservationBundleValidationError(error) && /not valid JSON/.test(error.message)
+    );
+    assert.throws(
+      () => parseObservationBundleV1Json(JSON.stringify({ hello: "world" })),
+      (error) => isObservationBundleValidationError(error) && /does not look like/.test(error.message)
+    );
+    assert.throws(
+      () => parseObservationBundleV1Json(" ".repeat(MAX_OBSERVATION_BUNDLE_JSON_BYTES + 1)),
+      (error) => isObservationBundleValidationError(error) && /too large/.test(error.message)
+    );
+  });
+});
 run("rules POST rejects invalid ports, enums, strings, and malformed JSON", async () => {
   const rulesRoute = await import("../src/app/api/rules/route.ts");
   const baseBody = {
