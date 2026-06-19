@@ -17,6 +17,7 @@ export type ObservationChangeEventType =
 
 export type ObservationComparisonGuardrailCode =
   | "partial-coverage"
+  | "port-coverage-incomplete"
   | "stale-data"
   | "ambiguous-identity";
 

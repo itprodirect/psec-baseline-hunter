@@ -464,6 +464,8 @@ function buildPortChangeEvents(
   currentRef: ObservationComparisonObservationRef,
   coverageContext: ObservationComparisonCoverageContext
 ): ObservationChangeEvent[] {
+  if (!portCoverageComparable(coverageContext)) return [];
+
   const events: ObservationChangeEvent[] = [];
   const baselinePorts = portMap(match.baseline.device.openPorts);
   const currentPorts = portMap(match.current.device.openPorts);
@@ -917,6 +919,15 @@ function buildGuardrails(
     });
   }
 
+  if (!portCoverageComparable(coverageContext)) {
+    guardrails.push({
+      code: "port-coverage-incomplete",
+      severity: "warning",
+      message:
+        "Port/service changes were not fully evaluated because one or more observations lack usable port coverage.",
+    });
+  }
+
   if (
     coverageContext.baseline.freshness.status === "stale" ||
     coverageContext.current.freshness.status === "stale"
@@ -930,6 +941,16 @@ function buildGuardrails(
   }
 
   return guardrails;
+}
+
+function portCoverageComparable(coverageContext: ObservationComparisonCoverageContext): boolean {
+  return (
+    hasUsablePortCoverage(coverageContext.baseline) && hasUsablePortCoverage(coverageContext.current)
+  );
+}
+
+function hasUsablePortCoverage(snapshot: ObservationComparisonCoverageSnapshot): boolean {
+  return snapshot.presentSources.includes("ports") && !snapshot.missingSources.includes("ports");
 }
 
 function currentCoverageSupportsAbsence(current: ObservationBundleV1): boolean {

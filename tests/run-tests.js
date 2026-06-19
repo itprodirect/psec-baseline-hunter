@@ -2489,6 +2489,85 @@ run("observation comparison reports service open and closed changes on confirmed
   assert.ok(closed);
   assert.equal(opened.rule.version, "psec.observation-comparison.v1");
   assert.equal(opened.rule.deterministic, true);
+  assert.equal(
+    result.guardrails.some((guardrail) => guardrail.code === "port-coverage-incomplete"),
+    false
+  );
+});
+
+run("observation comparison suppresses closed ports without current port coverage", () => {
+  const baseline = createComparisonBundle({
+    observationId: "obs-port-current-missing-baseline",
+    observedAt: "2026-05-01T10:00:00.000Z",
+    devices: [
+      {
+        deviceId: "dev-port-current-missing-baseline",
+        ips: ["192.0.2.31"],
+        macs: ["02:00:00:00:00:31"],
+        ports: [
+          { port: 22, protocol: "tcp", service: "ssh" },
+          { port: 80, protocol: "tcp", service: "http" },
+        ],
+      },
+    ],
+  });
+  const current = createComparisonBundle({
+    observationId: "obs-port-current-missing-current",
+    observedAt: "2026-05-02T10:00:00.000Z",
+    missingSources: ["ports"],
+    devices: [
+      {
+        deviceId: "dev-port-current-missing-current",
+        ips: ["192.0.2.31"],
+        macs: ["02:00:00:00:00:31"],
+      },
+    ],
+  });
+
+  const result = compareObservationBundlesV1(baseline, current);
+
+  assert.equal(findComparisonEvent(result, "service-or-port-closed"), undefined);
+  assert.equal(findComparisonEvent(result, "service-or-port-opened"), undefined);
+  assert.equal(
+    result.guardrails.some((guardrail) => guardrail.code === "port-coverage-incomplete"),
+    true
+  );
+});
+
+run("observation comparison suppresses opened ports without baseline port coverage", () => {
+  const baseline = createComparisonBundle({
+    observationId: "obs-port-baseline-missing-baseline",
+    observedAt: "2026-05-01T10:00:00.000Z",
+    missingSources: ["ports"],
+    devices: [
+      {
+        deviceId: "dev-port-baseline-missing-baseline",
+        ips: ["192.0.2.32"],
+        macs: ["02:00:00:00:00:32"],
+      },
+    ],
+  });
+  const current = createComparisonBundle({
+    observationId: "obs-port-baseline-missing-current",
+    observedAt: "2026-05-02T10:00:00.000Z",
+    devices: [
+      {
+        deviceId: "dev-port-baseline-missing-current",
+        ips: ["192.0.2.32"],
+        macs: ["02:00:00:00:00:32"],
+        ports: [{ port: 443, protocol: "tcp", service: "https" }],
+      },
+    ],
+  });
+
+  const result = compareObservationBundlesV1(baseline, current);
+
+  assert.equal(findComparisonEvent(result, "service-or-port-opened"), undefined);
+  assert.equal(findComparisonEvent(result, "service-or-port-closed"), undefined);
+  assert.equal(
+    result.guardrails.some((guardrail) => guardrail.code === "port-coverage-incomplete"),
+    true
+  );
 });
 
 run("observation comparison does not merge IP reuse without stronger identity", () => {
