@@ -659,6 +659,31 @@ function writeObservationRunFixture(options = {}) {
 
   return manifest;
 }
+
+function observationUnsafeAbsolutePathSamples() {
+  return [
+    ["", "opt", "scans", "run.xml"].join("/"),
+    ["", "workspace", "run.xml"].join("/"),
+    ["", "Users", "user", "run.xml"].join("/"),
+    ["", "home", "user", "run.xml"].join("/"),
+    ["", "tmp", "run.xml"].join("/"),
+    ["", "var", "log", "run.xml"].join("/"),
+    ["", "etc", "passwd"].join("/"),
+    ["C:", "Users", "user", "run.xml"].join("\\"),
+    ["", "", "fileserver", "share", "run.xml"].join("\\"),
+  ];
+}
+
+function assertValuesDoNotInclude(values, unsafeValues) {
+  for (const unsafeValue of unsafeValues) {
+    assert.equal(
+      values.includes(unsafeValue),
+      false,
+      `expected unsafe path to be dropped: ${unsafeValue}`
+    );
+  }
+}
+
 run("resolvePathWithin allows paths inside base directory", () => {
   const baseDir = path.resolve("data/uploads");
   const candidate = path.join(baseDir, "scan.zip");
@@ -999,6 +1024,35 @@ run("observation bundle adapter treats missing optional artifacts as partial cov
   });
 });
 
+run("observation bundle adapter marks runs partial when only ARP or metadata is missing", async () => {
+  await withTempCwd(async () => {
+    const cases = [
+      {
+        name: "arp_snapshot",
+        remove: (manifest) => fs.rmSync(manifest.keyFiles.snapshots[0]),
+      },
+      {
+        name: "scan_metadata",
+        remove: (manifest) => fs.rmSync(path.join(manifest.runFolder, "scan_metadata.json")),
+      },
+    ];
+
+    for (const testCase of cases) {
+      const manifest = writeObservationRunFixture({
+        runUid: `synthetic-missing-${testCase.name}`,
+      });
+      testCase.remove(manifest);
+
+      const bundle = adaptRunManifestToObservationBundleV1(manifest, {
+        generatedAt: "2026-04-01T12:06:00.000Z",
+      });
+
+      assert.deepEqual(bundle.coverage.missingSources, [testCase.name], testCase.name);
+      assert.ok(bundle.batch.partial, testCase.name);
+    }
+  });
+});
+
 run("observation bundle identity keeps same-hostname devices separate without IP or MAC corroboration", async () => {
   await withTempCwd(async () => {
     const manifest = writeObservationRunFixture({ includeOptional: false });
@@ -1121,6 +1175,55 @@ run("observation bundle oversized scan metadata degrades safely", async () => {
   });
 });
 
+run("observation bundle scan metadata sanitizes path-shaped target and collector fields", async () => {
+  await withTempCwd(async () => {
+    for (const unsafePath of observationUnsafeAbsolutePathSamples()) {
+      const manifest = writeObservationRunFixture({
+        runUid: `synthetic-metadata-path-${Buffer.from(unsafePath).toString("hex").slice(0, 16)}`,
+      });
+      fs.writeFileSync(
+        path.join(manifest.runFolder, "scan_metadata.json"),
+        JSON.stringify({
+          target: unsafePath,
+          collectorHost: unsafePath,
+          startedAt: "2026-04-01T11:59:00.000Z",
+          endedAt: "2026-04-01T12:05:00.000Z",
+          scriptVersion: "synthetic-v1",
+        })
+      );
+
+      const bundle = adaptRunManifestToObservationBundleV1(manifest, {
+        generatedAt: "2026-04-01T12:06:00.000Z",
+      });
+
+      assert.equal(bundle.site.networkScope, null, unsafePath);
+      assert.equal(bundle.vantage.target, null, unsafePath);
+      assert.equal(bundle.vantage.collectorHost, null, unsafePath);
+    }
+
+    const manifest = writeObservationRunFixture({ runUid: "synthetic-metadata-safe-values" });
+    fs.writeFileSync(
+      path.join(manifest.runFolder, "scan_metadata.json"),
+      JSON.stringify({
+        target: "192.0.2.0/24",
+        collectorHost: "synthetic-collector.local",
+        startedAt: "2026-04-01T11:59:00.000Z",
+        endedAt: "2026-04-01T12:05:00.000Z",
+        scriptVersion: "collector-v1.xml",
+      })
+    );
+
+    const bundle = adaptRunManifestToObservationBundleV1(manifest, {
+      generatedAt: "2026-04-01T12:06:00.000Z",
+    });
+
+    assert.equal(bundle.site.networkScope, "192.0.2.0/24");
+    assert.equal(bundle.vantage.target, "192.0.2.0/24");
+    assert.equal(bundle.vantage.collectorHost, "synthetic-collector.local");
+    assert.equal(bundle.collector.version, "collector-v1.xml");
+  });
+});
+
 run("observation bundle size guards degrade oversized XML hosts and ARP artifacts", async () => {
   await withTempCwd(async () => {
     const manifest = writeObservationRunFixture();
@@ -1195,6 +1298,114 @@ run("observation bundle import validation rejects invalid JSON and sanitizes uns
       () => parseObservationBundleV1Json(" ".repeat(MAX_OBSERVATION_BUNDLE_JSON_BYTES + 1)),
       (error) => isObservationBundleValidationError(error) && /too large/.test(error.message)
     );
+  });
+});
+
+run("observation bundle import drops invalid open ports but preserves boundary ports", async () => {
+  await withTempCwd(async () => {
+    const manifest = writeObservationRunFixture();
+    const bundle = buildObservationBundleV1FromRun(manifest.runUid, {
+      generatedAt: "2026-04-01T12:06:00.000Z",
+    });
+    const tampered = JSON.parse(JSON.stringify(bundle));
+    const sourceId = tampered.sources.find((source) => source.artifactLabel === "ports").sourceId;
+    tampered.devices[0].openPorts = [
+      null,
+      "malformed-port",
+      { protocol: "tcp", state: "open", service: "missing-port", sourceId },
+      { protocol: "tcp", port: "not-a-number", state: "open", service: "non-numeric", sourceId },
+      { protocol: "tcp", port: 22.5, state: "open", service: "non-integer", sourceId },
+      { protocol: "tcp", port: -1, state: "open", service: "negative", sourceId },
+      { protocol: "tcp", port: 0, state: "open", service: "zero", sourceId },
+      { protocol: "tcp", port: 65536, state: "open", service: "too-high", sourceId },
+      { protocol: "tcp", port: 1, state: "open", service: "valid-low", sourceId },
+      { protocol: "udp", port: 65535, state: "open", service: "valid-high", sourceId },
+    ];
+
+    const restored = parseObservationBundleV1Json(JSON.stringify(tampered));
+    const ports = restored.devices[0].openPorts.map((port) => port.port).sort((a, b) => a - b);
+
+    assert.deepEqual(ports, [1, 65535]);
+    assert.deepEqual(
+      restored.devices[0].openPorts.map((port) => port.service).sort(),
+      ["valid-high", "valid-low"]
+    );
+  });
+});
+
+run("observation bundle import drops absolute paths from text fields without dropping safe values", async () => {
+  await withTempCwd(async () => {
+    const manifest = writeObservationRunFixture();
+    const bundle = buildObservationBundleV1FromRun(manifest.runUid, {
+      generatedAt: "2026-04-01T12:06:00.000Z",
+    });
+    const tampered = JSON.parse(JSON.stringify(bundle));
+    const unsafePaths = observationUnsafeAbsolutePathSamples();
+    const safeCidr = "192.0.2.0/24";
+    const safeHostname = "synthetic-collector.local";
+    const safeBasename = "run.xml";
+    const sourceId = tampered.sources.find((source) => source.artifactLabel === "ports").sourceId;
+
+    tampered.site.networkScope = unsafePaths[0];
+    tampered.vantage.collectorHost = unsafePaths[1];
+    tampered.vantage.target = unsafePaths[2];
+    tampered.notes = [unsafePaths[3], safeCidr, safeHostname, safeBasename];
+    tampered.batch.notes = [unsafePaths[4], safeCidr, safeHostname, safeBasename];
+    tampered.vantage.notes = [unsafePaths[5], safeCidr, safeHostname, safeBasename];
+    tampered.sources[0].notes = [...unsafePaths, safeCidr, safeHostname, safeBasename];
+    tampered.devices[0].notes = [unsafePaths[6], safeCidr, safeHostname, safeBasename];
+    tampered.devices[0].identityEvidence = [
+      ...tampered.devices[0].identityEvidence,
+      ...unsafePaths.map((unsafePath, index) => ({
+        evidenceId: `ev-unsafe-path-${index}`,
+        kind: "hostname",
+        value: unsafePath,
+        sourceId,
+        confidence: "reported",
+      })),
+      {
+        evidenceId: "ev-safe-cidr",
+        kind: "hostname",
+        value: safeCidr,
+        sourceId,
+        confidence: "reported",
+      },
+      {
+        evidenceId: "ev-safe-hostname",
+        kind: "hostname",
+        value: safeHostname,
+        sourceId,
+        confidence: "reported",
+      },
+      {
+        evidenceId: "ev-safe-basename",
+        kind: "hostname",
+        value: safeBasename,
+        sourceId,
+        confidence: "reported",
+      },
+    ];
+
+    const restored = parseObservationBundleV1Json(JSON.stringify(tampered));
+    const restoredTextValues = [
+      restored.site.networkScope,
+      restored.vantage.collectorHost,
+      restored.vantage.target,
+      ...restored.notes,
+      ...restored.batch.notes,
+      ...restored.vantage.notes,
+      ...restored.sources[0].notes,
+      ...restored.devices[0].notes,
+      ...restored.devices[0].identityEvidence.map((evidence) => evidence.value),
+    ].filter(Boolean);
+
+    assert.equal(restored.site.networkScope, null);
+    assert.equal(restored.vantage.collectorHost, null);
+    assert.equal(restored.vantage.target, null);
+    assertValuesDoNotInclude(restoredTextValues, unsafePaths);
+    assert.ok(restoredTextValues.includes(safeCidr));
+    assert.ok(restoredTextValues.includes(safeHostname));
+    assert.ok(restoredTextValues.includes(safeBasename));
   });
 });
 run("rules POST rejects invalid ports, enums, strings, and malformed JSON", async () => {

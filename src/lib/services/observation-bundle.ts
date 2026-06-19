@@ -47,6 +47,8 @@ const COVERAGE_WEIGHTS: Record<string, number> = {
   arp_snapshot: 0.15,
   scan_metadata: 0.05,
 };
+const MINIMAL_COVERAGE_SCORE = 0.35;
+const COMPLETE_COVERAGE_SCORE = 0.85;
 
 export class ObservationBundleValidationError extends Error {
   constructor(message: string) {
@@ -276,7 +278,7 @@ export function adaptRunManifestToObservationBundleV1(
   const observedStart = metadata.startedAt ?? runStartedAt;
   const observedEnd = metadata.endedAt ?? metadata.startedAt ?? runStartedAt;
   const coverage = buildCoverage(sourceLabelsPresent, coverageNotes);
-  const partial = coverage.status !== "complete";
+  const partial = coverage.status !== "complete" || coverage.missingSources.length > 0;
   if (partial) {
     bundleNotes.push("Observation is partial because one or more expected optional artifacts were unavailable or unparsed.");
   }
@@ -347,6 +349,7 @@ export function sanitizeObservationBundleV1(raw: unknown): ObservationBundleV1 {
     throw new ObservationBundleValidationError("Observation bundle has no source records.");
   }
   const sourceIds = new Set(sources.map((source) => source.sourceId));
+  const sanitizedCoverage = sanitizeCoverage(coverage);
 
   const devices = raw.devices
     .slice(0, MAX_DEVICES)
@@ -373,7 +376,10 @@ export function sanitizeObservationBundleV1(raw: unknown): ObservationBundleV1 {
       startedAt: isoOrNull(batch.startedAt),
       endedAt: isoOrNull(batch.endedAt),
       generatedAt: isoOrNull(batch.generatedAt) ?? new Date().toISOString(),
-      partial: batch.partial === true,
+      partial:
+        batch.partial === true ||
+        sanitizedCoverage.status !== "complete" ||
+        sanitizedCoverage.missingSources.length > 0,
       notes: sanitizeNotes(batch.notes),
     },
     sources,
@@ -385,7 +391,7 @@ export function sanitizeObservationBundleV1(raw: unknown): ObservationBundleV1 {
       target: safeTextOrNull(vantage.target, 120),
       notes: sanitizeNotes(vantage.notes),
     },
-    coverage: sanitizeCoverage(coverage),
+    coverage: sanitizedCoverage,
     devices,
     notes: sanitizeNotes(raw.notes),
   };
@@ -433,17 +439,23 @@ function buildCoverage(presentSources: Set<string>, notes: string[]): CoverageRe
     0
   );
   const roundedScore = Math.round(score * 100) / 100;
-  const status: ObservationCoverageStatus =
-    roundedScore >= 0.85 ? "complete" : roundedScore >= 0.35 ? "partial" : "minimal";
+  const missingSources = EXPECTED_SOURCE_LABELS.filter((label) => !presentSources.has(label));
+  const status = coverageStatusFor(roundedScore, missingSources);
 
   return {
     status,
     score: roundedScore,
     expectedSources: EXPECTED_SOURCE_LABELS,
     presentSources: EXPECTED_SOURCE_LABELS.filter((label) => presentSources.has(label)),
-    missingSources: EXPECTED_SOURCE_LABELS.filter((label) => !presentSources.has(label)),
+    missingSources,
     notes: uniqueNotes,
   };
+}
+
+function coverageStatusFor(score: number, missingSources: string[]): ObservationCoverageStatus {
+  if (score < MINIMAL_COVERAGE_SCORE) return "minimal";
+  if (missingSources.length === 0 && score >= COMPLETE_COVERAGE_SCORE) return "complete";
+  return "partial";
 }
 
 function parseNmapHosts(xmlPath: string, sourceId: string): ParsedNmapHost[] {
@@ -846,9 +858,9 @@ function sanitizeOpenPort(
   raw: Record<string, unknown>,
   sourceIds: Set<string>
 ): ObservationOpenPort | null {
-  const port = nonNegativeInteger(raw.port);
+  const port = portInteger(raw.port);
   const sourceId = safeId(raw.sourceId, "");
-  if (port > 65535 || !sourceId || !sourceIds.has(sourceId)) return null;
+  if (port === null || !sourceId || !sourceIds.has(sourceId)) return null;
   return {
     protocol: safeText(raw.protocol, 16) || "tcp",
     port,
@@ -865,20 +877,21 @@ function sanitizeCoverage(raw: Record<string, unknown>): CoverageRecord {
     typeof raw.score === "number" && Number.isFinite(raw.score)
       ? Math.min(1, Math.max(0, Math.round(raw.score * 100) / 100))
       : 0;
-  const status = COVERAGE_STATUS_SET.has(raw.status as ObservationCoverageStatus)
-    ? (raw.status as ObservationCoverageStatus)
-    : score >= 0.85
-      ? "complete"
-      : score >= 0.35
-        ? "partial"
-        : "minimal";
+  const expectedSources = sanitizeStringArray(raw.expectedSources, 80);
+  const presentSources = sanitizeStringArray(raw.presentSources, 80);
+  const declaredMissingSources = sanitizeStringArray(raw.missingSources, 80);
+  const missingSources = uniqueStrings([
+    ...declaredMissingSources,
+    ...expectedSources.filter((label) => !presentSources.includes(label)),
+  ]);
+  const status = coverageStatusFor(score, missingSources);
 
   return {
     status,
     score,
-    expectedSources: sanitizeStringArray(raw.expectedSources, 80),
-    presentSources: sanitizeStringArray(raw.presentSources, 80),
-    missingSources: sanitizeStringArray(raw.missingSources, 80),
+    expectedSources,
+    presentSources,
+    missingSources,
     notes: sanitizeNotes(raw.notes),
   };
 }
@@ -1068,7 +1081,11 @@ function looksUnsafe(value: string): boolean {
 }
 
 function looksLikeAbsolutePath(value: string): boolean {
-  return /^[A-Za-z]:[\\/]/.test(value) || /^\\\\/.test(value) || /^\/(?:Users|home|tmp|var|etc)\//.test(value);
+  return (
+    /(?:^|[\s("'=])[A-Za-z]:[\\/][^\s"']*/.test(value) ||
+    /(?:^|[\s("'=])\\\\[^\\\s]+\\[^\s"']+/.test(value) ||
+    /(?:^|[\s("'=])\/[^\s"']+/.test(value)
+  );
 }
 
 function looksLikeSecret(value: string): boolean {
@@ -1085,6 +1102,16 @@ function nonNegativeInteger(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0
     ? Math.floor(value)
     : 0;
+}
+
+function portInteger(value: unknown): number | null {
+  return typeof value === "number" &&
+    Number.isFinite(value) &&
+    Number.isInteger(value) &&
+    value > 0 &&
+    value <= 65535
+    ? value
+    : null;
 }
 
 const SOURCE_KIND_SET = new Set<ObservationSourceKind>([
@@ -1106,9 +1133,4 @@ const EVIDENCE_CONFIDENCE_SET = new Set<ObservationEvidenceConfidence>([
   "observed",
   "reported",
   "weak",
-]);
-const COVERAGE_STATUS_SET = new Set<ObservationCoverageStatus>([
-  "complete",
-  "partial",
-  "minimal",
 ]);
