@@ -45,6 +45,8 @@ let findDuplicateObservation;
 let evaluateObservationFreshness;
 let computeObservationBundleContentHash;
 let ObservationRegistryTimestampError;
+let compareObservationBundlesV1;
+let isObservationComparisonError;
 
 async function loadModules() {
   const [
@@ -57,6 +59,7 @@ async function loadModules() {
     llmProvider,
     observationBundle,
     observationRegistry,
+    observationComparison,
   ] = await Promise.all([
     import("../src/lib/services/path-safety.ts"),
     import("../src/lib/services/archive-safety.ts"),
@@ -67,6 +70,7 @@ async function loadModules() {
     import("../src/lib/llm/provider.ts"),
     import("../src/lib/services/observation-bundle.ts"),
     import("../src/lib/services/observation-registry.ts"),
+    import("../src/lib/services/observation-comparison.ts"),
   ]);
 
   ({ resolvePathWithin, sanitizeNetworkName } = pathSafety);
@@ -121,6 +125,10 @@ async function loadModules() {
     computeObservationBundleContentHash,
     ObservationRegistryTimestampError,
   } = observationRegistry);
+  ({
+    compareObservationBundlesV1,
+    isObservationComparisonError,
+  } = observationComparison);
 }
 
 let total = 0;
@@ -777,6 +785,142 @@ async function assertSafeObservationApiError(response, status, errorPattern, con
   assert.ok(body.error.length <= 200, context);
   assert.ok(serialized.length <= 512, context);
   assertObservationRegistryOutputSafe(serialized);
+}
+
+const comparisonExpectedSources = [
+  "ports",
+  "discovery",
+  "hosts_up",
+  "arp_snapshot",
+  "scan_metadata",
+];
+
+function createComparisonBundle(options = {}) {
+  const observedAt = options.observedAt ?? "2026-05-01T12:05:00.000Z";
+  const sourceId = options.sourceId ?? "src-1";
+  const missingSources = options.missingSources ?? [];
+  const presentSources = comparisonExpectedSources.filter(
+    (source) => !missingSources.includes(source)
+  );
+  const coverageStatus = options.coverageStatus ?? (missingSources.length > 0 ? "partial" : "complete");
+
+  return {
+    schemaVersion: "psec.observation-bundle.v1",
+    observationId: options.observationId ?? `obs-${observedAt.replace(/[^0-9]/g, "").slice(0, 12)}`,
+    site: {
+      siteId: options.siteId ?? "site-comparison-lab",
+      networkName: options.networkName ?? "comparison-lab",
+      networkScope: options.networkScope ?? "192.0.2.0/24",
+    },
+    collector: {
+      collectorId: "synthetic-comparison",
+      kind: "registered-scan-run",
+      name: "Synthetic comparison fixture",
+      version: "test",
+    },
+    batch: {
+      batchId: options.batchId ?? `batch-${observedAt.replace(/[^0-9]/g, "").slice(0, 12)}`,
+      sourceRunUid: options.sourceRunUid ?? `run-${observedAt.replace(/[^0-9]/g, "").slice(0, 12)}`,
+      startedAt: options.startedAt ?? observedAt,
+      endedAt: options.endedAt ?? observedAt,
+      generatedAt: options.generatedAt ?? observedAt,
+      partial: options.partial ?? coverageStatus !== "complete",
+      notes: [],
+    },
+    sources: [
+      {
+        sourceId,
+        kind: "nmap-xml",
+        artifactLabel: "ports",
+        fileName: "synthetic.xml",
+        parsed: true,
+        recordCount: options.devices?.length ?? 0,
+        notes: [],
+      },
+    ],
+    vantage: {
+      type: "active-scan-upload",
+      runType: "synthetic",
+      networkName: options.networkName ?? "comparison-lab",
+      collectorHost: "synthetic-collector",
+      target: options.networkScope ?? "192.0.2.0/24",
+      notes: [],
+    },
+    coverage: {
+      status: coverageStatus,
+      score: coverageStatus === "complete" ? 1 : 0.4,
+      expectedSources: comparisonExpectedSources,
+      presentSources,
+      missingSources,
+      notes: options.coverageNotes ?? [],
+    },
+    devices: (options.devices ?? []).map((device) =>
+      createComparisonDevice({ ...device, sourceId })
+    ),
+    notes: [],
+  };
+}
+
+function createComparisonDevice(options = {}) {
+  const sourceId = options.sourceId ?? "src-1";
+  const deviceId = options.deviceId ?? `dev-${options.ips?.[0] ?? "unknown"}`;
+  const identityEvidence = [];
+
+  for (const ip of options.ips ?? []) {
+    identityEvidence.push(createComparisonEvidence("ip-address", ip, sourceId));
+  }
+  for (const mac of options.macs ?? []) {
+    identityEvidence.push(createComparisonEvidence("mac-address", mac, sourceId));
+  }
+  for (const hashedMac of options.hashedMacs ?? []) {
+    identityEvidence.push(createComparisonEvidence("mac-address", hashedMac, sourceId));
+  }
+  for (const hostname of options.hostnames ?? []) {
+    identityEvidence.push(createComparisonEvidence("hostname", hostname, sourceId, "reported"));
+  }
+  for (const vendor of options.vendors ?? []) {
+    identityEvidence.push(createComparisonEvidence("vendor", vendor, sourceId, "reported"));
+  }
+
+  return {
+    deviceId,
+    firstSeen: options.firstSeen ?? null,
+    lastSeen: options.lastSeen ?? null,
+    ips: options.ips ?? [],
+    macs: options.macs ?? [],
+    hostnames: options.hostnames ?? [],
+    vendors: options.vendors ?? [],
+    identityEvidence,
+    openPorts: (options.ports ?? []).map((port) => ({
+      protocol: port.protocol ?? "tcp",
+      port: port.port,
+      state: "open",
+      service: port.service ?? null,
+      product: port.product ?? null,
+      version: port.version ?? null,
+      sourceId,
+    })),
+    notes: [],
+  };
+}
+
+function createComparisonEvidence(kind, value, sourceId, confidence = "observed") {
+  const safeValue = value.replace(/[^a-zA-Z0-9_.:-]/g, "-").slice(0, 60);
+  return {
+    evidenceId: `ev-${kind}-${safeValue}`,
+    kind,
+    value,
+    sourceId,
+    confidence,
+  };
+}
+
+function comparisonEventTypes(result) {
+  return result.events.map((event) => event.eventType);
+}
+
+function findComparisonEvent(result, eventType, predicate = () => true) {
+  return result.events.find((event) => event.eventType === eventType && predicate(event));
 }
 
 run("resolvePathWithin allows paths inside base directory", () => {
@@ -1861,6 +2005,390 @@ run("observation freshness is deterministic at cadence and grace boundaries", as
         /explicit offset/.test(error.message)
     );
   });
+});
+
+run("observation comparison matches strong MAC identity across changed IP", () => {
+  const baseline = createComparisonBundle({
+    observationId: "obs-mac-baseline",
+    observedAt: "2026-05-01T10:00:00.000Z",
+    devices: [
+      {
+        deviceId: "dev-aaaaaaaaaaaa",
+        ips: ["192.0.2.10"],
+        macs: ["02:00:00:00:00:10"],
+        hostnames: ["laptop.local"],
+        vendors: ["Example Devices"],
+        ports: [{ port: 80, protocol: "tcp", service: "http" }],
+      },
+    ],
+  });
+  const current = createComparisonBundle({
+    observationId: "obs-mac-current",
+    observedAt: "2026-05-08T10:00:00.000Z",
+    devices: [
+      {
+        deviceId: "dev-bbbbbbbbbbbb",
+        ips: ["192.0.2.55"],
+        macs: ["02:00:00:00:00:10"],
+        hostnames: ["laptop.local"],
+        vendors: ["Example Devices"],
+        ports: [
+          { port: 80, protocol: "tcp", service: "http" },
+          { port: 443, protocol: "tcp", service: "https" },
+        ],
+      },
+    ],
+  });
+
+  const result = compareObservationBundlesV1(baseline, current);
+  const opened = findComparisonEvent(
+    result,
+    "service-or-port-opened",
+    (event) => event.details.currentPort?.port === 443
+  );
+  const metadata = findComparisonEvent(result, "important-device-metadata-changed");
+
+  assert.equal(findComparisonEvent(result, "new-device-observed"), undefined);
+  assert.equal(findComparisonEvent(result, "previously-observed-device-not-observed"), undefined);
+  assert.ok(opened);
+  assert.equal(opened.confidence, "strong");
+  assert.equal(opened.identityEvidence.ruleId, "identity.mac");
+  assert.ok(opened.identityEvidence.baselineEvidenceIds.length > 0);
+  assert.ok(opened.identityEvidence.currentEvidenceIds.length > 0);
+  assert.ok(metadata);
+  assert.deepEqual(metadata.details.changedFields, ["ips"]);
+});
+
+run("observation comparison matches stable hashed MAC evidence as strong identity", () => {
+  const hashedMac = `sha256:${"a".repeat(64)}`;
+  const baseline = createComparisonBundle({
+    observationId: "obs-hashed-mac-baseline",
+    observedAt: "2026-05-01T10:00:00.000Z",
+    devices: [
+      {
+        deviceId: "dev-111111111111",
+        ips: ["192.0.2.11"],
+        hashedMacs: [hashedMac],
+        ports: [{ port: 22, protocol: "tcp", service: "ssh" }],
+      },
+    ],
+  });
+  const current = createComparisonBundle({
+    observationId: "obs-hashed-mac-current",
+    observedAt: "2026-05-02T10:00:00.000Z",
+    devices: [
+      {
+        deviceId: "dev-222222222222",
+        ips: ["192.0.2.12"],
+        hashedMacs: [hashedMac],
+        ports: [
+          { port: 22, protocol: "tcp", service: "ssh" },
+          { port: 8080, protocol: "tcp", service: "http-proxy" },
+        ],
+      },
+    ],
+  });
+
+  const result = compareObservationBundlesV1(baseline, current);
+  const opened = findComparisonEvent(result, "service-or-port-opened");
+
+  assert.ok(opened);
+  assert.equal(opened.confidence, "strong");
+  assert.equal(opened.identityEvidence.ruleId, "identity.hashed-mac");
+  assert.ok(opened.identityEvidence.values[0].startsWith("hash:"));
+  assert.equal(findComparisonEvent(result, "new-device-observed"), undefined);
+});
+
+run("observation comparison reports service open and closed changes on confirmed matches", () => {
+  const baseline = createComparisonBundle({
+    observationId: "obs-port-baseline",
+    observedAt: "2026-05-01T10:00:00.000Z",
+    devices: [
+      {
+        deviceId: "dev-121212121212",
+        ips: ["192.0.2.30"],
+        macs: ["02:00:00:00:00:30"],
+        ports: [
+          { port: 22, protocol: "tcp", service: "ssh" },
+          { port: 80, protocol: "tcp", service: "http" },
+        ],
+      },
+    ],
+  });
+  const current = createComparisonBundle({
+    observationId: "obs-port-current",
+    observedAt: "2026-05-02T10:00:00.000Z",
+    devices: [
+      {
+        deviceId: "dev-343434343434",
+        ips: ["192.0.2.30"],
+        macs: ["02:00:00:00:00:30"],
+        ports: [
+          { port: 80, protocol: "tcp", service: "http" },
+          { port: 443, protocol: "tcp", service: "https" },
+        ],
+      },
+    ],
+  });
+
+  const result = compareObservationBundlesV1(baseline, current);
+  const opened = findComparisonEvent(
+    result,
+    "service-or-port-opened",
+    (event) => event.details.currentPort?.port === 443
+  );
+  const closed = findComparisonEvent(
+    result,
+    "service-or-port-closed",
+    (event) => event.details.baselinePort?.port === 22
+  );
+
+  assert.ok(opened);
+  assert.ok(closed);
+  assert.equal(opened.rule.version, "psec.observation-comparison.v1");
+  assert.equal(opened.rule.deterministic, true);
+});
+
+run("observation comparison does not merge IP reuse without stronger identity", () => {
+  const baseline = createComparisonBundle({
+    observationId: "obs-ip-reuse-baseline",
+    observedAt: "2026-05-01T10:00:00.000Z",
+    devices: [
+      {
+        deviceId: "dev-abababababab",
+        ips: ["192.0.2.40"],
+        macs: ["02:00:00:00:00:40"],
+        ports: [{ port: 22, protocol: "tcp", service: "ssh" }],
+      },
+    ],
+  });
+  const current = createComparisonBundle({
+    observationId: "obs-ip-reuse-current",
+    observedAt: "2026-05-02T10:00:00.000Z",
+    devices: [
+      {
+        deviceId: "dev-cdcdcdcdcdcd",
+        ips: ["192.0.2.40"],
+        macs: ["02:00:00:00:00:41"],
+        ports: [{ port: 3389, protocol: "tcp", service: "ms-wbt-server" }],
+      },
+    ],
+  });
+
+  const result = compareObservationBundlesV1(baseline, current);
+  const uncertain = findComparisonEvent(result, "identity-uncertain-possibly-same-device");
+
+  assert.ok(uncertain);
+  assert.equal(uncertain.confidence, "low");
+  assert.equal(uncertain.identityEvidence.ruleId, "identity.ip-continuity");
+  assert.equal(findComparisonEvent(result, "service-or-port-opened"), undefined);
+  assert.equal(findComparisonEvent(result, "service-or-port-closed"), undefined);
+  assert.equal(findComparisonEvent(result, "new-device-observed"), undefined);
+  assert.equal(findComparisonEvent(result, "previously-observed-device-not-observed"), undefined);
+});
+
+run("observation comparison leaves IP-only continuity as uncertain", () => {
+  const baseline = createComparisonBundle({
+    observationId: "obs-ip-only-baseline",
+    observedAt: "2026-05-01T10:00:00.000Z",
+    devices: [
+      {
+        deviceId: "dev-eeeeeeeeeeee",
+        ips: ["192.0.2.50"],
+        ports: [{ port: 80, protocol: "tcp", service: "http" }],
+      },
+    ],
+  });
+  const current = createComparisonBundle({
+    observationId: "obs-ip-only-current",
+    observedAt: "2026-05-02T10:00:00.000Z",
+    devices: [
+      {
+        deviceId: "dev-ffffffffffff",
+        ips: ["192.0.2.50"],
+        ports: [{ port: 443, protocol: "tcp", service: "https" }],
+      },
+    ],
+  });
+
+  const result = compareObservationBundlesV1(baseline, current);
+  const uncertain = findComparisonEvent(result, "identity-uncertain-possibly-same-device");
+
+  assert.ok(uncertain);
+  assert.equal(uncertain.confidence, "low");
+  assert.deepEqual(comparisonEventTypes(result), ["identity-uncertain-possibly-same-device"]);
+});
+
+run("observation comparison emits uncertain events for ambiguous hostname vendor identity", () => {
+  const baseline = createComparisonBundle({
+    observationId: "obs-ambiguous-baseline",
+    observedAt: "2026-05-01T10:00:00.000Z",
+    devices: [
+      {
+        deviceId: "dev-010101010101",
+        ips: ["192.0.2.61"],
+        hostnames: ["printer.local"],
+        vendors: ["Example Printers"],
+      },
+      {
+        deviceId: "dev-020202020202",
+        ips: ["192.0.2.62"],
+        hostnames: ["printer.local"],
+        vendors: ["Example Printers"],
+      },
+    ],
+  });
+  const current = createComparisonBundle({
+    observationId: "obs-ambiguous-current",
+    observedAt: "2026-05-02T10:00:00.000Z",
+    devices: [
+      {
+        deviceId: "dev-030303030303",
+        ips: ["192.0.2.63"],
+        hostnames: ["printer.local"],
+        vendors: ["Example Printers"],
+      },
+    ],
+  });
+
+  const result = compareObservationBundlesV1(baseline, current);
+  const uncertainEvents = result.events.filter(
+    (event) => event.eventType === "identity-uncertain-possibly-same-device"
+  );
+
+  assert.equal(result.guardrails.some((guardrail) => guardrail.code === "ambiguous-identity"), true);
+  assert.equal(uncertainEvents.length, 2);
+  assert.equal(uncertainEvents.every((event) => event.confidence === "medium"), true);
+  assert.equal(findComparisonEvent(result, "service-or-port-opened"), undefined);
+  assert.equal(findComparisonEvent(result, "new-device-observed"), undefined);
+});
+
+run("observation comparison suppresses absent-device events when current coverage is partial", () => {
+  const baseline = createComparisonBundle({
+    observationId: "obs-partial-baseline",
+    observedAt: "2026-05-01T10:00:00.000Z",
+    devices: [
+      {
+        deviceId: "dev-101010101010",
+        ips: ["192.0.2.70"],
+        macs: ["02:00:00:00:00:70"],
+      },
+      {
+        deviceId: "dev-202020202020",
+        ips: ["192.0.2.71"],
+        macs: ["02:00:00:00:00:71"],
+      },
+    ],
+  });
+  const current = createComparisonBundle({
+    observationId: "obs-partial-current",
+    observedAt: "2026-05-02T10:00:00.000Z",
+    partial: true,
+    missingSources: ["discovery", "hosts_up"],
+    devices: [
+      {
+        deviceId: "dev-303030303030",
+        ips: ["192.0.2.70"],
+        macs: ["02:00:00:00:00:70"],
+      },
+    ],
+  });
+
+  const result = compareObservationBundlesV1(baseline, current);
+
+  assert.equal(result.guardrails.some((guardrail) => guardrail.code === "partial-coverage"), true);
+  assert.equal(findComparisonEvent(result, "previously-observed-device-not-observed"), undefined);
+});
+
+run("observation comparison marks stale observations in guardrails and event coverage context", () => {
+  const baseline = createComparisonBundle({
+    observationId: "obs-stale-baseline",
+    observedAt: "2026-01-01T10:00:00.000Z",
+    devices: [
+      {
+        deviceId: "dev-404040404040",
+        ips: ["192.0.2.80"],
+        macs: ["02:00:00:00:00:80"],
+        ports: [{ port: 80, protocol: "tcp", service: "http" }],
+      },
+    ],
+  });
+  const current = createComparisonBundle({
+    observationId: "obs-stale-current",
+    observedAt: "2026-01-02T10:00:00.000Z",
+    devices: [
+      {
+        deviceId: "dev-505050505050",
+        ips: ["192.0.2.80"],
+        macs: ["02:00:00:00:00:80"],
+        ports: [
+          { port: 80, protocol: "tcp", service: "http" },
+          { port: 443, protocol: "tcp", service: "https" },
+        ],
+      },
+    ],
+  });
+
+  const result = compareObservationBundlesV1(baseline, current, {
+    evaluatedAt: "2026-03-15T00:00:00.000Z",
+    staleAfterDays: 37,
+  });
+  const opened = findComparisonEvent(result, "service-or-port-opened");
+
+  assert.equal(result.guardrails.some((guardrail) => guardrail.code === "stale-data"), true);
+  assert.ok(opened);
+  assert.equal(opened.coverageContext.baseline.freshness.status, "stale");
+  assert.equal(opened.coverageContext.current.freshness.status, "stale");
+});
+
+run("observation comparison invalid comparisons fail clearly", () => {
+  const baseline = createComparisonBundle({
+    observationId: "obs-invalid-baseline",
+    observedAt: "2026-05-01T10:00:00.000Z",
+    devices: [],
+  });
+  const current = createComparisonBundle({
+    observationId: "obs-invalid-current",
+    observedAt: "2026-05-02T10:00:00.000Z",
+    devices: [],
+  });
+
+  assert.throws(
+    () =>
+      compareObservationBundlesV1(
+        baseline,
+        createComparisonBundle({
+          observationId: "obs-different-site",
+          observedAt: "2026-05-02T10:00:00.000Z",
+          siteId: "site-other-lab",
+          devices: [],
+        })
+      ),
+    (error) => isObservationComparisonError(error) && error.code === "different_sites"
+  );
+
+  assert.throws(
+    () => compareObservationBundlesV1(baseline, baseline),
+    (error) => isObservationComparisonError(error) && error.code === "identical_observations"
+  );
+
+  assert.throws(
+    () => compareObservationBundlesV1(current, baseline),
+    (error) => isObservationComparisonError(error) && error.code === "reversed_chronology"
+  );
+
+  assert.throws(
+    () =>
+      compareObservationBundlesV1(
+        baseline,
+        createComparisonBundle({
+          observationId: "obs-same-time-current",
+          observedAt: "2026-05-01T10:00:00.000Z",
+          devices: [],
+        })
+      ),
+    (error) => isObservationComparisonError(error) && error.code === "ambiguous_comparison"
+  );
 });
 
 run("observations API imports, reads, lists, and returns safe bounded errors", async () => {
