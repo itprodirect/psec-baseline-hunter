@@ -19,6 +19,9 @@ import type {
 } from "@/lib/types/observation-bundle";
 
 export const MAX_OBSERVATION_BUNDLE_JSON_BYTES = 1024 * 1024;
+export const MAX_OBSERVATION_NMAP_XML_BYTES = 5 * 1024 * 1024;
+export const MAX_OBSERVATION_HOSTS_UP_BYTES = 1024 * 1024;
+export const MAX_OBSERVATION_ARP_SNAPSHOT_BYTES = 1024 * 1024;
 
 const SCHEMA_VERSION = "psec.observation-bundle.v1" as const;
 const MAX_SOURCES = 50;
@@ -58,6 +61,20 @@ export function isObservationBundleValidationError(
   return (
     error instanceof ObservationBundleValidationError ||
     (error instanceof Error && error.name === "ObservationBundleValidationError")
+  );
+}
+
+class ObservationArtifactReadError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ObservationArtifactReadError";
+  }
+}
+
+function isObservationArtifactReadError(error: unknown): error is ObservationArtifactReadError {
+  return (
+    error instanceof ObservationArtifactReadError ||
+    (error instanceof Error && error.name === "ObservationArtifactReadError")
   );
 }
 
@@ -179,8 +196,11 @@ export function adaptRunManifestToObservationBundleV1(
         for (const host of hosts) {
           mergeHostObservation(deviceIndex, host, source.sourceId, "observed", runStartedAt);
         }
-      } catch {
-        source.notes.push("Nmap XML could not be parsed.");
+      } catch (error) {
+        const note = isObservationArtifactReadError(error)
+          ? error.message
+          : "Nmap XML could not be parsed.";
+        source.notes.push(note);
         coverageNotes.push(`${label} was present but could not be parsed.`);
       }
     }
@@ -206,9 +226,12 @@ export function adaptRunManifestToObservationBundleV1(
           { kind: "host-up", value: ip, confidence: "reported" },
         ]);
       }
-    } catch {
-      source.notes.push("hosts_up.txt could not be parsed.");
-      coverageNotes.push("hosts_up was present but could not be parsed.");
+    } catch (error) {
+      const note = isObservationArtifactReadError(error)
+        ? error.message
+        : "hosts_up.txt could not be parsed.";
+      source.notes.push(note);
+      coverageNotes.push(note);
     }
   }
 
@@ -235,9 +258,12 @@ export function adaptRunManifestToObservationBundleV1(
           },
         ]);
       }
-    } catch {
-      source.notes.push("ARP snapshot could not be parsed.");
-      coverageNotes.push("ARP snapshot was present but could not be parsed.");
+    } catch (error) {
+      const note = isObservationArtifactReadError(error)
+        ? error.message
+        : "ARP snapshot could not be parsed.";
+      source.notes.push(note);
+      coverageNotes.push(note);
     }
   }
 
@@ -421,6 +447,11 @@ function buildCoverage(presentSources: Set<string>, notes: string[]): CoverageRe
 }
 
 function parseNmapHosts(xmlPath: string, sourceId: string): ParsedNmapHost[] {
+  assertFileSize(
+    xmlPath,
+    MAX_OBSERVATION_NMAP_XML_BYTES,
+    "Nmap XML exceeded the metadata size limit."
+  );
   const xmlContent = fs.readFileSync(xmlPath, "utf-8");
   const validation = XMLValidator.validate(xmlContent);
   if (validation !== true) {
@@ -498,6 +529,11 @@ function parseNmapHosts(xmlPath: string, sourceId: string): ParsedNmapHost[] {
 }
 
 function parseHostsUp(filePath: string): string[] {
+  assertFileSize(
+    filePath,
+    MAX_OBSERVATION_HOSTS_UP_BYTES,
+    "hosts_up.txt exceeded the metadata size limit."
+  );
   const content = fs.readFileSync(filePath, "utf-8");
   return uniqueStrings(
     content
@@ -510,6 +546,11 @@ function parseHostsUp(filePath: string): string[] {
 }
 
 function parseArpSnapshot(filePath: string): { ip: string; mac: string }[] {
+  assertFileSize(
+    filePath,
+    MAX_OBSERVATION_ARP_SNAPSHOT_BYTES,
+    "ARP snapshot exceeded the metadata size limit."
+  );
   const content = fs.readFileSync(filePath, "utf-8");
   const pairs: { ip: string; mac: string }[] = [];
   const seen = new Set<string>();
@@ -569,7 +610,6 @@ function createDeviceIndex(defaultSeenAt: string | null) {
   const devices = new Map<string, DeviceAccumulator>();
   const ipIndex = new Map<string, string>();
   const macIndex = new Map<string, string>();
-  const hostnameIndex = new Map<string, string>();
 
   const create = (seed: string): DeviceAccumulator => {
     const key = `dev-${hashString(seed).slice(0, 12)}`;
@@ -593,7 +633,6 @@ function createDeviceIndex(defaultSeenAt: string | null) {
     devices,
     ipIndex,
     macIndex,
-    hostnameIndex,
     create,
   };
 }
@@ -613,14 +652,11 @@ function mergeHostObservation(
   const existingKeys = [
     ...host.macs.map((mac) => index.macIndex.get(mac)).filter((key): key is string => Boolean(key)),
     ...host.ips.map((ip) => index.ipIndex.get(ip)).filter((key): key is string => Boolean(key)),
-    ...host.hostnames
-      .map((hostname) => index.hostnameIndex.get(hostname.toLowerCase()))
-      .filter((key): key is string => Boolean(key)),
   ];
   const primaryKey = existingKeys[0];
   let device = primaryKey ? index.devices.get(primaryKey) : null;
   if (!device) {
-    const seed = host.macs[0] ?? host.ips[0] ?? host.hostnames[0] ?? `${sourceId}-${index.devices.size}`;
+    const seed = host.macs[0] ?? host.ips[0] ?? `${sourceId}-${index.devices.size}`;
     device = index.create(seed);
   }
 
@@ -628,6 +664,7 @@ function mergeHostObservation(
     const other = index.devices.get(key);
     if (other) {
       mergeDeviceAccumulators(device, other);
+      repointDeviceIndexes(index, other, device.key);
       index.devices.delete(key);
     }
   }
@@ -645,7 +682,6 @@ function mergeHostObservation(
   }
   for (const hostname of host.hostnames) {
     device.hostnames.add(hostname);
-    index.hostnameIndex.set(hostname.toLowerCase(), device.key);
     addEvidence(device, "hostname", hostname, sourceId, "reported");
   }
   for (const vendor of host.vendors) {
@@ -661,6 +697,18 @@ function mergeHostObservation(
   }
 }
 
+function repointDeviceIndexes(
+  index: ReturnType<typeof createDeviceIndex>,
+  source: DeviceAccumulator,
+  targetKey: string
+): void {
+  for (const ip of source.ips) {
+    index.ipIndex.set(ip, targetKey);
+  }
+  for (const mac of source.macs) {
+    index.macIndex.set(mac, targetKey);
+  }
+}
 function mergeDeviceAccumulators(target: DeviceAccumulator, source: DeviceAccumulator): void {
   for (const value of source.ips) target.ips.add(value);
   for (const value of source.macs) target.macs.add(value);
@@ -835,6 +883,12 @@ function sanitizeCoverage(raw: Record<string, unknown>): CoverageRecord {
   };
 }
 
+function assertFileSize(filePath: string, maxBytes: number, message: string): void {
+  const stat = fs.statSync(filePath);
+  if (stat.size > maxBytes) {
+    throw new ObservationArtifactReadError(message);
+  }
+}
 function findScanMetadataPath(manifest: RunManifest): string | null {
   const candidate = path.join(manifest.runFolder, "scan_metadata.json");
   return fs.existsSync(candidate) && fs.statSync(candidate).isFile() ? candidate : null;

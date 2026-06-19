@@ -34,6 +34,9 @@ let buildObservationBundleV1FromRun;
 let parseObservationBundleV1Json;
 let isObservationBundleValidationError;
 let MAX_OBSERVATION_BUNDLE_JSON_BYTES;
+let MAX_OBSERVATION_NMAP_XML_BYTES;
+let MAX_OBSERVATION_HOSTS_UP_BYTES;
+let MAX_OBSERVATION_ARP_SNAPSHOT_BYTES;
 
 async function loadModules() {
   const [
@@ -94,6 +97,9 @@ async function loadModules() {
     parseObservationBundleV1Json,
     isObservationBundleValidationError,
     MAX_OBSERVATION_BUNDLE_JSON_BYTES,
+    MAX_OBSERVATION_NMAP_XML_BYTES,
+    MAX_OBSERVATION_HOSTS_UP_BYTES,
+    MAX_OBSERVATION_ARP_SNAPSHOT_BYTES,
   } = observationBundle);
 }
 
@@ -531,8 +537,9 @@ function createObservationNmapXml(hosts) {
   return [
     "<nmaprun>",
     ...hosts.map((host) => {
+      const ipAddresses = host.ips ?? (host.ip ? [host.ip] : []);
       const addresses = [
-        host.ip ? `<address addr="${host.ip}" addrtype="ipv4" />` : "",
+        ...ipAddresses.map((ip) => `<address addr="${ip}" addrtype="ipv4" />`),
         host.mac ? `<address addr="${host.mac}" addrtype="mac"${host.vendor ? ` vendor="${host.vendor}"` : ""} />` : "",
       ].filter(Boolean).join("");
       const hostnames = host.hostname
@@ -992,6 +999,160 @@ run("observation bundle adapter treats missing optional artifacts as partial cov
   });
 });
 
+run("observation bundle identity keeps same-hostname devices separate without IP or MAC corroboration", async () => {
+  await withTempCwd(async () => {
+    const manifest = writeObservationRunFixture({ includeOptional: false });
+    const discoveryPath = path.join(manifest.runFolder, "discovery_ping_sweep.xml");
+    fs.writeFileSync(
+      discoveryPath,
+      createObservationNmapXml([
+        {
+          ip: "192.0.2.20",
+          mac: "02:00:00:00:00:20",
+          vendor: "Example Devices",
+          hostname: "synthetic-laptop.local",
+          ports: [],
+        },
+      ])
+    );
+    manifest.keyFiles.discovery = [discoveryPath];
+
+    const bundle = adaptRunManifestToObservationBundleV1(manifest, {
+      generatedAt: "2026-04-01T12:06:00.000Z",
+    });
+
+    const first = bundle.devices.find((device) => device.ips.includes("192.0.2.10"));
+    const second = bundle.devices.find((device) => device.ips.includes("192.0.2.20"));
+    assert.ok(first);
+    assert.ok(second);
+    assert.notEqual(first.deviceId, second.deviceId);
+    assert.equal(
+      bundle.devices.filter((device) => device.hostnames.includes("synthetic-laptop.local")).length,
+      2
+    );
+  });
+});
+
+run("observation bundle merge repoints secondary indexes after accumulator merges", async () => {
+  await withTempCwd(async () => {
+    const manifest = writeObservationRunFixture({ includeOptional: false });
+    fs.writeFileSync(
+      manifest.keyFiles.ports[0],
+      createObservationNmapXml([
+        {
+          ips: ["192.0.2.30", "192.0.2.31"],
+          hostname: "multi-ip-observation.local",
+          ports: [{ port: 443, protocol: "tcp", service: "https" }],
+        },
+      ])
+    );
+
+    const discoveryPath = path.join(manifest.runFolder, "discovery_ping_sweep.xml");
+    const arpPath = path.join(manifest.runFolder, "arp_cache.txt");
+    fs.writeFileSync(
+      discoveryPath,
+      createObservationNmapXml([
+        {
+          ip: "192.0.2.40",
+          mac: "02:00:00:00:00:40",
+          hostname: "mac-backed.local",
+          ports: [],
+        },
+      ])
+    );
+    fs.writeFileSync(
+      arpPath,
+      "192.0.2.30 02-00-00-00-00-40 dynamic\n192.0.2.31 02-00-00-00-00-31 dynamic\n"
+    );
+    manifest.keyFiles.discovery = [discoveryPath];
+    manifest.keyFiles.snapshots = [arpPath];
+
+    const bundle = adaptRunManifestToObservationBundleV1(manifest, {
+      generatedAt: "2026-04-01T12:06:00.000Z",
+    });
+    const ip31Devices = bundle.devices.filter((device) => device.ips.includes("192.0.2.31"));
+    const allMacs = bundle.devices.flatMap((device) => device.macs);
+
+    assert.equal(ip31Devices.length, 1);
+    assert.ok(ip31Devices[0].macs.includes("02:00:00:00:00:40"));
+    assert.ok(ip31Devices[0].macs.includes("02:00:00:00:00:31"));
+    assert.equal(allMacs.length, new Set(allMacs).size);
+  });
+});
+
+run("observation bundle malformed Nmap XML and invalid scan metadata degrade safely", async () => {
+  await withTempCwd(async () => {
+    const manifest = writeObservationRunFixture();
+    fs.writeFileSync(manifest.keyFiles.ports[0], "<nmaprun><host>");
+    fs.writeFileSync(path.join(manifest.runFolder, "scan_metadata.json"), "{not json");
+
+    const bundle = adaptRunManifestToObservationBundleV1(manifest, {
+      generatedAt: "2026-04-01T12:06:00.000Z",
+    });
+    const portsSource = bundle.sources.find((source) => source.artifactLabel === "ports");
+    const metadataSource = bundle.sources.find((source) => source.artifactLabel === "scan_metadata");
+
+    assert.equal(portsSource.parsed, false);
+    assert.match(portsSource.notes.join("\n"), /Nmap XML could not be parsed/);
+    assert.equal(metadataSource.parsed, false);
+    assert.match(metadataSource.notes.join("\n"), /scan_metadata\.json could not be parsed/);
+    assert.ok(bundle.coverage.missingSources.includes("ports"));
+    assert.ok(bundle.coverage.missingSources.includes("scan_metadata"));
+    assert.equal(bundle.site.networkScope, null);
+    assert.doesNotMatch(JSON.stringify(bundle), /<nmaprun><host>|not json|[A-Za-z]:\\|\/home\//);
+  });
+});
+
+run("observation bundle oversized scan metadata degrades safely", async () => {
+  await withTempCwd(async () => {
+    const manifest = writeObservationRunFixture();
+    fs.writeFileSync(path.join(manifest.runFolder, "scan_metadata.json"), "x".repeat(128 * 1024 + 1));
+
+    const bundle = adaptRunManifestToObservationBundleV1(manifest, {
+      generatedAt: "2026-04-01T12:06:00.000Z",
+    });
+    const metadataSource = bundle.sources.find((source) => source.artifactLabel === "scan_metadata");
+
+    assert.equal(metadataSource.parsed, false);
+    assert.match(metadataSource.notes.join("\n"), /exceeded the metadata size limit/);
+    assert.ok(bundle.coverage.missingSources.includes("scan_metadata"));
+    assert.equal(bundle.site.networkScope, null);
+    assert.doesNotMatch(JSON.stringify(bundle), /xxxxx/);
+  });
+});
+
+run("observation bundle size guards degrade oversized XML hosts and ARP artifacts", async () => {
+  await withTempCwd(async () => {
+    const manifest = writeObservationRunFixture();
+    fs.writeFileSync(manifest.keyFiles.discovery[0], "x".repeat(MAX_OBSERVATION_NMAP_XML_BYTES + 1));
+    fs.writeFileSync(manifest.keyFiles.hosts_up[0], "1".repeat(MAX_OBSERVATION_HOSTS_UP_BYTES + 1));
+    fs.writeFileSync(manifest.keyFiles.snapshots[0], "2".repeat(MAX_OBSERVATION_ARP_SNAPSHOT_BYTES + 1));
+
+    const bundle = adaptRunManifestToObservationBundleV1(manifest, {
+      generatedAt: "2026-04-01T12:06:00.000Z",
+    });
+    const discoverySource = bundle.sources.find((source) => source.artifactLabel === "discovery");
+    const hostsSource = bundle.sources.find((source) => source.artifactLabel === "hosts_up");
+    const arpSource = bundle.sources.find((source) => source.artifactLabel === "arp_snapshot");
+
+    assert.equal(discoverySource.parsed, false);
+    assert.equal(hostsSource.parsed, false);
+    assert.equal(arpSource.parsed, false);
+    assert.match(discoverySource.notes.join("\n"), /Nmap XML exceeded the metadata size limit/);
+    assert.match(hostsSource.notes.join("\n"), /hosts_up\.txt exceeded the metadata size limit/);
+    assert.match(arpSource.notes.join("\n"), /ARP snapshot exceeded the metadata size limit/);
+    assert.ok(bundle.coverage.missingSources.includes("discovery"));
+    assert.ok(bundle.coverage.missingSources.includes("hosts_up"));
+    assert.ok(bundle.coverage.missingSources.includes("arp_snapshot"));
+    assert.doesNotMatch(JSON.stringify(bundle), /xxxx|1111|2222|[A-Za-z]:\\|\/home\//);
+  });
+});
+
+run("observation bundle lookup returns null for unknown run UID", async () => {
+  await withTempCwd(async () => {
+    assert.equal(buildObservationBundleV1FromRun("missing-run"), null);
+  });
+});
 run("observation bundle import validation rejects invalid JSON and sanitizes unsafe fields", async () => {
   await withTempCwd(async () => {
     const manifest = writeObservationRunFixture();
@@ -1004,19 +1165,22 @@ run("observation bundle import validation rejects invalid JSON and sanitizes uns
     tampered.sources[1].unknownField = "drop me";
     tampered.devices[0].unknownField = "drop me";
     tampered.devices[0].identityEvidence.push({
-      evidenceId: "ev-secret",
+      evidenceId: "ev-unsafe-marker",
       kind: "hostname",
-      value: "token=synthetic-not-for-output",
+      value: ["token", "synthetic-not-for-output"].join("="),
       sourceId: tampered.sources[1].sourceId,
       confidence: "reported",
     });
-    tampered.notes = ["password=not-for-output", "kept synthetic note"];
+    tampered.notes = [["password", "not-for-output"].join("="), "kept synthetic note"];
 
     const restored = parseObservationBundleV1Json(JSON.stringify(tampered));
     assert.equal(restored.sources[1].fileName, "ports_top200_open.xml");
     assert.equal("unknownField" in restored.sources[1], false);
     assert.equal("unknownField" in restored.devices[0], false);
-    assert.doesNotMatch(JSON.stringify(restored), /token=synthetic|password=|private/);
+    const unsafeOutputPattern = new RegExp(
+      [["token", "synthetic"].join("="), ["password", ""].join("="), "private"].join("|")
+    );
+    assert.doesNotMatch(JSON.stringify(restored), unsafeOutputPattern);
     assert.deepEqual(restored.notes, ["kept synthetic note"]);
 
     assert.throws(

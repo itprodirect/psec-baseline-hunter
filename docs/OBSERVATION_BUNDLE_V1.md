@@ -60,8 +60,10 @@ of identity. Examples:
 - live-host lines from `hosts_up.txt`
 
 Inference is deliberately limited in v1. The adapter links evidence that points
-to the same IP, MAC, or hostname into one device record, but it does not infer
-ownership, device type, user intent, trust level, or whether a device is safe.
+to the same IP or MAC into one device record, but it does not infer ownership,
+device type, user intent, trust level, or whether a device is safe. Hostnames
+are preserved as reported attributes and are not treated as stable identity
+proof unless they are already corroborated by matching IP or MAC evidence.
 
 Unknown stays unknown. If scan target, collector host, MAC address, hostname, or
 vendor data is not available, the field is `null` or an empty list and coverage
