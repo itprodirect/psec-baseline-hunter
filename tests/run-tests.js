@@ -923,6 +923,79 @@ function findComparisonEvent(result, eventType, predicate = () => true) {
   return result.events.find((event) => event.eventType === eventType && predicate(event));
 }
 
+function comparisonPairKey(event) {
+  return `${event.baselineDevice?.observationId ?? ""}|${event.baselineDevice?.deviceId ?? ""}->${event.currentDevice?.observationId ?? ""}|${event.currentDevice?.deviceId ?? ""}`;
+}
+
+function assertNoConfirmedAndUncertainPairs(result) {
+  const uncertainPairs = new Set(
+    result.events
+      .filter((event) => event.eventType === "identity-uncertain-possibly-same-device")
+      .map(comparisonPairKey)
+  );
+  const confirmedEventTypes = new Set([
+    "service-or-port-opened",
+    "service-or-port-closed",
+    "important-device-metadata-changed",
+  ]);
+
+  for (const event of result.events) {
+    if (!confirmedEventTypes.has(event.eventType)) continue;
+    assert.equal(
+      uncertainPairs.has(comparisonPairKey(event)),
+      false,
+      `pair ${comparisonPairKey(event)} appeared as both confirmed and uncertain`
+    );
+  }
+}
+
+function createAmbiguousMacThenWeakerIdentityComparison({ hashed = false } = {}) {
+  const identityField = hashed ? "hashedMacs" : "macs";
+  const sharedIdentity = hashed ? `sha256:${"b".repeat(64)}` : "02:00:00:00:00:AA";
+
+  return {
+    baseline: createComparisonBundle({
+      observationId: hashed ? "obs-hashed-ambiguous-baseline" : "obs-mac-ambiguous-baseline",
+      observedAt: "2026-05-01T10:00:00.000Z",
+      devices: [
+        {
+          deviceId: "dev-111111111111",
+          ips: ["192.0.2.101"],
+          [identityField]: [sharedIdentity],
+          hostnames: ["kitchen-printer.local"],
+          vendors: ["Example Printers"],
+          ports: [{ port: 9100, protocol: "tcp", service: "jetdirect" }],
+        },
+        {
+          deviceId: "dev-222222222222",
+          ips: ["192.0.2.102"],
+          [identityField]: [sharedIdentity],
+          hostnames: ["garage-sensor.local"],
+          vendors: ["Example Sensors"],
+          ports: [{ port: 22, protocol: "tcp", service: "ssh" }],
+        },
+      ],
+    }),
+    current: createComparisonBundle({
+      observationId: hashed ? "obs-hashed-ambiguous-current" : "obs-mac-ambiguous-current",
+      observedAt: "2026-05-02T10:00:00.000Z",
+      devices: [
+        {
+          deviceId: "dev-333333333333",
+          ips: ["192.0.2.103"],
+          [identityField]: [sharedIdentity],
+          hostnames: ["kitchen-printer.local"],
+          vendors: ["Example Printers"],
+          ports: [
+            { port: 9100, protocol: "tcp", service: "jetdirect" },
+            { port: 443, protocol: "tcp", service: "https" },
+          ],
+        },
+      ],
+    }),
+  };
+}
+
 run("resolvePathWithin allows paths inside base directory", () => {
   const baseDir = path.resolve("data/uploads");
   const candidate = path.join(baseDir, "scan.zip");
@@ -2099,6 +2172,89 @@ run("observation comparison matches stable hashed MAC evidence as strong identit
   assert.equal(findComparisonEvent(result, "new-device-observed"), undefined);
 });
 
+run("observation comparison matches persisted device ID as strongest identity across changed IP and MAC", () => {
+  const baseline = createComparisonBundle({
+    observationId: "obs-device-id-baseline",
+    observedAt: "2026-05-01T10:00:00.000Z",
+    devices: [
+      {
+        deviceId: "device-kitchen-printer",
+        ips: ["192.0.2.120"],
+        macs: ["02:00:00:00:01:20"],
+        hostnames: ["kitchen-printer.local"],
+        vendors: ["Example Printers"],
+        ports: [{ port: 9100, protocol: "tcp", service: "jetdirect" }],
+      },
+    ],
+  });
+  const current = createComparisonBundle({
+    observationId: "obs-device-id-current",
+    observedAt: "2026-05-02T10:00:00.000Z",
+    devices: [
+      {
+        deviceId: "device-kitchen-printer",
+        ips: ["192.0.2.121"],
+        macs: ["02:00:00:00:01:21"],
+        hostnames: ["kitchen-printer.local"],
+        vendors: ["Example Printers"],
+        ports: [
+          { port: 9100, protocol: "tcp", service: "jetdirect" },
+          { port: 443, protocol: "tcp", service: "https" },
+        ],
+      },
+    ],
+  });
+
+  const result = compareObservationBundlesV1(baseline, current);
+  const opened = findComparisonEvent(result, "service-or-port-opened");
+  const metadata = findComparisonEvent(result, "important-device-metadata-changed");
+
+  assert.ok(opened);
+  assert.equal(opened.confidence, "strongest");
+  assert.equal(opened.identityEvidence.ruleId, "identity.persisted-device-id");
+  assert.deepEqual(opened.identityEvidence.values, ["device-kitchen-printer"]);
+  assert.ok(metadata);
+  assert.equal(metadata.identityEvidence.ruleId, "identity.persisted-device-id");
+  assert.deepEqual(metadata.details.changedFields, ["ips", "macs"]);
+  assert.equal(findComparisonEvent(result, "new-device-observed"), undefined);
+  assert.equal(findComparisonEvent(result, "previously-observed-device-not-observed"), undefined);
+});
+
+run("observation comparison keeps ambiguous strong MAC evidence uncertain despite weaker identity", () => {
+  const { baseline, current } = createAmbiguousMacThenWeakerIdentityComparison();
+  const result = compareObservationBundlesV1(baseline, current);
+  const uncertainEvents = result.events.filter(
+    (event) => event.eventType === "identity-uncertain-possibly-same-device"
+  );
+
+  assert.equal(result.guardrails.some((guardrail) => guardrail.code === "ambiguous-identity"), true);
+  assert.equal(uncertainEvents.length, 2);
+  assert.equal(uncertainEvents.every((event) => event.identityEvidence.ruleId === "identity.mac"), true);
+  assert.equal(findComparisonEvent(result, "service-or-port-opened"), undefined);
+  assert.equal(findComparisonEvent(result, "service-or-port-closed"), undefined);
+  assert.equal(findComparisonEvent(result, "important-device-metadata-changed"), undefined);
+  assert.equal(findComparisonEvent(result, "new-device-observed"), undefined);
+  assert.equal(findComparisonEvent(result, "previously-observed-device-not-observed"), undefined);
+  assertNoConfirmedAndUncertainPairs(result);
+});
+
+run("observation comparison keeps ambiguous hashed MAC evidence uncertain despite weaker identity", () => {
+  const { baseline, current } = createAmbiguousMacThenWeakerIdentityComparison({ hashed: true });
+  const result = compareObservationBundlesV1(baseline, current);
+  const uncertainEvents = result.events.filter(
+    (event) => event.eventType === "identity-uncertain-possibly-same-device"
+  );
+
+  assert.equal(result.guardrails.some((guardrail) => guardrail.code === "ambiguous-identity"), true);
+  assert.equal(uncertainEvents.length, 2);
+  assert.equal(
+    uncertainEvents.every((event) => event.identityEvidence.ruleId === "identity.hashed-mac"),
+    true
+  );
+  assert.equal(findComparisonEvent(result, "service-or-port-opened"), undefined);
+  assert.equal(findComparisonEvent(result, "important-device-metadata-changed"), undefined);
+  assertNoConfirmedAndUncertainPairs(result);
+});
 run("observation comparison reports service open and closed changes on confirmed matches", () => {
   const baseline = createComparisonBundle({
     observationId: "obs-port-baseline",
@@ -2370,6 +2526,18 @@ run("observation comparison invalid comparisons fail clearly", () => {
   assert.throws(
     () => compareObservationBundlesV1(baseline, baseline),
     (error) => isObservationComparisonError(error) && error.code === "identical_observations"
+  );
+
+  const missingTimestampBaseline = createComparisonBundle({
+    observationId: "obs-missing-time-baseline",
+    devices: [],
+  });
+  missingTimestampBaseline.batch.startedAt = null;
+  missingTimestampBaseline.batch.endedAt = null;
+  missingTimestampBaseline.batch.generatedAt = null;
+  assert.throws(
+    () => compareObservationBundlesV1(missingTimestampBaseline, current),
+    (error) => isObservationComparisonError(error) && error.code === "missing_timestamp"
   );
 
   assert.throws(

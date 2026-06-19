@@ -278,6 +278,8 @@ function planDeviceMatches(
   const uncertain: CandidateMatch[] = [];
   const matchedBaseline = new Set<string>();
   const matchedCurrent = new Set<string>();
+  const blockedBaseline = new Set<string>();
+  const blockedCurrent = new Set<string>();
   let ambiguousIdentity = false;
 
   const tiers: Array<{
@@ -321,8 +323,8 @@ function planDeviceMatches(
     const candidates = buildCandidates(
       baselineDevices,
       currentDevices,
-      matchedBaseline,
-      matchedCurrent,
+      combinedSet(matchedBaseline, blockedBaseline),
+      combinedSet(matchedCurrent, blockedCurrent),
       tier.confidence,
       tier.ruleId,
       tier.keys,
@@ -340,14 +342,18 @@ function planDeviceMatches(
     if (selected.ambiguous.length > 0) {
       ambiguousIdentity = true;
       uncertain.push(...selected.ambiguous);
+      for (const match of selected.ambiguous) {
+        blockedBaseline.add(deviceKey(match.baseline));
+        blockedCurrent.add(deviceKey(match.current));
+      }
     }
   }
 
   const lowConfidenceCandidates = buildCandidates(
     baselineDevices,
     currentDevices,
-    matchedBaseline,
-    matchedCurrent,
+    combinedSet(matchedBaseline, blockedBaseline),
+    combinedSet(matchedCurrent, blockedCurrent),
     "low",
     "identity.ip-continuity",
     (device) => device.ipKeys,
@@ -986,6 +992,10 @@ function addMapValue<K, V>(map: Map<K, V[]>, key: K, value: V): void {
   const values = map.get(key) ?? [];
   values.push(value);
   map.set(key, values);
+}
+
+function combinedSet<T>(left: Set<T>, right: Set<T>): Set<T> {
+  return new Set([...left, ...right]);
 }
 
 function uniqueCandidates<T extends CandidateMatch>(candidates: T[]): T[] {
