@@ -1059,8 +1059,13 @@ function safeBasename(filePath: string): string {
 
 function safeId(value: unknown, fallback: string): string {
   if (typeof value !== "string") return fallback;
-  const clean = value.trim().replace(/[^a-zA-Z0-9_.:-]/g, "-").replace(/-+/g, "-").slice(0, 120);
-  if (!clean || looksUnsafe(clean)) return fallback;
+  const trimmed = value.trim();
+  if (!trimmed || looksUnsafe(trimmed)) return fallback;
+
+  const clean = trimmed.replace(/[^a-zA-Z0-9_.:-]/g, "-").replace(/-+/g, "-").slice(0, 120);
+  if (!clean || looksUnsafe(clean) || looksLikeNormalizedRawCaptureOrScanId(clean)) {
+    return fallback;
+  }
   return clean;
 }
 
@@ -1077,7 +1082,11 @@ function safeText(value: unknown, maxLength: number): string {
 }
 
 function looksUnsafe(value: string): boolean {
-  return looksLikeAbsolutePath(value) || looksLikeSecret(value);
+  return (
+    looksLikeAbsolutePath(value) ||
+    looksLikeSecret(value) ||
+    looksLikeRawCaptureOrScanBody(value)
+  );
 }
 
 function looksLikeAbsolutePath(value: string): boolean {
@@ -1096,6 +1105,14 @@ function looksLikeSecret(value: string): boolean {
     /BEGIN (?:RSA |OPENSSH |EC |DSA )?PRIVATE KEY/.test(value) ||
     /\b(api[_-]?key|secret|password|token)\s*[:=]/i.test(value)
   );
+}
+
+function looksLikeRawCaptureOrScanBody(value: string): boolean {
+  return /<\??xml\b|<nmaprun\b|<host\b|<packet\b|pcap(?:ng)?\s+global\s+header|\b(?:starting\s+nmap|nmap\s+scan\s+report\s+for|port\s+state\s+service|raw\s+packets\s+sent)\b|(?:^|\s)(?:IP|TCP|UDP|ICMP)\s+[^\r\n]{1,160}\s+>/i.test(value);
+}
+
+function looksLikeNormalizedRawCaptureOrScanId(value: string): boolean {
+  return /(?:^|[-_.:])nmaprun(?:$|[-_.:])|(?:^|[-_.:])pcap(?:ng)?[-_.:]global[-_.:]header(?:$|[-_.:])|(?:^|[-_.:])host[-_.:]address[-_.:]addr(?:$|[-_.:])|(?:^|[-_.:])port[-_.:]state[-_.:]service(?:$|[-_.:])/i.test(value);
 }
 
 function nonNegativeInteger(value: unknown): number {

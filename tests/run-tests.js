@@ -37,6 +37,14 @@ let MAX_OBSERVATION_BUNDLE_JSON_BYTES;
 let MAX_OBSERVATION_NMAP_XML_BYTES;
 let MAX_OBSERVATION_HOSTS_UP_BYTES;
 let MAX_OBSERVATION_ARP_SNAPSHOT_BYTES;
+let registerObservationBundle;
+let registerObservationBundleJson;
+let getObservationById;
+let listObservations;
+let findDuplicateObservation;
+let evaluateObservationFreshness;
+let computeObservationBundleContentHash;
+let ObservationRegistryTimestampError;
 
 async function loadModules() {
   const [
@@ -48,6 +56,7 @@ async function loadModules() {
     llmRateLimit,
     llmProvider,
     observationBundle,
+    observationRegistry,
   ] = await Promise.all([
     import("../src/lib/services/path-safety.ts"),
     import("../src/lib/services/archive-safety.ts"),
@@ -57,6 +66,7 @@ async function loadModules() {
     import("../src/lib/services/llm-rate-limit.ts"),
     import("../src/lib/llm/provider.ts"),
     import("../src/lib/services/observation-bundle.ts"),
+    import("../src/lib/services/observation-registry.ts"),
   ]);
 
   ({ resolvePathWithin, sanitizeNetworkName } = pathSafety);
@@ -101,6 +111,16 @@ async function loadModules() {
     MAX_OBSERVATION_HOSTS_UP_BYTES,
     MAX_OBSERVATION_ARP_SNAPSHOT_BYTES,
   } = observationBundle);
+  ({
+    registerObservationBundle,
+    registerObservationBundleJson,
+    getObservationById,
+    listObservations,
+    findDuplicateObservation,
+    evaluateObservationFreshness,
+    computeObservationBundleContentHash,
+    ObservationRegistryTimestampError,
+  } = observationRegistry);
 }
 
 let total = 0;
@@ -682,6 +702,81 @@ function assertValuesDoNotInclude(values, unsafeValues) {
       `expected unsafe path to be dropped: ${unsafeValue}`
     );
   }
+}
+
+function createObservationRegistryBundle(options = {}) {
+  const manifest = writeObservationRunFixture({
+    runUid: options.runUid,
+    timestamp: options.timestamp,
+    network: options.network,
+    includeOptional: options.includeOptional,
+  });
+  const bundle = buildObservationBundleV1FromRun(manifest.runUid, {
+    generatedAt: options.generatedAt ?? "2026-04-01T12:06:00.000Z",
+  });
+
+  assert.ok(bundle);
+
+  if (options.startedAt || options.endedAt || options.generatedAt) {
+    setObservationBundleTimes(bundle, {
+      startedAt: options.startedAt ?? bundle.batch.startedAt,
+      endedAt: options.endedAt ?? bundle.batch.endedAt,
+      generatedAt: options.generatedAt ?? bundle.batch.generatedAt,
+    });
+  }
+
+  return bundle;
+}
+
+function setObservationBundleTimes(bundle, times) {
+  bundle.batch.startedAt = times.startedAt;
+  bundle.batch.endedAt = times.endedAt;
+  bundle.batch.generatedAt = times.generatedAt;
+
+  for (const device of bundle.devices) {
+    device.firstSeen = times.startedAt;
+    device.lastSeen = times.endedAt;
+  }
+}
+
+function observationRegistryRecordPath(registryId) {
+  return path.join(process.cwd(), "data", "observations", `${registryId}.json`);
+}
+
+function readObservationRegistryFilesText() {
+  const registryDir = path.join(process.cwd(), "data", "observations");
+  if (!fs.existsSync(registryDir)) return "";
+  return fs
+    .readdirSync(registryDir)
+    .filter((fileName) => fileName.endsWith(".json"))
+    .sort()
+    .map((fileName) => fs.readFileSync(path.join(registryDir, fileName), "utf-8"))
+    .join("\n");
+}
+
+function assertObservationRegistryOutputSafe(serialized) {
+  assert.doesNotMatch(serialized, /<\??xml\b|<nmaprun\b|<host\b|<packet\b|pcap(?:ng)?\s+global\s+header/i);
+  assert.doesNotMatch(
+    serialized,
+    /\b(api[_-]?key|secret|password|token)\s*[:=]|\bsk-[A-Za-z0-9_-]{20,}\b|BEGIN (?:RSA |OPENSSH |EC |DSA )?PRIVATE KEY/i
+  );
+  assert.doesNotMatch(
+    serialized,
+    /[A-Za-z]:\\|\\\\[^\\\s]+\\[^\s]+|\/(?:home|tmp|Users|var|etc|workspace|opt)\//i
+  );
+  assert.doesNotMatch(serialized, /rawscans|Interface: 192\.0\.2\.1/i);
+}
+
+async function assertSafeObservationApiError(response, status, errorPattern, context) {
+  const body = await response.json();
+  const serialized = JSON.stringify(body);
+
+  assert.equal(response.status, status, context);
+  assert.equal(body.success, false, context);
+  assert.match(body.error, errorPattern, context);
+  assert.ok(body.error.length <= 200, context);
+  assert.ok(serialized.length <= 512, context);
+  assertObservationRegistryOutputSafe(serialized);
 }
 
 run("resolvePathWithin allows paths inside base directory", () => {
@@ -1406,6 +1501,604 @@ run("observation bundle import drops absolute paths from text fields without dro
     assert.ok(restoredTextValues.includes(safeCidr));
     assert.ok(restoredTextValues.includes(safeHostname));
     assert.ok(restoredTextValues.includes(safeBasename));
+  });
+});
+
+run("observation registry rejects ambiguous or invalid import timestamps before persistence", async () => {
+  await withTempCwd(async () => {
+    const bundle = createObservationRegistryBundle({
+      runUid: "timestamp-validation-observation",
+      network: "timestamp-validation-lab",
+      startedAt: "2026-04-01T12:00:00.000Z",
+      endedAt: "2026-04-01T12:05:00.000Z",
+      generatedAt: "2026-04-01T12:06:00.000Z",
+    });
+    const cases = [
+      {
+        name: "missing generatedAt",
+        field: "batch.generatedAt",
+        mutate: (tampered) => delete tampered.batch.generatedAt,
+      },
+      {
+        name: "null generatedAt",
+        field: "batch.generatedAt",
+        mutate: (tampered) => {
+          tampered.batch.generatedAt = null;
+        },
+      },
+      {
+        name: "malformed generatedAt",
+        field: "batch.generatedAt",
+        mutate: (tampered) => {
+          tampered.batch.generatedAt = "not-a-date";
+        },
+      },
+      {
+        name: "offset-less generatedAt",
+        field: "batch.generatedAt",
+        mutate: (tampered) => {
+          tampered.batch.generatedAt = "2026-04-01T12:06:00";
+        },
+      },
+      {
+        name: "invalid generatedAt date",
+        field: "batch.generatedAt",
+        mutate: (tampered) => {
+          tampered.batch.generatedAt = "2026-02-30T12:06:00.000Z";
+        },
+      },
+      {
+        name: "offset-less startedAt",
+        field: "batch.startedAt",
+        mutate: (tampered) => {
+          tampered.batch.startedAt = "2026-04-01T12:00:00";
+        },
+      },
+      {
+        name: "invalid endedAt",
+        field: "batch.endedAt",
+        mutate: (tampered) => {
+          tampered.batch.endedAt = "2026-02-30T12:05:00.000Z";
+        },
+      },
+    ];
+
+    for (const testCase of cases) {
+      const tampered = JSON.parse(JSON.stringify(bundle));
+      testCase.mutate(tampered);
+      assert.throws(
+        () => registerObservationBundleJson(JSON.stringify(tampered)),
+        (error) =>
+          isObservationBundleValidationError(error) &&
+          error.message.includes(testCase.field) &&
+          /explicit offset/.test(error.message),
+        testCase.name
+      );
+    }
+
+    const malformedDuplicate = JSON.parse(JSON.stringify(bundle));
+    delete malformedDuplicate.batch.generatedAt;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      assert.throws(
+        () => registerObservationBundleJson(JSON.stringify(malformedDuplicate)),
+        (error) =>
+          isObservationBundleValidationError(error) &&
+          error.message.includes("batch.generatedAt") &&
+          /explicit offset/.test(error.message),
+        `malformed duplicate attempt ${attempt + 1}`
+      );
+    }
+
+    assert.equal(listObservations().length, 0);
+    assert.equal(readObservationRegistryFilesText(), "");
+  });
+});
+run("observation registry retains same-site observations chronologically and dedupes reimports", async () => {
+  await withTempCwd(async () => {
+    const older = createObservationRegistryBundle({
+      runUid: "repeat-site-older",
+      network: "repeat-lab",
+      startedAt: "2026-04-01T12:00:00.000Z",
+      endedAt: "2026-04-01T12:05:00.000Z",
+      generatedAt: "2026-04-01T12:06:00.000Z",
+    });
+    const newer = createObservationRegistryBundle({
+      runUid: "repeat-site-newer",
+      network: "repeat-lab",
+      startedAt: "2026-04-15T12:00:00.000Z",
+      endedAt: "2026-04-15T12:05:00.000Z",
+      generatedAt: "2026-04-15T12:06:00.000Z",
+    });
+
+    assert.equal(older.site.siteId, newer.site.siteId);
+    assert.notEqual(older.observationId, newer.observationId);
+
+    const newerResult = registerObservationBundle(newer, {
+      importedAt: "2026-04-15T12:07:00.000Z",
+      evaluatedAt: "2026-04-16T00:00:00.000Z",
+    });
+    const olderResult = registerObservationBundle(older, {
+      importedAt: "2026-04-01T12:07:00.000Z",
+      evaluatedAt: "2026-04-16T00:00:00.000Z",
+    });
+    const duplicate = registerObservationBundleJson(JSON.stringify(older), {
+      importedAt: "2026-04-20T00:00:00.000Z",
+      evaluatedAt: "2026-04-20T00:00:00.000Z",
+    });
+
+    assert.equal(newerResult.isNew, true);
+    assert.equal(olderResult.isNew, true);
+    assert.notEqual(newerResult.record.registryId, olderResult.record.registryId);
+    assert.equal(duplicate.isNew, false);
+    assert.equal(duplicate.duplicateOf, olderResult.record.registryId);
+    assert.equal(duplicate.record.registryId, olderResult.record.registryId);
+
+    const listed = listObservations(
+      { siteId: older.site.siteId, order: "asc" },
+      { evaluatedAt: "2026-04-16T00:00:00.000Z" }
+    );
+    const networkListed = listObservations(
+      { network: "repeat-lab", order: "asc" },
+      { evaluatedAt: "2026-04-16T00:00:00.000Z" }
+    );
+    const duplicateLookup = findDuplicateObservation(
+      computeObservationBundleContentHash(older),
+      { evaluatedAt: "2026-04-16T00:00:00.000Z" }
+    );
+
+    assert.equal(listed.length, 2);
+    assert.deepEqual(
+      listed.map((entry) => entry.observationId),
+      [older.observationId, newer.observationId]
+    );
+    assert.deepEqual(
+      networkListed.map((entry) => entry.observationId),
+      [older.observationId, newer.observationId]
+    );
+    assert.equal(duplicateLookup.registryId, olderResult.record.registryId);
+
+    const index = JSON.parse(
+      fs.readFileSync(path.join(process.cwd(), "data", "observations", "index.json"), "utf-8")
+    );
+    assert.equal(Object.keys(index.observations).length, 2);
+  });
+});
+
+run("observation registry sanitizes imports before persistence and omits unsafe bodies", async () => {
+  await withTempCwd(async () => {
+    const bundle = createObservationRegistryBundle({
+      runUid: "unsafe-observation-import",
+      network: "unsafe-lab",
+    });
+    const tampered = JSON.parse(JSON.stringify(bundle));
+    const unsafePath = ["C:", "Users", "user", "private", "ports_top200_open.xml"].join("\\");
+    const unixUnsafePath = ["", "home", "user", "private", "target.txt"].join("/");
+    const rawScanBody = "<nmaprun><host><address addr=\"192.0.2.99\" /></host></nmaprun>";
+    const normalizedRawScanId = "nmaprun-host-address-addr-192.0.2.99";
+    const unsafeSecret = ["api_key", "synthetic-not-for-output"].join("=");
+    const safeEvidenceSourceId = tampered.sources[1].sourceId;
+
+    tampered.unknownField = "drop me";
+    tampered.observationId = rawScanBody;
+    tampered.batch.batchId = rawScanBody;
+    tampered.batch.sourceRunUid = normalizedRawScanId;
+    tampered.sources[0].sourceId = rawScanBody;
+    tampered.devices[0].deviceId = rawScanBody;
+    tampered.sources[0].fileName = unsafePath;
+    tampered.sources[0].notes = [unsafePath, rawScanBody, unsafeSecret, "safe source note"];
+    tampered.vantage.collectorHost = unsafePath;
+    tampered.vantage.target = unixUnsafePath;
+    tampered.vantage.notes = [rawScanBody, "safe vantage note"];
+    tampered.batch.notes = [["token", "synthetic-not-for-output"].join("="), "safe batch note"];
+    tampered.coverage.notes = [rawScanBody, "safe coverage note"];
+    tampered.devices[0].hostnames.push(unsafePath);
+    tampered.devices[0].identityEvidence.push({
+      evidenceId: "ev-secret-marker",
+      kind: "hostname",
+      value: ["password", "synthetic-not-for-output"].join("="),
+      sourceId: tampered.sources[0].sourceId,
+      confidence: "reported",
+    });
+    tampered.devices[0].identityEvidence.push({
+      evidenceId: rawScanBody,
+      kind: "hostname",
+      value: "raw-id-safe-value",
+      sourceId: safeEvidenceSourceId,
+      confidence: "reported",
+    });
+    tampered.devices[0].openPorts[0].product = `sk-${"A".repeat(24)}`;
+    tampered.notes = [unsafePath, rawScanBody, "safe registry note"];
+
+    const result = registerObservationBundle(tampered, {
+      importedAt: "2026-04-01T12:07:00.000Z",
+      evaluatedAt: "2026-04-02T00:00:00.000Z",
+    });
+    const persistedRecord = fs.readFileSync(
+      observationRegistryRecordPath(result.record.registryId),
+      "utf-8"
+    );
+    const persistedRegistry = readObservationRegistryFilesText();
+
+    assert.equal(result.isNew, true);
+    assert.equal(result.record.vantage.collectorHost, null);
+    assert.equal(result.record.vantage.target, null);
+    assert.equal(result.record.bundle.sources[0].fileName, "ports_top200_open.xml");
+    assert.ok(result.record.bundle.sources[0].notes.includes("safe source note"));
+    assert.ok(result.record.bundle.vantage.notes.includes("safe vantage note"));
+    assert.ok(result.record.bundle.batch.notes.includes("safe batch note"));
+    assert.ok(result.record.bundle.coverage.notes.includes("safe coverage note"));
+    assert.ok(result.record.bundle.notes.includes("safe registry note"));
+    assert.equal("unknownField" in result.record.bundle, false);
+    assert.equal(result.record.observationId, "obs-unknown");
+    assert.equal(result.record.batch.batchId, "batch-unknown");
+    assert.equal(result.record.batch.sourceRunUid, "run-unknown");
+    assert.equal(result.record.bundle.sources[0].sourceId, "src-unknown");
+    assert.equal(result.record.bundle.devices[0].deviceId, "dev-unknown");
+    assert.equal(result.record.bundle.devices[0].hostnames.includes(unsafePath), false);
+    assert.equal(
+      result.record.bundle.devices[0].identityEvidence.some(
+        (evidence) => evidence.evidenceId === "ev-secret-marker"
+      ),
+      false
+    );
+    assert.equal(
+      result.record.bundle.devices[0].identityEvidence.some(
+        (evidence) => evidence.value === "raw-id-safe-value" && evidence.evidenceId !== rawScanBody
+      ),
+      true
+    );
+    assert.equal(result.record.bundle.devices[0].openPorts[0].product, null);
+    assertObservationRegistryOutputSafe(persistedRecord);
+    assertObservationRegistryOutputSafe(persistedRegistry);
+    assert.doesNotMatch(JSON.stringify(result.record), /nmaprun-host-address|192\.0\.2\.99/);
+    assert.doesNotMatch(persistedRegistry, /nmaprun-host-address|192\.0\.2\.99/);
+    assert.doesNotMatch(persistedRecord, /synthetic-not-for-output|unknownField|private/);
+  });
+});
+
+run("observation registry records preserve metadata and classify partial observations", async () => {
+  await withTempCwd(async () => {
+    const partial = createObservationRegistryBundle({
+      runUid: "partial-observation",
+      network: "partial-lab",
+      includeOptional: false,
+      generatedAt: "2026-04-01T12:06:00.000Z",
+    });
+    const result = registerObservationBundle(partial, {
+      importedAt: "2026-04-01T12:07:00.000Z",
+      evaluatedAt: "2026-04-02T00:00:00.000Z",
+    });
+    const fetched = getObservationById(result.record.registryId, {
+      evaluatedAt: "2026-04-02T00:00:00.000Z",
+    });
+    const listed = listObservations(
+      { network: "partial-lab" },
+      { evaluatedAt: "2026-04-02T00:00:00.000Z" }
+    );
+
+    assert.equal(result.record.freshness.status, "partial");
+    assert.equal(result.record.freshness.cadenceStatus, "fresh");
+    assert.equal(result.record.coverage.status, "partial");
+    assert.ok(result.record.coverage.missingSources.includes("discovery"));
+    assert.ok(result.record.coverage.missingSources.includes("hosts_up"));
+    assert.equal(result.record.deviceCount, 1);
+    assert.deepEqual(result.record.sources, partial.sources);
+    assert.deepEqual(result.record.vantage, partial.vantage);
+    assert.deepEqual(result.record.batch, partial.batch);
+    assert.deepEqual(result.record.coverage.notes, partial.coverage.notes);
+    assert.deepEqual(result.record.timeRange, {
+      startedAt: partial.batch.startedAt,
+      endedAt: partial.batch.endedAt,
+      generatedAt: partial.batch.generatedAt,
+    });
+    assert.ok(fetched);
+    assert.equal(fetched.bundle.devices.length, 1);
+    assert.equal(listed.length, 1);
+    assert.equal(listed[0].freshness.status, "partial");
+    assert.equal(listed[0].freshness.cadenceStatus, "fresh");
+  });
+});
+
+run("observation freshness is deterministic at cadence and grace boundaries", async () => {
+  await withTempCwd(async () => {
+    const bundle = createObservationRegistryBundle({
+      runUid: "freshness-boundary-observation",
+      network: "freshness-lab",
+      startedAt: "2026-04-01T12:00:00.000Z",
+      endedAt: "2026-04-01T12:05:00.000Z",
+      generatedAt: "2026-04-01T12:06:00.000Z",
+    });
+    const cases = [
+      {
+        name: "before cadence",
+        evaluatedAt: "2026-05-01T12:04:59.999Z",
+        status: "fresh",
+        ageDays: 29,
+      },
+      {
+        name: "at cadence",
+        evaluatedAt: "2026-05-01T12:05:00.000Z",
+        status: "fresh",
+        ageDays: 30,
+      },
+      {
+        name: "after cadence",
+        evaluatedAt: "2026-05-01T12:05:00.001Z",
+        status: "aging",
+        ageDays: 30,
+      },
+      {
+        name: "at grace",
+        evaluatedAt: "2026-05-08T12:05:00.000Z",
+        status: "aging",
+        ageDays: 37,
+      },
+      {
+        name: "after grace",
+        evaluatedAt: "2026-05-08T12:05:00.001Z",
+        status: "stale",
+        ageDays: 37,
+      },
+    ];
+
+    for (const testCase of cases) {
+      const freshness = evaluateObservationFreshness(bundle, {
+        evaluatedAt: testCase.evaluatedAt,
+      });
+
+      assert.equal(freshness.status, testCase.status, testCase.name);
+      assert.equal(freshness.cadenceStatus, testCase.status, testCase.name);
+      assert.equal(freshness.observedAt, "2026-04-01T12:05:00.000Z", testCase.name);
+      assert.equal(freshness.dueAt, "2026-05-01T12:05:00.000Z", testCase.name);
+      assert.equal(freshness.graceEndsAt, "2026-05-08T12:05:00.000Z", testCase.name);
+      assert.equal(freshness.ageDays, testCase.ageDays, testCase.name);
+    }
+
+    assert.throws(
+      () => evaluateObservationFreshness(bundle, { evaluatedAt: "2026-05-01T12:05:00" }),
+      (error) =>
+        error instanceof ObservationRegistryTimestampError &&
+        /explicit offset/.test(error.message)
+    );
+  });
+});
+
+run("observations API imports, reads, lists, and returns safe bounded errors", async () => {
+  const [observationsRoute, observationRoute] = await Promise.all([
+    import("../src/app/api/observations/route.ts"),
+    import("../src/app/api/observations/[registryId]/route.ts"),
+  ]);
+
+  await withTempCwd(async () => {
+    const bundle = createObservationRegistryBundle({
+      runUid: "api-observation",
+      network: "api-lab",
+    });
+
+    const importResponse = await observationsRoute.POST(
+      createRawJsonRequest("/api/observations", "POST", JSON.stringify(bundle))
+    );
+    const importBody = await importResponse.json();
+    const registryId = importBody.observation.registryId;
+
+    assert.equal(importResponse.status, 200);
+    assert.equal(importBody.success, true);
+    assert.equal(importBody.isNew, true);
+    assert.equal(importBody.observation.observationId, bundle.observationId);
+    assert.equal("bundle" in importBody.observation, false);
+
+    const duplicateResponse = await observationsRoute.POST(
+      createRawJsonRequest("/api/observations", "POST", JSON.stringify(bundle))
+    );
+    const duplicateBody = await duplicateResponse.json();
+
+    assert.equal(duplicateResponse.status, 200);
+    assert.equal(duplicateBody.success, true);
+    assert.equal(duplicateBody.isNew, false);
+    assert.equal(duplicateBody.duplicateOf, registryId);
+
+    const listResponse = await observationsRoute.GET(
+      new Request(
+        "http://localhost/api/observations?network=api-lab&order=asc&limit=1&asOf=2026-04-02T00:00:00.000Z"
+      )
+    );
+    const listBody = await listResponse.json();
+
+    assert.equal(listResponse.status, 200);
+    assert.equal(listBody.success, true);
+    assert.equal(listBody.observations.length, 1);
+    assert.equal(listBody.observations[0].registryId, registryId);
+    assert.equal(listBody.stats.totalObservations, 1);
+    assert.equal(listBody.stats.returnedObservations, 1);
+
+    const getResponse = await observationRoute.GET(
+      new Request(`http://localhost/api/observations/${registryId}?asOf=2026-04-02T00:00:00.000Z`),
+      { params: Promise.resolve({ registryId }) }
+    );
+    const getBody = await getResponse.json();
+
+    assert.equal(getResponse.status, 200);
+    assert.equal(getBody.success, true);
+    assert.equal(getBody.observation.registryId, registryId);
+    assert.equal(getBody.observation.bundle.observationId, bundle.observationId);
+
+    const rawIdBundle = createObservationRegistryBundle({
+      runUid: "api-raw-id-observation",
+      network: "api-raw-id-lab",
+    });
+    const rawApiScanBody = "<nmaprun><host><address addr=\"192.0.2.77\" /></host></nmaprun>";
+    rawIdBundle.observationId = rawApiScanBody;
+    rawIdBundle.batch.batchId = rawApiScanBody;
+    rawIdBundle.batch.sourceRunUid = "nmaprun-host-address-addr-192.0.2.77";
+    rawIdBundle.sources[0].sourceId = rawApiScanBody;
+    rawIdBundle.devices[0].deviceId = rawApiScanBody;
+    rawIdBundle.devices[0].identityEvidence.push({
+      evidenceId: rawApiScanBody,
+      kind: "hostname",
+      value: "api-raw-id-safe-value",
+      sourceId: rawIdBundle.sources[1].sourceId,
+      confidence: "reported",
+    });
+
+    const rawIdImportResponse = await observationsRoute.POST(
+      createRawJsonRequest("/api/observations", "POST", JSON.stringify(rawIdBundle))
+    );
+    const rawIdImportBody = await rawIdImportResponse.json();
+    const rawIdRegistryId = rawIdImportBody.observation.registryId;
+    const rawIdGetResponse = await observationRoute.GET(
+      new Request(`http://localhost/api/observations/${rawIdRegistryId}`),
+      { params: Promise.resolve({ registryId: rawIdRegistryId }) }
+    );
+    const rawIdGetBody = await rawIdGetResponse.json();
+    const rawIdListResponse = await observationsRoute.GET(
+      new Request("http://localhost/api/observations?network=api-raw-id-lab&limit=10")
+    );
+    const rawIdListBody = await rawIdListResponse.json();
+    const rawIdSerialized = JSON.stringify([
+      rawIdImportBody,
+      rawIdGetBody,
+      rawIdListBody,
+    ]);
+
+    assert.equal(rawIdImportResponse.status, 200);
+    assert.equal(rawIdImportBody.success, true);
+    assert.equal(rawIdImportBody.observation.observationId, "obs-unknown");
+    assert.equal(rawIdGetResponse.status, 200);
+    assert.equal(rawIdGetBody.success, true);
+    assert.equal(rawIdListResponse.status, 200);
+    assert.equal(rawIdListBody.success, true);
+    assertObservationRegistryOutputSafe(rawIdSerialized);
+    assert.doesNotMatch(rawIdSerialized, /nmaprun-host-address|192\.0\.2\.77/);
+
+    const unsafeMalformedBody = JSON.stringify({
+      note: ["api_key", "synthetic-not-for-output"].join("="),
+      raw: "<nmaprun><host /></nmaprun>",
+      path: ["C:", "Users", "user", "private", "scan.xml"].join("\\"),
+    }).slice(0, -1);
+    const malformedResponse = await observationsRoute.POST(
+      createRawJsonRequest("/api/observations", "POST", unsafeMalformedBody)
+    );
+    await assertSafeObservationApiError(malformedResponse, 400, /valid JSON/, "malformed body");
+
+    const oversizedResponse = await observationsRoute.POST(
+      new Request("http://localhost/api/observations", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "content-length": String(MAX_OBSERVATION_BUNDLE_JSON_BYTES + 1),
+        },
+        body: "{}",
+      })
+    );
+    await assertSafeObservationApiError(oversizedResponse, 413, /too large/i, "oversized body");
+
+    const oversizedStreamResponse = await observationsRoute.POST(
+      new Request("http://localhost/api/observations", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: " ".repeat(MAX_OBSERVATION_BUNDLE_JSON_BYTES + 1),
+      })
+    );
+    await assertSafeObservationApiError(
+      oversizedStreamResponse,
+      413,
+      /too large/i,
+      "oversized stream body"
+    );
+
+    const invalidQueryResponse = await observationsRoute.GET(
+      new Request("http://localhost/api/observations?asOf=not-a-date")
+    );
+    await assertSafeObservationApiError(invalidQueryResponse, 400, /asOf must be/, "invalid asOf");
+
+    const localTimeQueryResponse = await observationsRoute.GET(
+      new Request("http://localhost/api/observations?asOf=2026-04-02T00:00:00")
+    );
+    await assertSafeObservationApiError(
+      localTimeQueryResponse,
+      400,
+      /explicit offset/,
+      "offset-less asOf"
+    );
+
+    const localTimeGetResponse = await observationRoute.GET(
+      new Request(`http://localhost/api/observations/${registryId}?asOf=2026-04-02T00:00:00`),
+      { params: Promise.resolve({ registryId }) }
+    );
+    await assertSafeObservationApiError(
+      localTimeGetResponse,
+      400,
+      /explicit offset/,
+      "offset-less item asOf"
+    );
+
+    const invalidIdResponse = await observationRoute.GET(
+      new Request("http://localhost/api/observations/obs_bad%2Fid"),
+      { params: Promise.resolve({ registryId: "obs_bad/id" }) }
+    );
+    await assertSafeObservationApiError(invalidIdResponse, 400, /Invalid observation id/, "invalid id");
+  });
+});
+run("observations API applies default and explicit list bounds", async () => {
+  const observationsRoute = await import("../src/app/api/observations/route.ts");
+
+  await withTempCwd(async () => {
+    for (let index = 0; index < 55; index += 1) {
+      const day = String((index % 28) + 1).padStart(2, "0");
+      const bundle = createObservationRegistryBundle({
+        runUid: `api-list-bound-${index}`,
+        network: "list-bounds-lab",
+        timestamp: `2026-04-${day}T12:00:00.000Z`,
+        generatedAt: `2026-04-${day}T12:06:00.000Z`,
+      });
+      registerObservationBundle(bundle, {
+        importedAt: `2026-04-${day}T12:07:00.000Z`,
+        evaluatedAt: "2026-05-01T00:00:00.000Z",
+      });
+    }
+
+    const defaultResponse = await observationsRoute.GET(
+      new Request("http://localhost/api/observations?network=list-bounds-lab&order=asc")
+    );
+    const defaultBody = await defaultResponse.json();
+
+    assert.equal(defaultResponse.status, 200);
+    assert.equal(defaultBody.success, true);
+    assert.equal(defaultBody.observations.length, 50);
+    assert.equal(defaultBody.stats.totalObservations, 55);
+    assert.equal(defaultBody.stats.returnedObservations, 50);
+
+    const explicitMaxResponse = await observationsRoute.GET(
+      new Request("http://localhost/api/observations?network=list-bounds-lab&limit=200")
+    );
+    const explicitMaxBody = await explicitMaxResponse.json();
+
+    assert.equal(explicitMaxResponse.status, 200);
+    assert.equal(explicitMaxBody.success, true);
+    assert.equal(explicitMaxBody.observations.length, 55);
+
+    const zeroLimitResponse = await observationsRoute.GET(
+      new Request("http://localhost/api/observations?limit=0")
+    );
+    await assertSafeObservationApiError(zeroLimitResponse, 400, /limit must be between 1 and 200/);
+
+    const tooLargeLimitResponse = await observationsRoute.GET(
+      new Request("http://localhost/api/observations?limit=201")
+    );
+    await assertSafeObservationApiError(tooLargeLimitResponse, 400, /limit must be between 1 and 200/);
+
+    const largeOffsetResponse = await observationsRoute.GET(
+      new Request("http://localhost/api/observations?network=list-bounds-lab&offset=999999")
+    );
+    const largeOffsetBody = await largeOffsetResponse.json();
+
+    assert.equal(largeOffsetResponse.status, 200);
+    assert.equal(largeOffsetBody.success, true);
+    assert.equal(largeOffsetBody.observations.length, 0);
+    assert.equal(largeOffsetBody.stats.totalObservations, 55);
+    assert.equal(largeOffsetBody.stats.returnedObservations, 0);
   });
 });
 run("rules POST rejects invalid ports, enums, strings, and malformed JSON", async () => {

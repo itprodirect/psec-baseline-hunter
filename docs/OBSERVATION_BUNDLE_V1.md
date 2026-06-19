@@ -84,3 +84,17 @@ Source records keep only artifact labels and basenames. Runtime validation
 rebuilds imported bundles through a whitelist, caps bundle size and list counts,
 drops unknown fields, and removes path-like or secret-like strings from
 client-facing output.
+
+## Registry Freshness
+
+The local observation registry uses deterministic freshness windows based on
+the observation end time, falling back to start time and then generated time
+when needed.
+
+- Default cadence: 30 days.
+- Grace period: 7 days after the cadence window.
+- `fresh`: at or before the 30-day cadence boundary.
+- `aging`: after 30 days and at or before the 37-day grace boundary.
+- `stale`: after the 37-day boundary.
+- `partial`: coverage is incomplete or the bundle is marked partial; the
+  underlying age classification is still retained with the record.
