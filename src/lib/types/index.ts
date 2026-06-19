@@ -6,6 +6,7 @@
 // Import and re-export UserProfile for use in API types
 import type { UserProfile } from "./userProfile";
 export type { UserProfile };
+export type * from "./observation-bundle";
 
 /**
  * Metadata about a scan run folder
