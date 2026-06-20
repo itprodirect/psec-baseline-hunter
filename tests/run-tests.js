@@ -49,6 +49,10 @@ let compareObservationBundlesV1;
 let isObservationComparisonError;
 let buildNetworkActivity;
 let buildSyntheticNetworkActivityScenario;
+let shapeNetworkActivityComparison;
+let buildDeviceResponseTarget;
+let upsertDeviceResponse;
+let getDeviceResponseForTarget;
 
 async function loadModules() {
   const [
@@ -63,6 +67,7 @@ async function loadModules() {
     observationRegistry,
     observationComparison,
     networkActivity,
+    deviceResponses,
   ] = await Promise.all([
     import("../src/lib/services/path-safety.ts"),
     import("../src/lib/services/archive-safety.ts"),
@@ -75,6 +80,7 @@ async function loadModules() {
     import("../src/lib/services/observation-registry.ts"),
     import("../src/lib/services/observation-comparison.ts"),
     import("../src/lib/services/network-activity.ts"),
+    import("../src/lib/services/device-responses.ts"),
   ]);
 
   ({ resolvePathWithin, sanitizeNetworkName } = pathSafety);
@@ -136,7 +142,13 @@ async function loadModules() {
   ({
     buildNetworkActivity,
     buildSyntheticNetworkActivityScenario,
+    shapeNetworkActivityComparison,
   } = networkActivity);
+  ({
+    buildDeviceResponseTarget,
+    upsertDeviceResponse,
+    getDeviceResponseForTarget,
+  } = deviceResponses);
 }
 
 let total = 0;
@@ -921,6 +933,20 @@ function createComparisonEvidence(kind, value, sourceId, confidence = "observed"
     sourceId,
     confidence,
   };
+}
+
+function createDeviceResponseTargetForBundleDevice(bundle, deviceIndex = 0) {
+  const device = bundle.devices[deviceIndex];
+  assert.ok(device, "expected fixture device");
+  const target = buildDeviceResponseTarget({
+    siteId: bundle.site.siteId,
+    observationId: bundle.observationId,
+    deviceId: device.deviceId,
+    macs: device.macs,
+    identityValues: device.identityEvidence.map((evidence) => evidence.value),
+  });
+  assert.ok(target, "expected stable device response target");
+  return target;
 }
 
 function comparisonEventTypes(result) {
@@ -3085,6 +3111,87 @@ run("network activity chooses the latest valid same-site observation comparison"
   });
 });
 
+run("network activity preserves comparison order for same-priority events", async () => {
+  await withTempCwd(async () => {
+    const baseline = createComparisonBundle({
+      observationId: "obs-order-baseline",
+      siteId: "site-order-activity",
+      networkName: "order-activity-lab",
+      observedAt: "2026-05-01T10:00:00.000Z",
+      devices: [
+        {
+          deviceId: "order-device-baseline",
+          ips: ["192.0.2.10"],
+          macs: ["02:00:00:00:00:10"],
+          ports: [{ port: 80, protocol: "tcp", service: "http" }],
+        },
+      ],
+    });
+    const current = createComparisonBundle({
+      observationId: "obs-order-current",
+      siteId: "site-order-activity",
+      networkName: "order-activity-lab",
+      observedAt: "2026-05-02T10:00:00.000Z",
+      devices: [
+        {
+          deviceId: "order-device-current",
+          ips: ["192.0.2.20"],
+          macs: ["02:00:00:00:00:10"],
+          ports: [
+            { port: 80, protocol: "tcp", service: "http" },
+            { port: 443, protocol: "tcp", service: "https" },
+          ],
+        },
+      ],
+    });
+    const baselineRecord = registerObservationBundle(baseline, {
+      importedAt: "2026-05-01T10:05:00.000Z",
+      evaluatedAt: "2026-05-03T00:00:00.000Z",
+    }).record;
+    const currentRecord = registerObservationBundle(current, {
+      importedAt: "2026-05-02T10:05:00.000Z",
+      evaluatedAt: "2026-05-03T00:00:00.000Z",
+    }).record;
+    const comparison = compareObservationBundlesV1(baselineRecord.bundle, currentRecord.bundle, {
+      evaluatedAt: "2026-05-03T00:00:00.000Z",
+    });
+
+    assert.deepEqual(comparisonEventTypes(comparison), [
+      "service-or-port-opened",
+      "important-device-metadata-changed",
+    ]);
+
+    comparison.events = comparison.events.map((event, index) => ({
+      ...event,
+      eventId: index === 0 ? "chg-z-preserve-first" : "chg-a-preserve-second",
+    }));
+    const incomingEventIds = comparison.events.map((event) => event.eventId);
+    assert.ok(
+      incomingEventIds[0].localeCompare(incomingEventIds[1]) > 0,
+      "fixture must fail if same-priority events fall back to eventId sorting"
+    );
+
+    const activity = shapeNetworkActivityComparison({
+      baseline: baselineRecord,
+      current: currentRecord,
+      comparison,
+      generatedAt: "2026-05-03T00:00:00.000Z",
+      source: "registry",
+      availableObservationCount: 2,
+    });
+
+    assert.deepEqual(activity.events.map((event) => event.eventId), incomingEventIds);
+    assert.deepEqual(
+      activity.events.map((event) => event.type),
+      comparison.events.map((event) => event.eventType)
+    );
+    assert.equal(
+      activity.events.every((event) => event.workflowPriority.level === "normal"),
+      true
+    );
+  });
+});
+
 run("network activity states cover empty, one-observation, and no-change cases truthfully", async () => {
   await withTempCwd(async () => {
     const empty = buildNetworkActivity({ evaluatedAt: "2026-05-05T00:00:00.000Z" });
@@ -3211,6 +3318,343 @@ run("network activity surfaces partial and stale limitations near no-change resu
     assert.ok(limitationCodes.has("current-missing-sources"));
     assert.match(limitationText, /missing port scan, host-up list/);
     assert.doesNotMatch(activity.summary, /all clear/i);
+  });
+});
+
+run("device responses carry forward across changed IP only with strong identity evidence", async () => {
+  await withTempCwd(async () => {
+    const baseline = createComparisonBundle({
+      observationId: "obs-response-strong-baseline",
+      siteId: "site-response-strong",
+      networkName: "response-strong-lab",
+      observedAt: "2026-05-01T10:00:00.000Z",
+      devices: [
+        {
+          deviceId: "dev-aaaaaaaaaaaa",
+          ips: ["192.0.2.10"],
+          macs: ["02:00:00:00:00:10"],
+          ports: [{ port: 80, protocol: "tcp", service: "http" }],
+        },
+      ],
+    });
+    const current = createComparisonBundle({
+      observationId: "obs-response-strong-current",
+      siteId: "site-response-strong",
+      networkName: "response-strong-lab",
+      observedAt: "2026-05-02T10:00:00.000Z",
+      devices: [
+        {
+          deviceId: "dev-bbbbbbbbbbbb",
+          ips: ["192.0.2.55"],
+          macs: ["02:00:00:00:00:10"],
+          ports: [
+            { port: 80, protocol: "tcp", service: "http" },
+            { port: 443, protocol: "tcp", service: "https" },
+          ],
+        },
+      ],
+    });
+
+    upsertDeviceResponse(
+      createDeviceResponseTargetForBundleDevice(baseline),
+      "mine",
+      "Kitchen laptop",
+      { now: "2026-05-01T11:00:00.000Z" }
+    );
+    registerObservationBundle(baseline, {
+      importedAt: "2026-05-01T10:05:00.000Z",
+      evaluatedAt: "2026-05-03T00:00:00.000Z",
+    });
+    registerObservationBundle(current, {
+      importedAt: "2026-05-02T10:05:00.000Z",
+      evaluatedAt: "2026-05-03T00:00:00.000Z",
+    });
+
+    const activity = buildNetworkActivity({
+      evaluatedAt: "2026-05-03T00:00:00.000Z",
+    });
+    const opened = activity.events.find((event) => event.type === "service-or-port-opened");
+
+    assert.ok(opened);
+    assert.equal(opened.technicalEvidence.identityRuleId, "identity.mac");
+    assert.equal(opened.deviceResponse.statement.state, "mine");
+    assert.equal(opened.deviceResponse.statement.friendlyName, "Kitchen laptop");
+    assert.ok(opened.deviceResponse.carriedForward);
+    assert.equal(
+      opened.deviceResponse.carriedForward.fromObservationId,
+      "obs-response-strong-baseline"
+    );
+    assert.match(opened.deviceResponse.carriedForward.reason, /MAC address/);
+    assert.equal(opened.workflowPriority.level, "normal");
+    assert.equal(
+      JSON.stringify(opened.technicalEvidence).includes("Kitchen laptop"),
+      false,
+      "friendly names must stay out of technical evidence"
+    );
+    assert.doesNotMatch(
+      [
+        opened.title,
+        opened.summary,
+        opened.reviewReason,
+        opened.deviceResponse.carriedForward.reason,
+      ].join(" "),
+      /safe|malware|attack/i
+    );
+  });
+});
+
+run("device responses do not inherit across low-confidence IP continuity", async () => {
+  await withTempCwd(async () => {
+    const baseline = createComparisonBundle({
+      observationId: "obs-response-weak-baseline",
+      siteId: "site-response-weak",
+      networkName: "response-weak-lab",
+      observedAt: "2026-05-01T10:00:00.000Z",
+      devices: [
+        {
+          deviceId: "dev-111111111111",
+          ips: ["192.0.2.40"],
+          macs: ["02:00:00:00:00:40"],
+          ports: [{ port: 22, protocol: "tcp", service: "ssh" }],
+        },
+      ],
+    });
+    const current = createComparisonBundle({
+      observationId: "obs-response-weak-current",
+      siteId: "site-response-weak",
+      networkName: "response-weak-lab",
+      observedAt: "2026-05-02T10:00:00.000Z",
+      devices: [
+        {
+          deviceId: "dev-222222222222",
+          ips: ["192.0.2.40"],
+          macs: ["02:00:00:00:00:41"],
+          ports: [{ port: 3389, protocol: "tcp", service: "ms-wbt-server" }],
+        },
+      ],
+    });
+
+    upsertDeviceResponse(
+      createDeviceResponseTargetForBundleDevice(baseline),
+      "guest",
+      "Visitor tablet",
+      { now: "2026-05-01T11:00:00.000Z" }
+    );
+    registerObservationBundle(baseline, {
+      importedAt: "2026-05-01T10:05:00.000Z",
+      evaluatedAt: "2026-05-03T00:00:00.000Z",
+    });
+    registerObservationBundle(current, {
+      importedAt: "2026-05-02T10:05:00.000Z",
+      evaluatedAt: "2026-05-03T00:00:00.000Z",
+    });
+
+    const activity = buildNetworkActivity({
+      evaluatedAt: "2026-05-03T00:00:00.000Z",
+    });
+    const uncertain = activity.events.find(
+      (event) => event.type === "identity-uncertain-possibly-same-device"
+    );
+
+    assert.ok(uncertain);
+    assert.equal(uncertain.confidence, "low");
+    assert.equal(uncertain.deviceResponse.target, null);
+    assert.equal(uncertain.deviceResponse.statement, null);
+    assert.match(uncertain.deviceResponse.unavailableReason, /uncertain/);
+    assert.equal(
+      activity.events.some((event) => event.deviceResponse.statement?.state === "guest"),
+      false
+    );
+  });
+});
+
+run("device responses do not inherit across competing identity candidates", async () => {
+  await withTempCwd(async () => {
+    const baseline = createComparisonBundle({
+      observationId: "obs-response-ambiguous-baseline",
+      siteId: "site-response-ambiguous",
+      networkName: "response-ambiguous-lab",
+      observedAt: "2026-05-01T10:00:00.000Z",
+      devices: [
+        {
+          deviceId: "dev-333333333333",
+          ips: ["192.0.2.60"],
+          macs: ["02:00:00:00:00:60"],
+        },
+        {
+          deviceId: "dev-444444444444",
+          ips: ["192.0.2.61"],
+          macs: ["02:00:00:00:00:60"],
+        },
+      ],
+    });
+    const current = createComparisonBundle({
+      observationId: "obs-response-ambiguous-current",
+      siteId: "site-response-ambiguous",
+      networkName: "response-ambiguous-lab",
+      observedAt: "2026-05-02T10:00:00.000Z",
+      devices: [
+        {
+          deviceId: "dev-555555555555",
+          ips: ["192.0.2.62"],
+          macs: ["02:00:00:00:00:60"],
+        },
+      ],
+    });
+
+    upsertDeviceResponse(
+      createDeviceResponseTargetForBundleDevice(baseline, 0),
+      "investigate",
+      "Shared MAC device",
+      { now: "2026-05-01T11:00:00.000Z" }
+    );
+    registerObservationBundle(baseline, {
+      importedAt: "2026-05-01T10:05:00.000Z",
+      evaluatedAt: "2026-05-03T00:00:00.000Z",
+    });
+    registerObservationBundle(current, {
+      importedAt: "2026-05-02T10:05:00.000Z",
+      evaluatedAt: "2026-05-03T00:00:00.000Z",
+    });
+
+    const activity = buildNetworkActivity({
+      evaluatedAt: "2026-05-03T00:00:00.000Z",
+    });
+    const uncertainEvents = activity.events.filter(
+      (event) => event.type === "identity-uncertain-possibly-same-device"
+    );
+
+    assert.equal(uncertainEvents.length, 2);
+    assert.equal(uncertainEvents.every((event) => event.confidence === "strong"), true);
+    assert.equal(
+      uncertainEvents.every((event) => event.deviceResponse.statement === null),
+      true
+    );
+    assert.equal(
+      uncertainEvents.every((event) => event.workflowPriority.level === "normal"),
+      true
+    );
+  });
+});
+
+run("activity device response API edits and clears without deleting observations or events", async () => {
+  const deviceResponseRoute = await import("../src/app/api/activity/device-response/route.ts");
+
+  await withTempCwd(async () => {
+    const baseline = createComparisonBundle({
+      observationId: "obs-response-api-baseline",
+      siteId: "site-response-api",
+      networkName: "response-api-lab",
+      observedAt: "2026-05-01T10:00:00.000Z",
+      devices: [
+        {
+          deviceId: "dev-666666666666",
+          ips: ["192.0.2.70"],
+          macs: ["02:00:00:00:00:70"],
+          ports: [{ port: 80, protocol: "tcp", service: "http" }],
+        },
+      ],
+    });
+    const current = createComparisonBundle({
+      observationId: "obs-response-api-current",
+      siteId: "site-response-api",
+      networkName: "response-api-lab",
+      observedAt: "2026-05-02T10:00:00.000Z",
+      devices: [
+        {
+          deviceId: "dev-777777777777",
+          ips: ["192.0.2.71"],
+          macs: ["02:00:00:00:00:70"],
+          ports: [
+            { port: 80, protocol: "tcp", service: "http" },
+            { port: 443, protocol: "tcp", service: "https" },
+          ],
+        },
+      ],
+    });
+
+    registerObservationBundle(baseline, {
+      importedAt: "2026-05-01T10:05:00.000Z",
+      evaluatedAt: "2026-05-03T00:00:00.000Z",
+    });
+    registerObservationBundle(current, {
+      importedAt: "2026-05-02T10:05:00.000Z",
+      evaluatedAt: "2026-05-03T00:00:00.000Z",
+    });
+
+    const firstActivity = buildNetworkActivity({
+      evaluatedAt: "2026-05-03T00:00:00.000Z",
+    });
+    const target = firstActivity.events.find(
+      (event) => event.type === "service-or-port-opened"
+    )?.deviceResponse.target;
+    assert.ok(target);
+
+    const firstResponse = await deviceResponseRoute.POST(
+      createJsonRequest("/api/activity/device-response", "POST", {
+        target,
+        state: "mine",
+        friendlyName: "Lab laptop",
+      })
+    );
+    const firstBody = await firstResponse.json();
+    assert.equal(firstResponse.status, 200);
+    assert.equal(firstBody.success, true);
+    assert.equal(firstBody.response.state, "mine");
+    assert.equal(firstBody.response.friendlyName, "Lab laptop");
+
+    const responseStoreText = fs.readFileSync(
+      path.join(process.cwd(), "data", "device-responses", "index.json"),
+      "utf-8"
+    );
+    assert.doesNotMatch(responseStoreText, /02:00:00|192\.0\.2\./);
+
+    const editResponse = await deviceResponseRoute.POST(
+      createJsonRequest("/api/activity/device-response", "POST", {
+        target,
+        state: "investigate",
+        friendlyName: "Lab laptop renamed",
+      })
+    );
+    const editBody = await editResponse.json();
+    assert.equal(editResponse.status, 200);
+    assert.equal(editBody.success, true);
+    assert.equal(editBody.response.state, "investigate");
+    assert.equal(editBody.response.friendlyName, "Lab laptop renamed");
+    assert.equal(editBody.response.createdAt, firstBody.response.createdAt);
+
+    const prioritizedActivity = buildNetworkActivity({
+      evaluatedAt: "2026-05-03T00:00:00.000Z",
+    });
+    const prioritizedEvent = prioritizedActivity.events.find(
+      (event) => event.type === "service-or-port-opened"
+    );
+    assert.equal(prioritizedEvent.deviceResponse.statement.state, "investigate");
+    assert.equal(prioritizedEvent.workflowPriority.level, "user-investigate");
+    assert.doesNotMatch(
+      JSON.stringify(prioritizedEvent.technicalEvidence),
+      /investigate|Lab laptop renamed/
+    );
+    assert.doesNotMatch(prioritizedEvent.workflowPriority.reason, /malware|attack/i);
+
+    const clearResponse = await deviceResponseRoute.DELETE(
+      createJsonRequest("/api/activity/device-response", "DELETE", { target })
+    );
+    const clearBody = await clearResponse.json();
+    assert.equal(clearResponse.status, 200);
+    assert.equal(clearBody.success, true);
+    assert.equal(clearBody.cleared, true);
+    assert.equal(getDeviceResponseForTarget(target), null);
+    assert.equal(listObservations({ siteId: "site-response-api" }).length, 2);
+
+    const afterClearActivity = buildNetworkActivity({
+      evaluatedAt: "2026-05-03T00:00:00.000Z",
+    });
+    assert.ok(afterClearActivity.events.length > 0);
+    assert.equal(
+      afterClearActivity.events.some((event) => event.deviceResponse.statement),
+      false
+    );
   });
 });
 

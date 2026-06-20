@@ -1,4 +1,8 @@
 import type {
+  ActivityDeviceResponse,
+  DeviceResponseState,
+} from "./device-response";
+import type {
   ObservationChangeEventType,
   ObservationComparisonFreshnessStatus,
   ObservationIdentityConfidence,
@@ -94,10 +98,19 @@ export interface NetworkActivityEvent {
   reviewReason: string;
   confidence: ObservationIdentityConfidence;
   confidenceLabel: string;
+  workflowPriority: NetworkActivityWorkflowPriority;
+  deviceResponse: ActivityDeviceResponse;
   periodHref: "#comparison-period";
   evidenceId: string;
   evidenceSummary: string;
   technicalEvidence: NetworkActivityTechnicalEvidence;
+}
+
+export interface NetworkActivityWorkflowPriority {
+  level: "normal" | "user-investigate";
+  label: string;
+  reason: string;
+  responseState: DeviceResponseState | null;
 }
 
 export interface NetworkActivityTechnicalEvidence {

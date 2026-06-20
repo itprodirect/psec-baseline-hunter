@@ -3,6 +3,11 @@ import {
   isObservationComparisonError,
 } from "./observation-comparison";
 import {
+  buildDeviceResponseTarget,
+  getDeviceResponseForTarget,
+  statementFromDeviceResponse,
+} from "./device-responses";
+import {
   getObservationById,
   listObservations,
 } from "./observation-registry";
@@ -28,6 +33,12 @@ import type {
   ObservationRegistryEntry,
   ObservationRegistryRecord,
 } from "@/lib/types/observation-registry";
+import type {
+  ActivityDeviceResponse,
+  DeviceResponseCarryForward,
+  DeviceResponseRecord,
+  DeviceResponseTarget,
+} from "@/lib/types/device-response";
 import type {
   NetworkActivityCoverage,
   NetworkActivityEvent,
@@ -99,7 +110,9 @@ export function buildNetworkActivity(
 export function shapeNetworkActivityComparison(
   input: ShapeComparisonInput
 ): NetworkActivityModel {
-  const events = input.comparison.events.map(shapeActivityEvent);
+  const events = input.comparison.events
+    .map((event) => shapeActivityEvent(event, input.comparison.site.siteId))
+    .sort(compareActivityEvents);
   const limitations = buildLimitations(input.comparison, input.current);
   const period = {
     label: `${formatShortDate(input.comparison.observations.baseline.observedAt)} to ${formatShortDate(input.comparison.observations.current.observedAt)}`,
@@ -450,8 +463,12 @@ function coverageLimitations(
   return limitations;
 }
 
-function shapeActivityEvent(event: ObservationChangeEvent): NetworkActivityEvent {
+function shapeActivityEvent(
+  event: ObservationChangeEvent,
+  siteId: string
+): NetworkActivityEvent {
   const copy = eventCopy(event.eventType);
+  const deviceResponse = shapeActivityDeviceResponse(event, siteId);
   const technicalEvidence = {
     ruleId: event.rule.ruleId,
     ruleVersion: event.rule.version,
@@ -478,12 +495,155 @@ function shapeActivityEvent(event: ObservationChangeEvent): NetworkActivityEvent
     reviewReason: copy.reviewReason,
     confidence: event.confidence,
     confidenceLabel: confidenceLabel(event.confidence),
+    workflowPriority: workflowPriorityFor(deviceResponse),
+    deviceResponse,
     periodHref: ACTIVITY_PERIOD_ANCHOR,
     evidenceId: `evidence-${event.eventId}`,
     evidenceSummary:
       "Evidence includes deterministic comparison rules, identity confidence, observation references, and source-backed details.",
     technicalEvidence,
   };
+}
+
+function shapeActivityDeviceResponse(
+  event: ObservationChangeEvent,
+  siteId: string
+): ActivityDeviceResponse {
+  if (event.eventType === "identity-uncertain-possibly-same-device") {
+    return {
+      target: null,
+      statement: null,
+      carriedForward: null,
+      unavailableReason:
+        "Device identity is uncertain, so no persisted user response is applied to this event.",
+    };
+  }
+
+  const subjectDevice = event.currentDevice ?? event.baselineDevice;
+  if (!subjectDevice) {
+    return {
+      target: null,
+      statement: null,
+      carriedForward: null,
+      unavailableReason: "No device target is available for this event.",
+    };
+  }
+
+  const target = buildDeviceResponseTarget({
+    siteId,
+    observationId: subjectDevice.observationId,
+    deviceId: subjectDevice.deviceId,
+    macs: subjectDevice.macs,
+    identityRuleId: event.identityEvidence.ruleId,
+    identityValues: event.identityEvidence.values,
+  });
+
+  if (!target) {
+    return {
+      target: null,
+      statement: null,
+      carriedForward: null,
+      unavailableReason:
+        "This device does not have stable identity evidence for a persisted response.",
+    };
+  }
+
+  const record = getDeviceResponseForTarget(target);
+  if (!record) {
+    return {
+      target,
+      statement: null,
+      carriedForward: null,
+      unavailableReason: null,
+    };
+  }
+
+  const sameObservation = record.updatedFrom.observationId === target.observationId;
+  if (sameObservation) {
+    return {
+      target,
+      statement: statementFromDeviceResponse(record),
+      carriedForward: null,
+      unavailableReason: null,
+    };
+  }
+
+  const carriedForward = carryForwardFor(event, target, record);
+  if (!carriedForward) {
+    return {
+      target,
+      statement: null,
+      carriedForward: null,
+      unavailableReason: null,
+    };
+  }
+
+  return {
+    target,
+    statement: statementFromDeviceResponse(record),
+    carriedForward,
+    unavailableReason: null,
+  };
+}
+
+function carryForwardFor(
+  event: ObservationChangeEvent,
+  target: DeviceResponseTarget,
+  record: DeviceResponseRecord
+): DeviceResponseCarryForward | null {
+  if (!isStrongConfirmedIdentityEvent(event, target)) return null;
+
+  return {
+    fromObservationId: record.updatedFrom.observationId,
+    updatedAt: record.updatedAt,
+    reason: `Carried forward because ${target.identity.label} matched with ${target.confidence} identity confidence.`,
+  };
+}
+
+function isStrongConfirmedIdentityEvent(
+  event: ObservationChangeEvent,
+  target: DeviceResponseTarget
+): boolean {
+  if (event.eventType === "identity-uncertain-possibly-same-device") return false;
+  if (event.confidence !== "strongest" && event.confidence !== "strong") return false;
+
+  const expectedRule: Record<DeviceResponseTarget["identity"]["kind"], string> = {
+    "persisted-device-id": "identity.persisted-device-id",
+    "mac-address": "identity.mac",
+    "hashed-mac": "identity.hashed-mac",
+  };
+
+  return event.identityEvidence.ruleId === expectedRule[target.identity.kind];
+}
+
+function workflowPriorityFor(
+  deviceResponse: ActivityDeviceResponse
+): NetworkActivityEvent["workflowPriority"] {
+  if (deviceResponse.statement?.state === "investigate") {
+    return {
+      level: "user-investigate",
+      label: "Investigate requested",
+      reason: "A user response raised this item for review. It does not change technical evidence or safety status.",
+      responseState: "investigate",
+    };
+  }
+
+  return {
+    level: "normal",
+    label: "Normal review",
+    reason: "Priority is based on the comparison event and any user response.",
+    responseState: deviceResponse.statement?.state ?? null,
+  };
+}
+
+function compareActivityEvents(a: NetworkActivityEvent, b: NetworkActivityEvent): number {
+  const priorityDiff = priorityRank(a) - priorityRank(b);
+  if (priorityDiff !== 0) return priorityDiff;
+  return 0;
+}
+
+function priorityRank(event: NetworkActivityEvent): number {
+  return event.workflowPriority.level === "user-investigate" ? 0 : 1;
 }
 
 function eventCopy(eventType: ObservationChangeEventType): {
