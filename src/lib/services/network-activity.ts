@@ -11,6 +11,7 @@ import {
   getObservationById,
   listObservations,
 } from "./observation-registry";
+import { isPacketHighwayObservationEntry } from "./packet-highway-observation";
 import type {
   CollectionVantage,
   DeviceIdentityEvidence,
@@ -47,6 +48,7 @@ import type {
   NetworkActivityModel,
   NetworkActivityScenario,
   NetworkActivitySource,
+  NetworkActivitySupplementalEvidence,
   NetworkActivityTechnicalDevice,
   NetworkActivityTechnicalPort,
 } from "@/lib/types/network-activity";
@@ -66,6 +68,7 @@ interface ShapeComparisonInput {
   source: NetworkActivitySource;
   scenario?: NetworkActivityScenario | null;
   availableObservationCount?: number;
+  supplementalEvidence?: NetworkActivitySupplementalEvidence[];
 }
 
 export function buildNetworkActivity(
@@ -76,17 +79,41 @@ export function buildNetworkActivity(
   const entries = listObservations({}, freshnessOptions);
 
   if (entries.length === 0) {
-    return emptyActivity(generatedAt, options.source ?? "registry");
+    return emptyActivity(generatedAt, options.source ?? "registry", []);
   }
 
-  const latestSiteEntries = entriesForLatestSite(entries);
+  const primaryEntries = entries.filter((entry) => !isPacketHighwayObservationEntry(entry));
+  if (primaryEntries.length === 0) {
+    const latestSupplementalEntries = entriesForLatestSite(entries);
+    return emptyActivity(
+      generatedAt,
+      options.source ?? "registry",
+      supplementalEvidenceForEntries(latestSupplementalEntries, freshnessOptions)
+    );
+  }
+
+  const latestSiteEntries = entriesForLatestSite(primaryEntries);
   const latestEntry = latestSiteEntries[0];
   if (!latestEntry) {
-    return emptyActivity(generatedAt, options.source ?? "registry");
+    return emptyActivity(generatedAt, options.source ?? "registry", []);
   }
 
+  const latestSiteAllEntries = entries.filter((entry) =>
+    isSameActivitySiteOrSupplementalPacketHighway(entry, latestEntry)
+  );
+  const supplementalEvidence = supplementalEvidenceForEntries(
+    latestSiteAllEntries,
+    freshnessOptions
+  );
+
   if (latestSiteEntries.length === 1) {
-    return oneObservationActivity(latestEntry, generatedAt, options.source ?? "registry", entries.length);
+    return oneObservationActivity(
+      latestEntry,
+      generatedAt,
+      options.source ?? "registry",
+      entries.length,
+      supplementalEvidence
+    );
   }
 
   const pair = findLatestValidObservationPair(latestSiteEntries, freshnessOptions);
@@ -95,7 +122,8 @@ export function buildNetworkActivity(
       latestEntry,
       generatedAt,
       options.source ?? "registry",
-      entries.length
+      entries.length,
+      supplementalEvidence
     );
   }
 
@@ -104,16 +132,18 @@ export function buildNetworkActivity(
     generatedAt,
     source: options.source ?? "registry",
     availableObservationCount: entries.length,
+    supplementalEvidence,
   });
 }
 
 export function shapeNetworkActivityComparison(
   input: ShapeComparisonInput
 ): NetworkActivityModel {
+  const supplementalEvidence = input.supplementalEvidence ?? [];
   const events = input.comparison.events
-    .map((event) => shapeActivityEvent(event, input.comparison.site.siteId))
+    .map((event) => shapeActivityEvent(event, input.comparison.site.siteId, supplementalEvidence))
     .sort(compareActivityEvents);
-  const limitations = buildLimitations(input.comparison, input.current);
+  const limitations = buildLimitations(input.comparison, input.current, supplementalEvidence);
   const period = {
     label: `${formatShortDate(input.comparison.observations.baseline.observedAt)} to ${formatShortDate(input.comparison.observations.current.observedAt)}`,
     baselineObservedAt: input.comparison.observations.baseline.observedAt,
@@ -142,6 +172,7 @@ export function shapeNetworkActivityComparison(
     events,
     availableObservationCount: input.availableObservationCount ?? 2,
     scenario: input.scenario ?? null,
+    supplementalEvidence,
   };
 }
 
@@ -290,7 +321,69 @@ function entriesForLatestSite(entries: ObservationRegistryEntry[]): ObservationR
   );
 }
 
-function emptyActivity(generatedAt: string, source: NetworkActivitySource): NetworkActivityModel {
+function isSameActivitySiteOrSupplementalPacketHighway(
+  entry: ObservationRegistryEntry,
+  primaryEntry: ObservationRegistryEntry
+): boolean {
+  if (entry.site.siteId.toLowerCase() === primaryEntry.site.siteId.toLowerCase()) {
+    return true;
+  }
+
+  if (!isPacketHighwayObservationEntry(entry)) return false;
+
+  const entryName = normalizedSiteName(entry);
+  const primaryName = normalizedSiteName(primaryEntry);
+  if (!entryName || entryName !== primaryName) return false;
+
+  return true;
+}
+
+function normalizedSiteName(entry: ObservationRegistryEntry): string {
+  return (entry.site.networkName || entry.networkName || "").trim().toLowerCase();
+}
+
+function supplementalEvidenceForEntries(
+  entries: ObservationRegistryEntry[],
+  freshnessOptions: ObservationFreshnessOptions
+): NetworkActivitySupplementalEvidence[] {
+  const evidence: NetworkActivitySupplementalEvidence[] = [];
+  const seen = new Set<string>();
+
+  for (const entry of entries) {
+    if (!isPacketHighwayObservationEntry(entry) || seen.has(entry.registryId)) continue;
+    seen.add(entry.registryId);
+
+    const record = getObservationById(entry.registryId, freshnessOptions);
+    const supplemental = record?.bundle.supplementalEvidence?.find(
+      (item) => item.kind === "packet-highway-analysis" && item.packetHighway
+    );
+    const packetHighway = supplemental?.packetHighway;
+    if (!record || !supplemental || !packetHighway) continue;
+
+    evidence.push({
+      evidenceId: supplemental.evidenceId,
+      kind: "packet-highway-analysis",
+      label: supplemental.label,
+      summary: supplemental.summary,
+      href: `/packet-highway?observation=${encodeURIComponent(record.registryId)}`,
+      observationId: record.observationId,
+      registryId: record.registryId,
+      observedAt: observationTime(record),
+      vantageLabel: vantageLabel(record.vantage),
+      canSupport: packetHighway.canSupport,
+      cannotProve: packetHighway.cannotProve,
+      limitations: packetHighway.limitations,
+    });
+  }
+
+  return evidence.sort((a, b) => timeValue(b.observedAt) - timeValue(a.observedAt));
+}
+
+function emptyActivity(
+  generatedAt: string,
+  source: NetworkActivitySource,
+  supplementalEvidence: NetworkActivitySupplementalEvidence[] = []
+): NetworkActivityModel {
   return {
     status: "empty",
     source,
@@ -313,6 +406,7 @@ function emptyActivity(generatedAt: string, source: NetworkActivitySource): Netw
     events: [],
     availableObservationCount: 0,
     scenario: null,
+    supplementalEvidence,
   };
 }
 
@@ -320,7 +414,8 @@ function oneObservationActivity(
   entry: ObservationRegistryEntry,
   generatedAt: string,
   source: NetworkActivitySource,
-  availableObservationCount: number
+  availableObservationCount: number,
+  supplementalEvidence: NetworkActivitySupplementalEvidence[] = []
 ): NetworkActivityModel {
   return {
     status: "one-observation",
@@ -347,6 +442,7 @@ function oneObservationActivity(
     events: [],
     availableObservationCount,
     scenario: null,
+    supplementalEvidence,
   };
 }
 
@@ -354,7 +450,8 @@ function noComparisonActivity(
   entry: ObservationRegistryEntry,
   generatedAt: string,
   source: NetworkActivitySource,
-  availableObservationCount: number
+  availableObservationCount: number,
+  supplementalEvidence: NetworkActivitySupplementalEvidence[] = []
 ): NetworkActivityModel {
   return {
     status: "no-comparison",
@@ -383,6 +480,7 @@ function noComparisonActivity(
     events: [],
     availableObservationCount,
     scenario: null,
+    supplementalEvidence,
   };
 }
 
@@ -400,13 +498,23 @@ function buildActivitySummary(eventCount: number, limitationCount: number): stri
 
 function buildLimitations(
   comparison: ObservationComparisonResult,
-  current: ObservationRegistryRecord
+  current: ObservationRegistryRecord,
+  supplementalEvidence: NetworkActivitySupplementalEvidence[] = []
 ): NetworkActivityLimitation[] {
   const limitations: NetworkActivityLimitation[] = comparison.guardrails.map((guardrail) => ({
     code: guardrail.code,
     severity: guardrail.severity,
     message: guardrail.message,
   }));
+
+  if (supplementalEvidence.length > 0) {
+    limitations.push({
+      code: "packet-highway-supplemental",
+      severity: "info",
+      message:
+        "Packet Highway visual evidence is available as supplemental context only; it does not change comparison rules or prove causality.",
+    });
+  }
 
   limitations.push(...limitationsFromFreshness(current));
   limitations.push(
@@ -465,7 +573,8 @@ function coverageLimitations(
 
 function shapeActivityEvent(
   event: ObservationChangeEvent,
-  siteId: string
+  siteId: string,
+  supplementalEvidence: NetworkActivitySupplementalEvidence[]
 ): NetworkActivityEvent {
   const copy = eventCopy(event.eventType);
   const deviceResponse = shapeActivityDeviceResponse(event, siteId);
@@ -502,6 +611,7 @@ function shapeActivityEvent(
     evidenceSummary:
       "Evidence includes deterministic comparison rules, identity confidence, observation references, and source-backed details.",
     technicalEvidence,
+    supplementalEvidence,
   };
 }
 
@@ -1041,13 +1151,29 @@ function sourceLabel(source: string): string {
     hosts_up: "host-up list",
     arp_snapshot: "ARP snapshot",
     scan_metadata: "scan metadata",
+    packet_highway_analysis: "Packet Highway analysis",
+    collection_vantage: "collection vantage",
+    capture_timing: "capture timing",
+    parser_limits: "parser limits",
   };
   return labels[source] ?? source.replace(/_/g, " ");
 }
 
 function vantageLabel(vantage: CollectionVantage): string {
-  if (vantage.type === "active-scan-upload") return "Active scan upload";
-  return "Collection";
+  switch (vantage.type) {
+    case "active-scan-upload":
+      return "Active scan upload";
+    case "packet-highway-this-computer":
+      return "Packet Highway: this computer only";
+    case "packet-highway-gateway-router":
+      return "Packet Highway: gateway/router";
+    case "packet-highway-mirror-tap":
+      return "Packet Highway: mirror/tap";
+    case "packet-highway-unknown":
+      return "Packet Highway: unknown vantage";
+    default:
+      return "Collection";
+  }
 }
 
 function formatSourceList(sources: string[]): string {

@@ -53,6 +53,7 @@ let shapeNetworkActivityComparison;
 let buildDeviceResponseTarget;
 let upsertDeviceResponse;
 let getDeviceResponseForTarget;
+let adaptPacketHighwayCaptureToObservationBundleV1;
 
 async function loadModules() {
   const [
@@ -68,6 +69,7 @@ async function loadModules() {
     observationComparison,
     networkActivity,
     deviceResponses,
+    packetHighwayObservation,
   ] = await Promise.all([
     import("../src/lib/services/path-safety.ts"),
     import("../src/lib/services/archive-safety.ts"),
@@ -81,6 +83,7 @@ async function loadModules() {
     import("../src/lib/services/observation-comparison.ts"),
     import("../src/lib/services/network-activity.ts"),
     import("../src/lib/services/device-responses.ts"),
+    import("../src/lib/services/packet-highway-observation.ts"),
   ]);
 
   ({ resolvePathWithin, sanitizeNetworkName } = pathSafety);
@@ -149,6 +152,9 @@ async function loadModules() {
     upsertDeviceResponse,
     getDeviceResponseForTarget,
   } = deviceResponses);
+  ({
+    adaptPacketHighwayCaptureToObservationBundleV1,
+  } = packetHighwayObservation);
 }
 
 let total = 0;
@@ -807,6 +813,139 @@ async function assertSafeObservationApiError(response, status, errorPattern, con
   assertObservationRegistryOutputSafe(serialized);
 }
 
+function createPacketHighwayCapture(options = {}) {
+  const truncated = options.truncated ?? false;
+  const unsafeText = options.unsafeText ?? false;
+  const generatedAt = options.generatedAt ?? "2026-05-04T11:00:00.000Z";
+
+  const capture = {
+    version: 1,
+    meta: {
+      fileName: unsafeText ? "C:\\Users\\user\\captures\\home.pcapng" : "home.pcapng",
+      format: "pcapng",
+      packetCount: 42,
+      byteCount: 2048,
+      startTime: "2026-05-04T10:55:00.000Z",
+      endTime: "2026-05-04T11:00:00.000Z",
+      durationMs: 300000,
+      truncated,
+      ignoredPackets: truncated ? 3 : 0,
+      generatedAt,
+    },
+    devices: [
+      {
+        id: "dev-1",
+        mac: "02:00:00:00:34:10",
+        ips: ["192.0.2.10"],
+        name: unsafeText ? "C:\\Users\\user\\secret-device" : "Lab laptop",
+        vendor: "Example Devices",
+        role: "device",
+        isKnown: true,
+        packetsSent: 20,
+        packetsReceived: 18,
+        bytesSent: 1000,
+        bytesReceived: 900,
+        firstSeen: "2026-05-04T10:55:00.000Z",
+        lastSeen: "2026-05-04T11:00:00.000Z",
+        categories: ["https", "dns"],
+        externalPeerCount: 1,
+        dnsQueryCount: 1,
+        notes: unsafeText ? "api_key=sk-thissecretmustnotpersist123456" : null,
+      },
+      {
+        id: "gateway",
+        mac: "02:00:00:00:34:01",
+        ips: ["192.0.2.1"],
+        name: "Gateway",
+        vendor: "Example Routers",
+        role: "gateway",
+        isKnown: true,
+        packetsSent: 18,
+        packetsReceived: 20,
+        bytesSent: 900,
+        bytesReceived: 1000,
+        firstSeen: "2026-05-04T10:55:00.000Z",
+        lastSeen: "2026-05-04T11:00:00.000Z",
+        categories: ["https", "dns"],
+        externalPeerCount: 1,
+        dnsQueryCount: 0,
+        notes: null,
+      },
+    ],
+    externalEndpoints: [
+      {
+        id: "ext-1",
+        ip: "203.0.113.80",
+        isAggregate: false,
+        packets: 8,
+        bytes: 600,
+        categories: ["https"],
+      },
+    ],
+    flows: [
+      {
+        id: "flow-1",
+        fromId: "dev-1",
+        toId: "ext-1",
+        protocol: "tcp",
+        port: 443,
+        category: "https",
+        packets: 8,
+        bytes: 600,
+        bytesFromInitiator: 180,
+        firstSeen: "2026-05-04T10:56:00.000Z",
+        lastSeen: "2026-05-04T10:57:00.000Z",
+        scope: "external",
+      },
+    ],
+    animationEvents: [
+      {
+        t: 0.5,
+        flowId: "flow-1",
+        fromId: "dev-1",
+        toId: "ext-1",
+        category: "https",
+        size: 1,
+      },
+    ],
+    dnsQueries: [
+      {
+        name: unsafeText ? "/tmp/raw-capture.pcap" : "updates.example.test",
+        count: 1,
+        kind: "dns",
+      },
+    ],
+    summary: {
+      headline: "Synthetic Packet Highway analysis.",
+      lines: unsafeText
+        ? ["<packet>raw payload bytes</packet>", "BEGIN PRIVATE KEY should not survive"]
+        : ["One synthetic HTTPS flow was observed."],
+      stats: {
+        deviceCount: 2,
+        knownDeviceCount: 2,
+        externalEndpointCount: 1,
+        flowCount: 1,
+        dnsQueryCount: 1,
+        uniqueDnsNames: 1,
+        categoryBytes: { https: 600 },
+      },
+    },
+    alerts: [
+      {
+        id: "alert-1",
+        ruleId: "synthetic-review",
+        level: "info",
+        title: "Synthetic review item",
+        detail: unsafeText ? "pcap global header raw packet body" : "Metadata-only synthetic item.",
+        deviceIds: ["dev-1"],
+        flowIds: ["flow-1"],
+      },
+    ],
+    rawPackets: unsafeText ? "raw packet payload should be dropped" : undefined,
+  };
+
+  return capture;
+}
 const comparisonExpectedSources = [
   "ports",
   "discovery",
@@ -2997,6 +3136,170 @@ run("observation comparison invalid comparisons fail clearly", () => {
   );
 });
 
+run("packet highway analysis saves as supplemental metadata-only observation", async () => {
+  await withTempCwd(async () => {
+    const capture = createPacketHighwayCapture({ truncated: true, unsafeText: true });
+    const bundle = adaptPacketHighwayCaptureToObservationBundleV1({
+      capture,
+      site: {
+        siteId: "site-packet-highway-lab",
+        networkName: "packet-highway-lab",
+        networkScope: "192.0.2.0/24",
+      },
+      collectionVantage: "this-computer",
+    });
+
+    assert.equal(bundle.collector.kind, "packet-highway-analysis");
+    assert.equal(bundle.sources[0].kind, "packet-highway-analysis");
+    assert.equal(bundle.vantage.type, "packet-highway-this-computer");
+    assert.equal(bundle.coverage.status, "minimal");
+    assert.equal(bundle.batch.partial, true);
+    assert.equal(bundle.devices.every((device) => device.openPorts.length === 0), true);
+    assert.ok(bundle.supplementalEvidence?.[0].packetHighway);
+    assert.equal(bundle.supplementalEvidence[0].packetHighway.capture.meta.truncated, true);
+    assert.match(bundle.coverage.notes.join("\n"), /Partial analysis flag/);
+
+    const result = registerObservationBundle(bundle, {
+      importedAt: "2026-05-04T11:01:00.000Z",
+      evaluatedAt: "2026-05-04T11:02:00.000Z",
+    });
+    const reopened = getObservationById(result.record.registryId, {
+      evaluatedAt: "2026-05-04T11:02:00.000Z",
+    });
+
+    assert.ok(reopened);
+    assert.equal(reopened.bundle.vantage.type, "packet-highway-this-computer");
+    assert.equal(reopened.bundle.batch.partial, true);
+    assert.equal(reopened.bundle.supplementalEvidence[0].packetHighway.capture.meta.truncated, true);
+    assert.match(
+      reopened.bundle.supplementalEvidence[0].packetHighway.limitations.join("\n"),
+      /Endpoint capture/
+    );
+
+    const persisted = readObservationRegistryFilesText();
+    assert.match(persisted, /packet-highway-analysis/);
+    assert.doesNotMatch(persisted, /raw packet payload|<packet>|pcap global header|BEGIN PRIVATE KEY/);
+    assert.doesNotMatch(persisted, /api_key=sk-|C:\\Users\\user|\/tmp\/raw-capture/);
+  });
+});
+
+run("packet highway save API returns a reopenable supplemental visual evidence link", async () => {
+  const packetHighwayObservationRoute = await import("../src/app/api/packet-highway/observations/route.ts");
+  const observationRoute = await import("../src/app/api/observations/[registryId]/route.ts");
+
+  await withTempCwd(async () => {
+    const response = await packetHighwayObservationRoute.POST(
+      createRawJsonRequest(
+        "/api/packet-highway/observations",
+        "POST",
+        JSON.stringify({
+          capture: createPacketHighwayCapture({ truncated: true }),
+          site: {
+            networkName: "packet-highway-api-lab",
+            networkScope: "192.0.2.0/24",
+          },
+          collectionVantage: "gateway-router",
+        })
+      )
+    );
+    const body = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(body.success, true);
+    assert.match(body.packetHighwayHref, /^\/packet-highway\?observation=obs_/);
+    assert.equal(body.observation.vantage.type, "packet-highway-gateway-router");
+
+    const registryId = body.observation.registryId;
+    const getResponse = await observationRoute.GET(
+      new Request(`http://localhost/api/observations/${registryId}`),
+      { params: Promise.resolve({ registryId }) }
+    );
+    const getBody = await getResponse.json();
+
+    assert.equal(getResponse.status, 200);
+    assert.equal(getBody.success, true);
+    assert.equal(getBody.observation.bundle.supplementalEvidence[0].kind, "packet-highway-analysis");
+    assert.equal(
+      getBody.observation.bundle.supplementalEvidence[0].packetHighway.capture.meta.format,
+      "fixture"
+    );
+  });
+});
+
+run("network activity links packet highway evidence without using it as primary evidence", async () => {
+  await withTempCwd(async () => {
+    const baseline = createComparisonBundle({
+      observationId: "obs-ph-primary-baseline",
+      siteId: "site-ph-activity",
+      networkName: "ph-activity-lab",
+      observedAt: "2026-05-04T09:00:00.000Z",
+      devices: [
+        {
+          deviceId: "ph-activity-device-baseline",
+          ips: ["192.0.2.10"],
+          macs: ["02:00:00:00:34:10"],
+          ports: [{ port: 80, protocol: "tcp", service: "http" }],
+        },
+      ],
+    });
+    const current = createComparisonBundle({
+      observationId: "obs-ph-primary-current",
+      siteId: "site-ph-activity",
+      networkName: "ph-activity-lab",
+      observedAt: "2026-05-04T10:00:00.000Z",
+      devices: [
+        {
+          deviceId: "ph-activity-device-current",
+          ips: ["192.0.2.10"],
+          macs: ["02:00:00:00:34:10"],
+          ports: [
+            { port: 80, protocol: "tcp", service: "http" },
+            { port: 443, protocol: "tcp", service: "https" },
+          ],
+        },
+      ],
+    });
+    const packetHighway = adaptPacketHighwayCaptureToObservationBundleV1({
+      capture: createPacketHighwayCapture({ generatedAt: "2026-05-04T11:00:00.000Z" }),
+      site: {
+        networkName: "ph-activity-lab",
+        networkScope: "192.168.50.0/24",
+      },
+      collectionVantage: "mirror-tap",
+    });
+
+    assert.notEqual(packetHighway.site.siteId, "site-ph-activity");
+
+    registerObservationBundle(baseline, {
+      importedAt: "2026-05-04T09:05:00.000Z",
+      evaluatedAt: "2026-05-04T12:00:00.000Z",
+    });
+    registerObservationBundle(current, {
+      importedAt: "2026-05-04T10:05:00.000Z",
+      evaluatedAt: "2026-05-04T12:00:00.000Z",
+    });
+    registerObservationBundle(packetHighway, {
+      importedAt: "2026-05-04T11:05:00.000Z",
+      evaluatedAt: "2026-05-04T12:00:00.000Z",
+    });
+
+    const activity = buildNetworkActivity({ evaluatedAt: "2026-05-04T12:00:00.000Z" });
+    const supplementalText = JSON.stringify(activity.supplementalEvidence);
+    const event = activity.events.find((item) => item.type === "service-or-port-opened");
+
+    assert.equal(activity.status, "ready");
+    assert.equal(activity.latestObservation.observationId, "obs-ph-primary-current");
+    assert.equal(activity.period.currentObservationId, "obs-ph-primary-current");
+    assert.equal(activity.supplementalEvidence.length, 1);
+    assert.match(activity.supplementalEvidence[0].href, /^\/packet-highway\?observation=obs_/);
+    assert.match(activity.supplementalEvidence[0].vantageLabel, /mirror\/tap/);
+    assert.ok(event);
+    assert.equal(event.supplementalEvidence.length, 1);
+    assert.match(event.supplementalEvidence[0].summary, /Supplemental traffic visualization/);
+    assert.match(activity.limitations.map((limitation) => limitation.message).join("\n"), /supplemental context only/);
+    assert.doesNotMatch(supplementalText, /caused|supersede|primary evidence/i);
+  });
+});
 run("network activity guided scenario is synthetic, evidence-linked, and redacted by default", () => {
   const activity = buildSyntheticNetworkActivityScenario({
     evaluatedAt: "2026-06-19T16:00:00.000Z",

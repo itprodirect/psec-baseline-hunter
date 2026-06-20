@@ -38,6 +38,7 @@ export interface NetworkActivityModel {
   events: NetworkActivityEvent[];
   availableObservationCount: number;
   scenario: NetworkActivityScenario | null;
+  supplementalEvidence: NetworkActivitySupplementalEvidence[];
 }
 
 export interface NetworkActivitySite {
@@ -104,6 +105,22 @@ export interface NetworkActivityEvent {
   evidenceId: string;
   evidenceSummary: string;
   technicalEvidence: NetworkActivityTechnicalEvidence;
+  supplementalEvidence: NetworkActivitySupplementalEvidence[];
+}
+
+export interface NetworkActivitySupplementalEvidence {
+  evidenceId: string;
+  kind: "packet-highway-analysis";
+  label: string;
+  summary: string;
+  href: string;
+  observationId: string;
+  registryId: string;
+  observedAt: string | null;
+  vantageLabel: string;
+  canSupport: string[];
+  cannotProve: string[];
+  limitations: string[];
 }
 
 export interface NetworkActivityWorkflowPriority {
