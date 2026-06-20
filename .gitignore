@@ -33,6 +33,8 @@ Thumbs.db
 # Build artifacts
 tsconfig.tsbuildinfo
 *.log
+test-results/
+playwright-report/
 
 # Streamlit (legacy)
 .streamlit/

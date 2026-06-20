@@ -96,7 +96,23 @@ src/app/api/packet-highway/analyze/    # in-memory analyze route
 src/app/(dashboard)/packet-highway/    # page
 src/components/packet-highway/         # scene, legend, panels, upload
 tests/packet-highway-tests.js          # synthetic-capture test suite
+tests/browser/packet-highway-smoke.spec.ts # Playwright guided-sample browser smoke
 ```
+
+## Browser smoke tests
+
+Run the Packet Highway browser smoke locally with:
+
+```bash
+npm run test:browser
+```
+
+The command builds the app, starts a local Next server on `127.0.0.1:3100`, and
+runs the focused Chromium smoke suite against `/packet-highway`. It uses
+synthetic data only: the built-in guided sample and tiny generated JSON
+analysis fixtures. CI installs Chromium with
+`npx playwright install --with-deps chromium` and runs the same
+`npm run test:browser` command.
 
 ## V0 limitations
 
