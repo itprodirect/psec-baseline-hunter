@@ -2,6 +2,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { XMLParser, XMLValidator } from "fast-xml-parser";
 import { getRunByUid, type RunManifest } from "./run-registry";
+import { parseNormalizedCaptureFixture } from "./capture-upload-safety";
 import { hashString } from "@/lib/utils/hash";
 import type {
   CollectionVantage,
@@ -16,7 +17,9 @@ import type {
   ObservationOpenPort,
   ObservationSourceKind,
   ObservationSourceRef,
+  ObservationSupplementalEvidence,
 } from "@/lib/types/observation-bundle";
+import type { NormalizedCapture } from "@/lib/types/packet-highway";
 
 export const MAX_OBSERVATION_BUNDLE_JSON_BYTES = 1024 * 1024;
 export const MAX_OBSERVATION_NMAP_XML_BYTES = 5 * 1024 * 1024;
@@ -29,6 +32,7 @@ const MAX_DEVICES = 1000;
 const MAX_EVIDENCE_PER_DEVICE = 40;
 const MAX_OPEN_PORTS_PER_DEVICE = 256;
 const MAX_NOTES = 50;
+const MAX_SUPPLEMENTAL_EVIDENCE = 5;
 const MAX_SCAN_METADATA_BYTES = 128 * 1024;
 
 const CORE_NMAP_LABELS = ["ports", "discovery"] as const;
@@ -364,6 +368,7 @@ export function sanitizeObservationBundleV1(raw: unknown): ObservationBundleV1 {
     .slice(0, MAX_DEVICES)
     .filter(isRecord)
     .map((device) => sanitizeDevice(device, sourceIds));
+  const supplementalEvidence = sanitizeSupplementalEvidence(raw.supplementalEvidence);
 
   const sanitized: ObservationBundleV1 = {
     schemaVersion: SCHEMA_VERSION,
@@ -375,7 +380,7 @@ export function sanitizeObservationBundleV1(raw: unknown): ObservationBundleV1 {
     },
     collector: {
       collectorId: safeId(collector.collectorId, "collector-unknown"),
-      kind: "registered-scan-run",
+      kind: sanitizeCollectorKind(collector.kind),
       name: safeText(collector.name, 120) || "PSEC Baseline Hunter",
       version: safeTextOrNull(collector.version, 80),
     },
@@ -393,7 +398,7 @@ export function sanitizeObservationBundleV1(raw: unknown): ObservationBundleV1 {
     },
     sources,
     vantage: {
-      type: "active-scan-upload",
+      type: sanitizeVantageType(vantage.type),
       runType: safeTextOrNull(vantage.runType, 80),
       networkName: safeText(vantage.networkName, 120) || "unknown",
       collectorHost: safeTextOrNull(vantage.collectorHost, 120),
@@ -404,6 +409,10 @@ export function sanitizeObservationBundleV1(raw: unknown): ObservationBundleV1 {
     devices,
     notes: sanitizeNotes(raw.notes),
   };
+
+  if (supplementalEvidence) {
+    sanitized.supplementalEvidence = supplementalEvidence;
+  }
 
   return sanitized;
 }
@@ -905,6 +914,129 @@ function sanitizeCoverage(raw: Record<string, unknown>): CoverageRecord {
   };
 }
 
+function sanitizeCollectorKind(value: unknown): "registered-scan-run" | "packet-highway-analysis" {
+  return value === "packet-highway-analysis" ? "packet-highway-analysis" : "registered-scan-run";
+}
+
+function sanitizeVantageType(value: unknown): CollectionVantage["type"] {
+  return VANTAGE_TYPE_SET.has(value as CollectionVantage["type"])
+    ? (value as CollectionVantage["type"])
+    : "active-scan-upload";
+}
+
+function sanitizeSupplementalEvidence(
+  value: unknown
+): ObservationSupplementalEvidence[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+
+  const evidence = value
+    .slice(0, MAX_SUPPLEMENTAL_EVIDENCE)
+    .filter(isRecord)
+    .map(sanitizeSupplementalEvidenceItem)
+    .filter((item): item is ObservationSupplementalEvidence => item !== null);
+
+  return evidence.length > 0 ? evidence : undefined;
+}
+
+function sanitizeSupplementalEvidenceItem(
+  raw: Record<string, unknown>
+): ObservationSupplementalEvidence | null {
+  if (raw.kind !== "packet-highway-analysis") return null;
+
+  const packetHighway = sanitizePacketHighwayEvidence(raw.packetHighway);
+  if (!packetHighway) return null;
+
+  return {
+    evidenceId: safeId(raw.evidenceId, `phe-${hashString(packetHighway.capture.meta.generatedAt).slice(0, 12)}`),
+    kind: "packet-highway-analysis",
+    label: safeText(raw.label, 120) || "Packet Highway analysis",
+    summary:
+      safeText(raw.summary, 240) ||
+      "Supplemental Packet Highway metadata linked to this observation.",
+    packetHighway,
+  };
+}
+
+function sanitizePacketHighwayEvidence(
+  raw: unknown
+): ObservationSupplementalEvidence["packetHighway"] | undefined {
+  if (!isRecord(raw)) return undefined;
+
+  const captureJson = JSON.stringify(raw.capture);
+  if (!captureJson) return undefined;
+
+  try {
+    const capture = sanitizePacketHighwayCaptureForObservation(
+      parseNormalizedCaptureFixture(captureJson)
+    );
+    return {
+      capture,
+      canSupport: sanitizeStringArray(raw.canSupport, 220).slice(0, 12),
+      cannotProve: sanitizeStringArray(raw.cannotProve, 220).slice(0, 12),
+      limitations: sanitizeStringArray(raw.limitations, 260).slice(0, 16),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function sanitizePacketHighwayCaptureForObservation(
+  capture: NormalizedCapture
+): NormalizedCapture {
+  return {
+    ...capture,
+    meta: {
+      ...capture.meta,
+      fileName: sanitizeFileName(capture.meta.fileName) ?? "analysis.json",
+    },
+    devices: capture.devices.map((device) => ({
+      ...device,
+      id: safeId(device.id, "dev-unknown"),
+      mac: device.mac ? normalizeMac(device.mac) : null,
+      ips: device.ips.filter(isIpv4),
+      name: safeTextOrNull(device.name, 80),
+      vendor: safeTextOrNull(device.vendor, 80),
+      notes: safeTextOrNull(device.notes, 300),
+    })),
+    externalEndpoints: capture.externalEndpoints.map((endpoint) => ({
+      ...endpoint,
+      id: safeId(endpoint.id, "ext-unknown"),
+      ip: safeText(endpoint.ip, 80) || "unknown",
+    })),
+    flows: capture.flows.map((flow) => ({
+      ...flow,
+      id: safeId(flow.id, "flow-unknown"),
+      fromId: safeId(flow.fromId, "node-unknown"),
+      toId: safeId(flow.toId, "node-unknown"),
+    })),
+    animationEvents: capture.animationEvents.map((event) => ({
+      ...event,
+      flowId: safeId(event.flowId, "flow-unknown"),
+      fromId: safeId(event.fromId, "node-unknown"),
+      toId: safeId(event.toId, "node-unknown"),
+    })),
+    dnsQueries: capture.dnsQueries.map((query) => ({
+      ...query,
+      name: safeText(query.name, 260) || "(redacted name)",
+    })),
+    summary: {
+      ...capture.summary,
+      headline: safeText(capture.summary.headline, 240) || "Traffic analysis metadata.",
+      lines: capture.summary.lines
+        .map((line) => safeText(line, 500))
+        .filter(Boolean),
+    },
+    alerts: capture.alerts.map((alert) => ({
+      ...alert,
+      id: safeId(alert.id, "alert-unknown"),
+      ruleId: safeId(alert.ruleId, "rule-unknown"),
+      title: safeText(alert.title, 160) || "Watch item",
+      detail: safeText(alert.detail, 800),
+      deviceIds: alert.deviceIds.map((id) => safeId(id, "dev-unknown")),
+      flowIds: alert.flowIds.map((id) => safeId(id, "flow-unknown")),
+    })),
+  };
+}
 function assertFileSize(filePath: string, maxBytes: number, message: string): void {
   const stat = fs.statSync(filePath);
   if (stat.size > maxBytes) {
@@ -1146,6 +1278,14 @@ const SOURCE_KIND_SET = new Set<ObservationSourceKind>([
   "hosts-up",
   "arp-snapshot",
   "scan-metadata",
+  "packet-highway-analysis",
+]);
+const VANTAGE_TYPE_SET = new Set<CollectionVantage["type"]>([
+  "active-scan-upload",
+  "packet-highway-this-computer",
+  "packet-highway-gateway-router",
+  "packet-highway-mirror-tap",
+  "packet-highway-unknown",
 ]);
 const EVIDENCE_KIND_SET = new Set<ObservationEvidenceKind>([
   "ip-address",

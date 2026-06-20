@@ -9,6 +9,7 @@ import {
   Clock,
   Compass,
   CircleHelp,
+  ExternalLink,
   Eye,
   Loader2,
   Play,
@@ -171,6 +172,7 @@ export function NetworkActivityView() {
           <LimitationsPanel activity={activity} />
           {activity.scenario && <GuidedScenarioPanel activity={activity} />}
           {activity.period && <ComparisonPeriodCard activity={activity} />}
+          <SupplementalEvidencePanel activity={activity} />
           <EventTimeline
             activity={activity}
             onSaveResponse={saveDeviceResponse}
@@ -388,6 +390,42 @@ function ComparisonPeriodCard({ activity }: { activity: NetworkActivityModel }) 
   );
 }
 
+function SupplementalEvidencePanel({ activity }: { activity: NetworkActivityModel }) {
+  if (activity.supplementalEvidence.length === 0) return null;
+
+  return (
+    <Card className="border-blue-200 dark:border-blue-900">
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-lg">
+          <ExternalLink className="h-5 w-5 text-blue-600" />
+          Supplemental Visual Evidence
+        </CardTitle>
+        <CardDescription>
+          Packet Highway links are metadata-only visual context and do not change the comparison result.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {activity.supplementalEvidence.map((evidence) => (
+          <div key={evidence.registryId} className="rounded-md border bg-muted/30 p-3 text-sm">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <p className="font-medium">{evidence.label}</p>
+                <p className="text-xs text-muted-foreground">
+                  {evidence.vantageLabel} - {formatDateTime(evidence.observedAt)}
+                </p>
+              </div>
+              <a className="inline-flex items-center gap-1 text-primary underline-offset-4 hover:underline" href={evidence.href}>
+                Open visualizer
+                <ExternalLink className="h-3.5 w-3.5" />
+              </a>
+            </div>
+            <p className="mt-2 text-sm text-muted-foreground">{evidence.summary}</p>
+          </div>
+        ))}
+      </CardContent>
+    </Card>
+  );
+}
 function EventTimeline({
   activity,
   onSaveResponse,
@@ -490,6 +528,16 @@ function EventCard({
         <a className="text-primary underline-offset-4 hover:underline" href={`#${event.evidenceId}`}>
           Supporting evidence
         </a>
+        {event.supplementalEvidence.map((evidence) => (
+          <a
+            key={evidence.registryId}
+            className="inline-flex items-center gap-1 text-primary underline-offset-4 hover:underline"
+            href={evidence.href}
+          >
+            Packet Highway evidence
+            <ExternalLink className="h-3.5 w-3.5" />
+          </a>
+        ))}
       </div>
       <DeviceResponseControls
         event={event}
@@ -524,6 +572,26 @@ function EventCard({
             <EvidenceRow label="Changed fields" value={formatList(event.technicalEvidence.changedFields)} />
             <EvidenceRow label="Notes" value={formatList(event.technicalEvidence.notes)} />
           </dl>
+          {event.supplementalEvidence.length > 0 && (
+            <>
+              <Separator />
+              <div className="space-y-2 text-xs text-muted-foreground">
+                <p className="font-medium text-foreground">Packet Highway supplemental evidence</p>
+                {event.supplementalEvidence.map((evidence) => (
+                  <div key={evidence.registryId} className="rounded-md border bg-background p-2">
+                    <a className="inline-flex items-center gap-1 text-primary underline-offset-4 hover:underline" href={evidence.href}>
+                      {evidence.label}
+                      <ExternalLink className="h-3.5 w-3.5" />
+                    </a>
+                    <p className="mt-1">{evidence.summary}</p>
+                    <EvidenceRow label="Can support" value={formatList(evidence.canSupport)} />
+                    <EvidenceRow label="Cannot prove" value={formatList(evidence.cannotProve)} />
+                    <EvidenceRow label="Limits" value={formatList(evidence.limitations)} />
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
         </div>
       </details>
     </article>

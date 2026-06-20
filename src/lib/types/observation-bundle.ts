@@ -13,7 +13,8 @@ export type ObservationSourceKind =
   | "nmap-xml"
   | "hosts-up"
   | "arp-snapshot"
-  | "scan-metadata";
+  | "scan-metadata"
+  | "packet-highway-analysis";
 
 export type ObservationEvidenceKind =
   | "ip-address"
@@ -35,7 +36,7 @@ export interface SiteRef {
 
 export interface CollectorRef {
   collectorId: string;
-  kind: "registered-scan-run";
+  kind: "registered-scan-run" | "packet-highway-analysis";
   name: string;
   version: string | null;
 }
@@ -61,7 +62,12 @@ export interface ObservationSourceRef {
 }
 
 export interface CollectionVantage {
-  type: "active-scan-upload";
+  type:
+    | "active-scan-upload"
+    | "packet-highway-this-computer"
+    | "packet-highway-gateway-router"
+    | "packet-highway-mirror-tap"
+    | "packet-highway-unknown";
   runType: string | null;
   networkName: string;
   collectorHost: string | null;
@@ -109,6 +115,21 @@ export interface ObservationDevice {
   notes: string[];
 }
 
+export type ObservationSupplementalEvidenceKind = "packet-highway-analysis";
+
+export interface ObservationSupplementalEvidence {
+  evidenceId: string;
+  kind: ObservationSupplementalEvidenceKind;
+  label: string;
+  summary: string;
+  packetHighway?: {
+    capture: import("./packet-highway").NormalizedCapture;
+    canSupport: string[];
+    cannotProve: string[];
+    limitations: string[];
+  };
+}
+
 export interface ObservationBundleV1 {
   schemaVersion: ObservationBundleSchemaVersion;
   observationId: string;
@@ -119,5 +140,6 @@ export interface ObservationBundleV1 {
   vantage: CollectionVantage;
   coverage: CoverageRecord;
   devices: ObservationDevice[];
+  supplementalEvidence?: ObservationSupplementalEvidence[];
   notes: string[];
 }
