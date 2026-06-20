@@ -10,6 +10,7 @@ export type * from "./observation-bundle";
 export type * from "./observation-registry";
 export type * from "./observation-comparison";
 export type * from "./network-activity";
+export type * from "./network-statement";
 
 /**
  * Metadata about a scan run folder
