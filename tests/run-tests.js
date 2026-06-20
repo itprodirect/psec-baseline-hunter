@@ -49,6 +49,7 @@ let compareObservationBundlesV1;
 let isObservationComparisonError;
 let buildNetworkActivity;
 let buildSyntheticNetworkActivityScenario;
+let shapeNetworkActivityComparison;
 let buildDeviceResponseTarget;
 let upsertDeviceResponse;
 let getDeviceResponseForTarget;
@@ -141,6 +142,7 @@ async function loadModules() {
   ({
     buildNetworkActivity,
     buildSyntheticNetworkActivityScenario,
+    shapeNetworkActivityComparison,
   } = networkActivity);
   ({
     buildDeviceResponseTarget,
@@ -3106,6 +3108,87 @@ run("network activity chooses the latest valid same-site observation comparison"
     assert.equal(activity.latestObservation.observationId, "obs-activity-current");
     assert.ok(activity.events.some((event) => event.type === "service-or-port-opened"));
     assert.ok(activity.events.some((event) => event.type === "important-device-metadata-changed"));
+  });
+});
+
+run("network activity preserves comparison order for same-priority events", async () => {
+  await withTempCwd(async () => {
+    const baseline = createComparisonBundle({
+      observationId: "obs-order-baseline",
+      siteId: "site-order-activity",
+      networkName: "order-activity-lab",
+      observedAt: "2026-05-01T10:00:00.000Z",
+      devices: [
+        {
+          deviceId: "order-device-baseline",
+          ips: ["192.0.2.10"],
+          macs: ["02:00:00:00:00:10"],
+          ports: [{ port: 80, protocol: "tcp", service: "http" }],
+        },
+      ],
+    });
+    const current = createComparisonBundle({
+      observationId: "obs-order-current",
+      siteId: "site-order-activity",
+      networkName: "order-activity-lab",
+      observedAt: "2026-05-02T10:00:00.000Z",
+      devices: [
+        {
+          deviceId: "order-device-current",
+          ips: ["192.0.2.20"],
+          macs: ["02:00:00:00:00:10"],
+          ports: [
+            { port: 80, protocol: "tcp", service: "http" },
+            { port: 443, protocol: "tcp", service: "https" },
+          ],
+        },
+      ],
+    });
+    const baselineRecord = registerObservationBundle(baseline, {
+      importedAt: "2026-05-01T10:05:00.000Z",
+      evaluatedAt: "2026-05-03T00:00:00.000Z",
+    }).record;
+    const currentRecord = registerObservationBundle(current, {
+      importedAt: "2026-05-02T10:05:00.000Z",
+      evaluatedAt: "2026-05-03T00:00:00.000Z",
+    }).record;
+    const comparison = compareObservationBundlesV1(baselineRecord.bundle, currentRecord.bundle, {
+      evaluatedAt: "2026-05-03T00:00:00.000Z",
+    });
+
+    assert.deepEqual(comparisonEventTypes(comparison), [
+      "service-or-port-opened",
+      "important-device-metadata-changed",
+    ]);
+
+    comparison.events = comparison.events.map((event, index) => ({
+      ...event,
+      eventId: index === 0 ? "chg-z-preserve-first" : "chg-a-preserve-second",
+    }));
+    const incomingEventIds = comparison.events.map((event) => event.eventId);
+    assert.ok(
+      incomingEventIds[0].localeCompare(incomingEventIds[1]) > 0,
+      "fixture must fail if same-priority events fall back to eventId sorting"
+    );
+
+    const activity = shapeNetworkActivityComparison({
+      baseline: baselineRecord,
+      current: currentRecord,
+      comparison,
+      generatedAt: "2026-05-03T00:00:00.000Z",
+      source: "registry",
+      availableObservationCount: 2,
+    });
+
+    assert.deepEqual(activity.events.map((event) => event.eventId), incomingEventIds);
+    assert.deepEqual(
+      activity.events.map((event) => event.type),
+      comparison.events.map((event) => event.eventType)
+    );
+    assert.equal(
+      activity.events.every((event) => event.workflowPriority.level === "normal"),
+      true
+    );
   });
 });
 

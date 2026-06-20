@@ -639,7 +639,7 @@ function workflowPriorityFor(
 function compareActivityEvents(a: NetworkActivityEvent, b: NetworkActivityEvent): number {
   const priorityDiff = priorityRank(a) - priorityRank(b);
   if (priorityDiff !== 0) return priorityDiff;
-  return a.eventId.localeCompare(b.eventId);
+  return 0;
 }
 
 function priorityRank(event: NetworkActivityEvent): number {
