@@ -212,9 +212,14 @@ function findExistingObservationBySourceRunIdentity(
     );
     const entryObservationId = stableSourceIdentityPart(entry.observationId, "obs-unknown");
     const matchesSourceRunUid = Boolean(sourceRunUid && entrySourceRunUid === sourceRunUid);
-    const matchesObservationId = Boolean(observationId && entryObservationId === observationId);
+    const matchesObservationIdWithoutRunUid = Boolean(
+      !sourceRunUid &&
+        !entrySourceRunUid &&
+        observationId &&
+        entryObservationId === observationId
+    );
 
-    if (!matchesSourceRunUid && !matchesObservationId) continue;
+    if (!matchesSourceRunUid && !matchesObservationIdWithoutRunUid) continue;
 
     const existing = readObservationRecord(entry.registryId, options);
     if (existing) return existing;

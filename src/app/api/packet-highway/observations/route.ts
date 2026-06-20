@@ -42,8 +42,8 @@ export async function POST(
 ): Promise<NextResponse<PacketHighwayObservationSaveResponse>> {
   try {
     const body = await readJsonRequest(request);
-    const site = body.site ?? {};
-    const networkName = site.networkName?.trim();
+    const site = isRecord(body.site) ? body.site : {};
+    const networkName = typeof site.networkName === "string" ? site.networkName.trim() : "";
 
     if (!body.capture) {
       return NextResponse.json(
@@ -67,9 +67,9 @@ export async function POST(
     const bundle = adaptPacketHighwayCaptureToObservationBundleV1({
       capture: body.capture,
       site: {
-        siteId: site.siteId,
+        siteId: typeof site.siteId === "string" ? site.siteId : undefined,
         networkName,
-        networkScope: site.networkScope,
+        networkScope: typeof site.networkScope === "string" ? site.networkScope : undefined,
       },
       collectionVantage: body.collectionVantage,
     });
@@ -155,6 +155,10 @@ function observationEntryFromRecord(
     deviceCount: record.deviceCount,
     notes: record.notes,
   };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 class PacketHighwayObservationRequestError extends Error {
