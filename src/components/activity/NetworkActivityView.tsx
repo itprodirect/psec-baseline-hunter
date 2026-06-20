@@ -8,17 +8,28 @@ import {
   CheckCircle2,
   Clock,
   Compass,
+  CircleHelp,
   Eye,
   Loader2,
   Play,
   RefreshCw,
+  Search,
   Shield,
+  UserCheck,
+  Users,
+  X,
 } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
+import type {
+  DeviceResponseApiResponse,
+  DeviceResponseState,
+  DeviceResponseTarget,
+} from "@/lib/types/device-response";
 import type {
   NetworkActivityEvent,
   NetworkActivityModel,
@@ -27,6 +38,17 @@ import type {
 } from "@/lib/types/network-activity";
 
 type ActivityMode = "latest" | "guided";
+
+const RESPONSE_OPTIONS: Array<{
+  state: DeviceResponseState;
+  label: string;
+  icon: ElementType;
+}> = [
+  { state: "mine", label: "Mine", icon: UserCheck },
+  { state: "guest", label: "Guest", icon: Users },
+  { state: "not_sure", label: "Not sure", icon: CircleHelp },
+  { state: "investigate", label: "Investigate", icon: Search },
+];
 
 export function NetworkActivityView() {
   const [activity, setActivity] = useState<NetworkActivityModel | null>(null);
@@ -56,6 +78,42 @@ export function NetworkActivityView() {
       setIsLoading(false);
     }
   }, []);
+
+  const saveDeviceResponse = useCallback(
+    async (
+      target: DeviceResponseTarget,
+      state: DeviceResponseState,
+      friendlyName: string
+    ) => {
+      const response = await fetch("/api/activity/device-response", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ target, state, friendlyName }),
+      });
+      const result: DeviceResponseApiResponse = await response.json();
+      if (!response.ok || !result.success) {
+        throw new Error(result.error || "Device response could not be saved.");
+      }
+      await loadActivity(mode);
+    },
+    [loadActivity, mode]
+  );
+
+  const clearDeviceResponse = useCallback(
+    async (target: DeviceResponseTarget) => {
+      const response = await fetch("/api/activity/device-response", {
+        method: "DELETE",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ target }),
+      });
+      const result: DeviceResponseApiResponse = await response.json();
+      if (!response.ok || !result.success) {
+        throw new Error(result.error || "Device response could not be cleared.");
+      }
+      await loadActivity(mode);
+    },
+    [loadActivity, mode]
+  );
 
   useEffect(() => {
     loadActivity("latest");
@@ -113,7 +171,11 @@ export function NetworkActivityView() {
           <LimitationsPanel activity={activity} />
           {activity.scenario && <GuidedScenarioPanel activity={activity} />}
           {activity.period && <ComparisonPeriodCard activity={activity} />}
-          <EventTimeline activity={activity} />
+          <EventTimeline
+            activity={activity}
+            onSaveResponse={saveDeviceResponse}
+            onClearResponse={clearDeviceResponse}
+          />
         </>
       )}
     </div>
@@ -326,7 +388,19 @@ function ComparisonPeriodCard({ activity }: { activity: NetworkActivityModel }) 
   );
 }
 
-function EventTimeline({ activity }: { activity: NetworkActivityModel }) {
+function EventTimeline({
+  activity,
+  onSaveResponse,
+  onClearResponse,
+}: {
+  activity: NetworkActivityModel;
+  onSaveResponse: (
+    target: DeviceResponseTarget,
+    state: DeviceResponseState,
+    friendlyName: string
+  ) => Promise<void>;
+  onClearResponse: (target: DeviceResponseTarget) => Promise<void>;
+}) {
   if (activity.status !== "ready") {
     return (
       <Card>
@@ -364,14 +438,34 @@ function EventTimeline({ activity }: { activity: NetworkActivityModel }) {
       </CardHeader>
       <CardContent className="space-y-3">
         {activity.events.map((event) => (
-          <EventCard key={event.eventId} event={event} />
+          <EventCard
+            key={event.eventId}
+            event={event}
+            responsesEnabled={activity.source === "registry"}
+            onSaveResponse={onSaveResponse}
+            onClearResponse={onClearResponse}
+          />
         ))}
       </CardContent>
     </Card>
   );
 }
 
-function EventCard({ event }: { event: NetworkActivityEvent }) {
+function EventCard({
+  event,
+  responsesEnabled,
+  onSaveResponse,
+  onClearResponse,
+}: {
+  event: NetworkActivityEvent;
+  responsesEnabled: boolean;
+  onSaveResponse: (
+    target: DeviceResponseTarget,
+    state: DeviceResponseState,
+    friendlyName: string
+  ) => Promise<void>;
+  onClearResponse: (target: DeviceResponseTarget) => Promise<void>;
+}) {
   return (
     <article className="rounded-md border p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -381,6 +475,9 @@ function EventCard({ event }: { event: NetworkActivityEvent }) {
             <Badge variant={event.confidence === "low" ? "outline" : "secondary"}>
               {event.confidenceLabel}
             </Badge>
+            {event.workflowPriority.level === "user-investigate" && (
+              <Badge variant="default">{event.workflowPriority.label}</Badge>
+            )}
           </div>
           <p className="mt-1 text-sm text-muted-foreground">{event.summary}</p>
         </div>
@@ -394,6 +491,12 @@ function EventCard({ event }: { event: NetworkActivityEvent }) {
           Supporting evidence
         </a>
       </div>
+      <DeviceResponseControls
+        event={event}
+        enabled={responsesEnabled}
+        onSaveResponse={onSaveResponse}
+        onClearResponse={onClearResponse}
+      />
       <details id={event.evidenceId} className="mt-4 rounded-md border bg-muted/30 px-3 py-2 text-sm">
         <summary className="flex cursor-pointer items-center gap-2 font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
           <Eye className="h-4 w-4" />
@@ -424,6 +527,155 @@ function EventCard({ event }: { event: NetworkActivityEvent }) {
         </div>
       </details>
     </article>
+  );
+}
+
+function DeviceResponseControls({
+  event,
+  enabled,
+  onSaveResponse,
+  onClearResponse,
+}: {
+  event: NetworkActivityEvent;
+  enabled: boolean;
+  onSaveResponse: (
+    target: DeviceResponseTarget,
+    state: DeviceResponseState,
+    friendlyName: string
+  ) => Promise<void>;
+  onClearResponse: (target: DeviceResponseTarget) => Promise<void>;
+}) {
+  const { deviceResponse } = event;
+  const target = deviceResponse.target;
+  const [friendlyName, setFriendlyName] = useState(
+    deviceResponse.statement?.friendlyName ?? ""
+  );
+  const [pendingState, setPendingState] = useState<DeviceResponseState | "clear" | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setFriendlyName(deviceResponse.statement?.friendlyName ?? "");
+    setError(null);
+  }, [deviceResponse.statement?.friendlyName, target?.responseId]);
+
+  const save = async (state: DeviceResponseState) => {
+    if (!target || !enabled) return;
+    setPendingState(state);
+    setError(null);
+    try {
+      await onSaveResponse(target, state, friendlyName);
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : "Device response could not be saved.");
+    } finally {
+      setPendingState(null);
+    }
+  };
+
+  const clear = async () => {
+    if (!target || !enabled) return;
+    setPendingState("clear");
+    setError(null);
+    try {
+      await onClearResponse(target);
+      setFriendlyName("");
+    } catch (clearError) {
+      setError(clearError instanceof Error ? clearError.message : "Device response could not be cleared.");
+    } finally {
+      setPendingState(null);
+    }
+  };
+
+  return (
+    <div className="mt-4 rounded-md border border-dashed bg-background px-3 py-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-sm font-medium">User response</span>
+        {deviceResponse.statement && (
+          <Badge variant={deviceResponse.statement.state === "investigate" ? "default" : "secondary"}>
+            {deviceResponse.statement.stateLabel}
+          </Badge>
+        )}
+        {deviceResponse.statement?.friendlyName && (
+          <span className="text-sm text-muted-foreground">
+            {deviceResponse.statement.friendlyName}
+          </span>
+        )}
+      </div>
+      <p className="mt-1 text-xs text-muted-foreground">
+        User statement only. This does not change evidence, safety status, or system findings.
+      </p>
+
+      {deviceResponse.carriedForward && (
+        <p className="mt-2 text-xs text-muted-foreground">
+          Carried forward from a prior observation: {deviceResponse.carriedForward.reason} Last updated {formatDateTime(deviceResponse.carriedForward.updatedAt)}.
+        </p>
+      )}
+
+      {!target && (
+        <p className="mt-2 text-sm text-muted-foreground">
+          {deviceResponse.unavailableReason ?? "No persisted response target is available."}
+        </p>
+      )}
+
+      {target && !enabled && (
+        <p className="mt-2 text-sm text-muted-foreground">
+          Responses are disabled for synthetic scenarios.
+        </p>
+      )}
+
+      {target && enabled && (
+        <div className="mt-3 space-y-3">
+          <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
+            <Input
+              value={friendlyName}
+              maxLength={80}
+              placeholder="Friendly name"
+              aria-label="Friendly name"
+              onChange={(inputEvent) => setFriendlyName(inputEvent.target.value)}
+              disabled={pendingState !== null}
+            />
+            {deviceResponse.statement && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={clear}
+                disabled={pendingState !== null}
+              >
+                {pendingState === "clear" ? (
+                  <Loader2 className="h-4 w-4 animate-spin motion-reduce:animate-none" />
+                ) : (
+                  <X className="h-4 w-4" />
+                )}
+                Clear
+              </Button>
+            )}
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {RESPONSE_OPTIONS.map((option) => {
+              const Icon = option.icon;
+              const isActive = deviceResponse.statement?.state === option.state;
+              return (
+                <Button
+                  key={option.state}
+                  size="sm"
+                  variant={isActive ? "default" : "outline"}
+                  onClick={() => save(option.state)}
+                  disabled={pendingState !== null}
+                >
+                  {pendingState === option.state ? (
+                    <Loader2 className="h-4 w-4 animate-spin motion-reduce:animate-none" />
+                  ) : (
+                    <Icon className="h-4 w-4" />
+                  )}
+                  {option.label}
+                </Button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {error && <p className="mt-2 text-sm text-destructive">{error}</p>}
+    </div>
   );
 }
 
