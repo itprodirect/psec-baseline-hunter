@@ -3982,6 +3982,171 @@ run("ingest POST preserves scan runs when observation registration fails", async
   });
 });
 
+run("ingest POST is idempotent for duplicate scan uploads", async () => {
+  const ingestRoute = await import("../src/app/api/ingest/route.ts");
+
+  await withTempCwd(async () => {
+    const uploadsDir = path.join(process.cwd(), "data", "uploads");
+    const zipPath = path.join(uploadsDir, "idempotent-scans.zip");
+    fs.mkdirSync(uploadsDir, { recursive: true });
+    writeZip(zipPath, [
+      {
+        name: "home-lab/rawscans/2026-02-01_1000_baselinekit_v0/ports_top200_open.xml",
+        content: createObservationNmapXml([
+          {
+            ip: "192.0.2.10",
+            mac: "02:00:00:00:00:10",
+            vendor: "Example Devices",
+            hostname: "family-laptop.local",
+            ports: [{ port: 80, protocol: "tcp", service: "http" }],
+          },
+        ]),
+      },
+      {
+        name: "home-lab/rawscans/2026-02-08_1000_baselinekit_v0/ports_top200_open.xml",
+        content: createObservationNmapXml([
+          {
+            ip: "192.0.2.10",
+            mac: "02:00:00:00:00:10",
+            vendor: "Example Devices",
+            hostname: "family-laptop.local",
+            ports: [
+              { port: 80, protocol: "tcp", service: "http" },
+              { port: 443, protocol: "tcp", service: "https" },
+            ],
+          },
+        ]),
+      },
+    ]);
+
+    const ingestOnce = async () => {
+      const response = await ingestRoute.POST(
+        createJsonRequest("/api/ingest", "POST", {
+          zipPath: path.join("data", "uploads", "idempotent-scans.zip"),
+          network: "home-lab",
+        })
+      );
+      return response.json();
+    };
+
+    const firstBody = await ingestOnce();
+    const firstObservations = listObservations(
+      { network: "home-lab", order: "asc" },
+      { evaluatedAt: "2026-02-09T00:00:00.000Z" }
+    );
+    const firstActivity = buildNetworkActivity({ evaluatedAt: "2026-02-09T00:00:00.000Z" });
+
+    assert.equal(firstBody.success, true);
+    assert.equal(firstBody.newRuns, 2);
+    assert.equal(firstBody.duplicateRuns, 0);
+    assert.equal(firstBody.observations.created, 2);
+    assert.equal(firstBody.observations.duplicate, 0);
+    assert.equal(firstBody.observations.failed, 0);
+    assert.equal(firstObservations.length, 2);
+    assert.equal(firstActivity.status, "ready");
+
+    // Re-uploading the exact same scan must not create new runs or new
+    // observation records, and must not pollute /activity with repeated
+    // same-timestamp observations.
+    const secondBody = await ingestOnce();
+    const secondObservations = listObservations(
+      { network: "home-lab", order: "asc" },
+      { evaluatedAt: "2026-02-09T00:00:00.000Z" }
+    );
+    const secondActivity = buildNetworkActivity({ evaluatedAt: "2026-02-09T00:00:00.000Z" });
+
+    assert.equal(secondBody.success, true);
+    assert.equal(secondBody.newRuns, 0, "duplicate upload must not register new runs");
+    assert.equal(secondBody.duplicateRuns, 2, "scan run dedupe counts must be preserved");
+    assert.equal(secondBody.observations.created, 0, "duplicate upload must not create observations");
+    assert.equal(secondBody.observations.duplicate, 2);
+    assert.equal(secondBody.observations.failed, 0);
+    assert.deepEqual(secondBody.observations.warnings, []);
+
+    assert.equal(secondObservations.length, 2, "duplicate upload must not add observation records");
+    assert.deepEqual(
+      secondObservations.map((entry) => entry.registryId).sort(),
+      firstObservations.map((entry) => entry.registryId).sort(),
+      "observation registry identities must be stable across duplicate uploads"
+    );
+    assert.equal(secondActivity.status, "ready");
+    assert.equal(
+      secondActivity.events.length,
+      firstActivity.events.length,
+      "/activity must not gain repeated events from duplicate uploads"
+    );
+    assertObservationRegistryOutputSafe(readObservationRegistryFilesText());
+  });
+});
+
+run("ingest POST backfills a missing observation for an existing run idempotently", async () => {
+  const ingestRoute = await import("../src/app/api/ingest/route.ts");
+
+  await withTempCwd(async () => {
+    const uploadsDir = path.join(process.cwd(), "data", "uploads");
+    const observationsDir = path.join(process.cwd(), "data", "observations");
+    const zipPath = path.join(uploadsDir, "backfill-scan.zip");
+    fs.mkdirSync(uploadsDir, { recursive: true });
+    writeZip(zipPath, [
+      {
+        name: "home-lab/rawscans/2026-02-01_1000_baselinekit_v0/ports_top200_open.xml",
+        content: createObservationNmapXml([
+          {
+            ip: "192.0.2.10",
+            mac: "02:00:00:00:00:10",
+            vendor: "Example Devices",
+            hostname: "family-laptop.local",
+            ports: [{ port: 80, protocol: "tcp", service: "http" }],
+          },
+        ]),
+      },
+    ]);
+
+    const ingestOnce = async () => {
+      const response = await ingestRoute.POST(
+        createJsonRequest("/api/ingest", "POST", {
+          zipPath: path.join("data", "uploads", "backfill-scan.zip"),
+          network: "home-lab",
+        })
+      );
+      return response.json();
+    };
+
+    // First upload registers the run and its observation.
+    const firstBody = await ingestOnce();
+    assert.equal(firstBody.observations.created, 1);
+    const observedRegistryId = listObservations({ network: "home-lab" })[0].registryId;
+
+    // Simulate a run that was registered before the ingest-to-observation
+    // bridge existed: the scan run still exists, but its observation record is
+    // gone. Re-ingesting the same scan must backfill exactly one observation.
+    fs.rmSync(observationsDir, { recursive: true, force: true });
+    assert.equal(listObservations({ network: "home-lab" }).length, 0);
+
+    const backfillBody = await ingestOnce();
+    const backfilled = listObservations({ network: "home-lab" });
+
+    assert.equal(backfillBody.success, true);
+    assert.equal(backfillBody.newRuns, 0, "run already exists, so no new run");
+    assert.equal(backfillBody.duplicateRuns, 1);
+    assert.equal(backfillBody.observations.created, 1, "missing observation must be backfilled");
+    assert.equal(backfillBody.observations.failed, 0);
+    assert.equal(backfilled.length, 1);
+    assert.equal(
+      backfilled[0].registryId,
+      observedRegistryId,
+      "backfilled observation must reuse the deterministic registry identity"
+    );
+
+    // A further duplicate upload must dedupe rather than create another record.
+    const afterBody = await ingestOnce();
+    assert.equal(afterBody.observations.created, 0);
+    assert.equal(afterBody.observations.duplicate, 1);
+    assert.equal(listObservations({ network: "home-lab" }).length, 1);
+    assertObservationRegistryOutputSafe(readObservationRegistryFilesText());
+  });
+});
+
 run("LLM rate limit identity ignores proxy headers by default", () => {
   assert.equal(
     getLLMRateLimitIdentity(
