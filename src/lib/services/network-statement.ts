@@ -58,6 +58,12 @@ interface StatementEvent {
   event: NetworkActivityEvent;
 }
 
+interface StatementSiteIdentity {
+  siteId: string;
+  networkName: string;
+  networkScopeRecorded: boolean;
+}
+
 export function buildNetworkStatement(
   options: BuildNetworkStatementOptions
 ): NetworkStatementModel {
@@ -77,11 +83,12 @@ export function buildNetworkStatement(
   const primaryEntries = selectedEntries.filter(
     (entry) => !isPacketHighwayObservationEntry(entry)
   );
-  const site = siteFromEntries(options.siteId, primaryEntries, selectedEntries);
+  const rawSiteIdentity = siteIdentityFromEntries(options.siteId, primaryEntries, selectedEntries);
+  const site = sanitizeSiteIdentityForStatement(rawSiteIdentity);
   const allEntries = listObservations({}, freshnessOptions);
   const supplementalEvidence = supplementalEvidenceForStatement(
     entriesInRange(allEntries, from, to),
-    site,
+    rawSiteIdentity,
     freshnessOptions
   );
   const { comparisons, skipped } = buildComparisons(
@@ -764,7 +771,7 @@ function entriesInRange(
 
 function supplementalEvidenceForStatement(
   entries: ObservationRegistryEntry[],
-  site: NetworkStatementModel["site"],
+  site: StatementSiteIdentity,
   freshnessOptions: ObservationFreshnessOptions
 ): NetworkActivitySupplementalEvidence[] {
   const evidence: NetworkActivitySupplementalEvidence[] = [];
@@ -806,16 +813,26 @@ function supplementalEvidenceForStatement(
   return evidence.sort((a, b) => timeValue(b.observedAt) - timeValue(a.observedAt));
 }
 
-function siteFromEntries(
+function siteIdentityFromEntries(
   requestedSiteId: string,
   primaryEntries: ObservationRegistryEntry[],
   selectedEntries: ObservationRegistryEntry[]
-): NetworkStatementModel["site"] {
+): StatementSiteIdentity {
   const entry = primaryEntries[primaryEntries.length - 1] ?? selectedEntries[selectedEntries.length - 1];
   return {
-    siteId: sanitizeExportText(entry?.site.siteId ?? requestedSiteId),
-    networkName: sanitizeExportText(entry?.networkName ?? entry?.site.networkName ?? requestedSiteId),
+    siteId: entry?.site.siteId ?? requestedSiteId,
+    networkName: entry?.networkName ?? entry?.site.networkName ?? requestedSiteId,
     networkScopeRecorded: Boolean(entry?.site.networkScope),
+  };
+}
+
+function sanitizeSiteIdentityForStatement(
+  site: StatementSiteIdentity
+): NetworkStatementModel["site"] {
+  return {
+    siteId: sanitizeExportText(site.siteId),
+    networkName: sanitizeExportText(site.networkName),
+    networkScopeRecorded: site.networkScopeRecorded,
   };
 }
 

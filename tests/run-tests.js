@@ -4068,14 +4068,98 @@ run("network statement downgrades insufficient week coverage and labels Packet H
     const text = statementText(statement);
 
     assert.equal(statement.title, "Network Statement");
+    assert.equal(statement.site.siteId, "site-statement-short");
+    assert.equal(statement.site.networkName, "statement-short-lab");
     assert.equal(statement.selectedPeriod.weeklyTitleSupported, false);
     assert.equal(statement.coverageSummary.hasInsufficientWeekCoverage, true);
     assert.match(statement.selectedPeriod.titleReason, /do not span enough/);
     assert.equal(statement.coverageSummary.supplementalPacketHighwayCount, 1);
+    assert.match(text, /Supplemental Packet Highway records: 1/);
     assert.match(text, /Supplemental only/);
     assert.match(text, /Packet Highway evidence cannot prove complete inventory/);
     assert.match(text, /beginning and end of the requested week/);
     assert.doesNotMatch(text, /Weekly Network Statement/);
+  });
+});
+
+run("network statement matches Packet Highway with raw redaction-sensitive site identifiers", async () => {
+  await withTempCwd(async () => {
+    const rawSiteId = "198.51.100.42";
+    const rawNetworkName = "aa:bb:cc:dd:ee:44";
+    const baseline = createComparisonBundle({
+      observationId: "obs-statement-redaction-site-baseline",
+      siteId: rawSiteId,
+      networkName: rawNetworkName,
+      networkScope: "198.51.100.0/24",
+      observedAt: "2026-05-05T10:00:00.000Z",
+      devices: [
+        {
+          deviceId: "redaction-site-device",
+          ips: ["192.0.2.10"],
+          macs: ["02:00:00:00:00:10"],
+        },
+      ],
+    });
+    const current = createComparisonBundle({
+      observationId: "obs-statement-redaction-site-current",
+      siteId: rawSiteId,
+      networkName: rawNetworkName,
+      networkScope: "198.51.100.0/24",
+      observedAt: "2026-05-07T10:00:00.000Z",
+      devices: [
+        {
+          deviceId: "redaction-site-device",
+          ips: ["192.0.2.10"],
+          macs: ["02:00:00:00:00:10"],
+        },
+      ],
+    });
+    const packetHighway = adaptPacketHighwayCaptureToObservationBundleV1({
+      capture: createPacketHighwayCapture({ generatedAt: "2026-05-06T11:00:00.000Z" }),
+      site: {
+        siteId: rawSiteId,
+        networkName: rawNetworkName,
+        networkScope: "198.51.100.0/24",
+      },
+      collectionVantage: "gateway-router",
+    });
+
+    registerObservationBundle(baseline, {
+      importedAt: "2026-05-05T10:05:00.000Z",
+      evaluatedAt: "2026-05-08T00:00:00.000Z",
+    });
+    registerObservationBundle(current, {
+      importedAt: "2026-05-07T10:05:00.000Z",
+      evaluatedAt: "2026-05-08T00:00:00.000Z",
+    });
+    registerObservationBundle(packetHighway, {
+      importedAt: "2026-05-06T11:05:00.000Z",
+      evaluatedAt: "2026-05-08T00:00:00.000Z",
+    });
+
+    const statement = buildNetworkStatement({
+      siteId: rawSiteId,
+      from: "2026-05-01T00:00:00.000Z",
+      to: "2026-05-07T23:59:59.999Z",
+      evaluatedAt: "2026-05-08T00:00:00.000Z",
+    });
+    const markdown = renderNetworkStatementMarkdown(statement);
+    const statementJson = JSON.stringify(statement);
+    const sectionsJson = JSON.stringify(statement.sections);
+    const combinedExport = `${statementJson}\n${sectionsJson}\n${markdown}`;
+    const text = statementText(statement);
+
+    assert.equal(statement.coverageSummary.primaryObservationCount, 2);
+    assert.equal(statement.coverageSummary.comparisonCount, 1);
+    assert.equal(statement.coverageSummary.supplementalPacketHighwayCount, 1);
+    assert.equal(statement.site.siteId, "[redacted ip]");
+    assert.equal(statement.site.networkName, "[redacted mac]");
+    assert.match(text, /Supplemental Packet Highway records: 1/);
+    assert.match(text, /Packet Highway visual evidence/);
+    assertMarkdownContainsStatementItems(statement, markdown);
+    assertStatementExportSafe(markdown);
+    assert.doesNotMatch(combinedExport, new RegExp(escapeRegExp(rawSiteId)));
+    assert.doesNotMatch(combinedExport, new RegExp(escapeRegExp(rawNetworkName), "i"));
   });
 });
 
