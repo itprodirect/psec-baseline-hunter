@@ -50,6 +50,8 @@ let isObservationComparisonError;
 let buildNetworkActivity;
 let buildSyntheticNetworkActivityScenario;
 let shapeNetworkActivityComparison;
+let buildNetworkStatement;
+let renderNetworkStatementMarkdown;
 let buildDeviceResponseTarget;
 let upsertDeviceResponse;
 let getDeviceResponseForTarget;
@@ -68,6 +70,7 @@ async function loadModules() {
     observationRegistry,
     observationComparison,
     networkActivity,
+    networkStatement,
     deviceResponses,
     packetHighwayObservation,
   ] = await Promise.all([
@@ -82,6 +85,7 @@ async function loadModules() {
     import("../src/lib/services/observation-registry.ts"),
     import("../src/lib/services/observation-comparison.ts"),
     import("../src/lib/services/network-activity.ts"),
+    import("../src/lib/services/network-statement.ts"),
     import("../src/lib/services/device-responses.ts"),
     import("../src/lib/services/packet-highway-observation.ts"),
   ]);
@@ -147,6 +151,10 @@ async function loadModules() {
     buildSyntheticNetworkActivityScenario,
     shapeNetworkActivityComparison,
   } = networkActivity);
+  ({
+    buildNetworkStatement,
+    renderNetworkStatementMarkdown,
+  } = networkStatement);
   ({
     buildDeviceResponseTarget,
     upsertDeviceResponse,
@@ -801,6 +809,38 @@ function assertObservationRegistryOutputSafe(serialized) {
   assert.doesNotMatch(serialized, /rawscans|Interface: 192\.0\.2\.1/i);
 }
 
+function assertStatementExportSafe(serialized) {
+  assertObservationRegistryOutputSafe(serialized);
+  assert.doesNotMatch(serialized, /192\.0\.2\.|02:00:00|00:00:00/i);
+  assert.doesNotMatch(serialized, /raw packet payload|raw capture|raw scan body/i);
+}
+
+function statementText(statement) {
+  return statement.sections
+    .flatMap((section) => [
+      section.title,
+      section.summary ?? "",
+      ...section.items.map((item) => item.text),
+    ])
+    .join("\n");
+}
+
+function statementSection(statement, sectionId) {
+  const section = statement.sections.find((candidate) => candidate.id === sectionId);
+  assert.ok(section, `expected statement section ${sectionId}`);
+  return section;
+}
+
+function assertMarkdownContainsStatementItems(statement, markdown) {
+  const comparableMarkdown = markdown.replace(/\\([\[\]])/g, "$1");
+  for (const section of statement.sections) {
+    assert.match(comparableMarkdown, new RegExp(escapeRegExp(section.title)));
+    for (const item of section.items) {
+      assert.match(comparableMarkdown, new RegExp(escapeRegExp(item.text)));
+    }
+  }
+}
+
 async function assertSafeObservationApiError(response, status, errorPattern, context) {
   const body = await response.json();
   const serialized = JSON.stringify(body);
@@ -811,6 +851,10 @@ async function assertSafeObservationApiError(response, status, errorPattern, con
   assert.ok(body.error.length <= 200, context);
   assert.ok(serialized.length <= 512, context);
   assertObservationRegistryOutputSafe(serialized);
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function createPacketHighwayCapture(options = {}) {
@@ -3621,6 +3665,380 @@ run("network activity surfaces partial and stale limitations near no-change resu
     assert.ok(limitationCodes.has("current-missing-sources"));
     assert.match(limitationText, /missing port scan, host-up list/);
     assert.doesNotMatch(activity.summary, /all clear/i);
+  });
+});
+
+run("network statement uses weekly title only when observations span the requested week", async () => {
+  await withTempCwd(async () => {
+    const baseline = createComparisonBundle({
+      observationId: "obs-statement-week-baseline",
+      siteId: "site-statement-week",
+      networkName: "statement-week-lab",
+      observedAt: "2026-05-01T10:00:00.000Z",
+      devices: [
+        {
+          deviceId: "statement-week-device",
+          ips: ["192.0.2.10"],
+          macs: ["02:00:00:00:00:10"],
+          ports: [{ port: 80, protocol: "tcp", service: "http" }],
+        },
+      ],
+    });
+    const current = createComparisonBundle({
+      observationId: "obs-statement-week-current",
+      siteId: "site-statement-week",
+      networkName: "statement-week-lab",
+      observedAt: "2026-05-07T10:00:00.000Z",
+      devices: [
+        {
+          deviceId: "statement-week-device",
+          ips: ["192.0.2.10"],
+          macs: ["02:00:00:00:00:10"],
+          ports: [{ port: 80, protocol: "tcp", service: "http" }],
+        },
+      ],
+    });
+
+    registerObservationBundle(baseline, {
+      importedAt: "2026-05-01T10:05:00.000Z",
+      evaluatedAt: "2026-05-08T00:00:00.000Z",
+    });
+    registerObservationBundle(current, {
+      importedAt: "2026-05-07T10:05:00.000Z",
+      evaluatedAt: "2026-05-08T00:00:00.000Z",
+    });
+
+    const statement = buildNetworkStatement({
+      siteId: "site-statement-week",
+      from: "2026-05-01T00:00:00.000Z",
+      to: "2026-05-07T23:59:59.999Z",
+      evaluatedAt: "2026-05-08T00:00:00.000Z",
+    });
+    const markdown = renderNetworkStatementMarkdown(statement);
+    const coverageIndex = statement.sections.findIndex((section) => section.id === "coverage-vantage");
+    const freshnessIndex = statement.sections.findIndex((section) => section.id === "freshness");
+    const cannotIndex = statement.sections.findIndex((section) => section.id === "cannot-conclude");
+
+    assert.equal(statement.title, "Weekly Network Statement");
+    assert.equal(statement.selectedPeriod.weeklyTitleSupported, true);
+    assert.equal(statement.coverageSummary.primaryObservationCount, 2);
+    assert.equal(statement.coverageSummary.comparisonCount, 1);
+    assert.ok(coverageIndex >= 0 && coverageIndex < freshnessIndex);
+    assert.ok(cannotIndex > freshnessIndex);
+    assert.match(statementText(statement), /Collection vantage represented/);
+    assert.match(statementText(statement), /What cannot be concluded|cannot prove/);
+    assertMarkdownContainsStatementItems(statement, markdown);
+    assertStatementExportSafe(markdown);
+  });
+});
+
+run("network statement keeps stale and partial no-change periods bounded", async () => {
+  await withTempCwd(async () => {
+    const baseline = createComparisonBundle({
+      observationId: "obs-statement-limited-baseline",
+      siteId: "site-statement-limited",
+      networkName: "statement-limited-lab",
+      observedAt: "2026-01-01T10:00:00.000Z",
+      devices: [
+        {
+          deviceId: "statement-limited-device",
+          ips: ["192.0.2.10"],
+          macs: ["02:00:00:00:00:10"],
+          ports: [{ port: 80, protocol: "tcp", service: "http" }],
+        },
+      ],
+    });
+    const current = createComparisonBundle({
+      observationId: "obs-statement-limited-current",
+      siteId: "site-statement-limited",
+      networkName: "statement-limited-lab",
+      observedAt: "2026-01-07T10:00:00.000Z",
+      missingSources: ["ports", "hosts_up"],
+      devices: [
+        {
+          deviceId: "statement-limited-device",
+          ips: ["192.0.2.10"],
+          macs: ["02:00:00:00:00:10"],
+        },
+      ],
+    });
+
+    registerObservationBundle(baseline, {
+      importedAt: "2026-01-01T10:05:00.000Z",
+      evaluatedAt: "2026-03-15T00:00:00.000Z",
+    });
+    registerObservationBundle(current, {
+      importedAt: "2026-01-07T10:05:00.000Z",
+      evaluatedAt: "2026-03-15T00:00:00.000Z",
+    });
+
+    const statement = buildNetworkStatement({
+      siteId: "site-statement-limited",
+      from: "2026-01-01T00:00:00.000Z",
+      to: "2026-01-07T23:59:59.999Z",
+      evaluatedAt: "2026-03-15T00:00:00.000Z",
+    });
+    const text = statementText(statement);
+
+    assert.equal(statement.coverageSummary.hasPartialCoverage, true);
+    assert.equal(statement.coverageSummary.hasStaleEvidence, true);
+    assert.match(text, /Coverage gaps reported: .*host-up list.*port scan/);
+    assert.match(text, /Evidence freshness counts: .*stale|Evidence freshness counts: .*partial/);
+    assert.match(text, /does not establish complete safety|prevent any complete-safety conclusion/);
+    assert.doesNotMatch(text, /all clear|all-clear/i);
+    assert.match(statementSection(statement, "cannot-conclude").items.map((item) => item.text).join("\n"), /cannot prove/);
+  });
+});
+
+run("network statement reports change categories and unresolved user responses", async () => {
+  await withTempCwd(async () => {
+    const baseline = createComparisonBundle({
+      observationId: "obs-statement-change-baseline",
+      siteId: "site-statement-change",
+      networkName: "statement-change-lab",
+      observedAt: "2026-05-01T10:00:00.000Z",
+      devices: [
+        {
+          deviceId: "family-laptop",
+          ips: ["192.0.2.10"],
+          macs: ["02:00:00:00:00:10"],
+          hostnames: ["family-laptop.local"],
+          vendors: ["Example Devices"],
+          ports: [
+            { port: 22, protocol: "tcp", service: "ssh" },
+            { port: 80, protocol: "tcp", service: "http" },
+          ],
+        },
+        {
+          deviceId: "office-printer",
+          ips: ["192.0.2.20"],
+          macs: ["02:00:00:00:00:20"],
+          ports: [{ port: 9100, protocol: "tcp", service: "jetdirect" }],
+        },
+        {
+          deviceId: "guest-speaker-baseline",
+          ips: ["192.0.2.50"],
+          hostnames: ["guest-speaker.local"],
+          vendors: ["Example Audio"],
+        },
+      ],
+    });
+    const current = createComparisonBundle({
+      observationId: "obs-statement-change-current",
+      siteId: "site-statement-change",
+      networkName: "statement-change-lab",
+      observedAt: "2026-05-07T10:00:00.000Z",
+      devices: [
+        {
+          deviceId: "family-laptop",
+          ips: ["192.0.2.14"],
+          macs: ["02:00:00:00:00:10"],
+          hostnames: ["family-laptop.local", "family-laptop-wifi.local"],
+          vendors: ["Example Devices"],
+          ports: [
+            { port: 80, protocol: "tcp", service: "http" },
+            { port: 443, protocol: "tcp", service: "https" },
+          ],
+        },
+        {
+          deviceId: "guest-tablet",
+          ips: ["192.0.2.30"],
+          macs: ["02:00:00:00:00:30"],
+          hostnames: ["guest-tablet.local"],
+          vendors: ["Example Mobile"],
+        },
+        {
+          deviceId: "guest-speaker-current",
+          ips: ["192.0.2.50"],
+          hostnames: ["guest-speaker.local"],
+          vendors: ["Example Audio"],
+        },
+      ],
+    });
+
+    upsertDeviceResponse(
+      createDeviceResponseTargetForBundleDevice(current, 0),
+      "investigate",
+      "Laptop review",
+      { now: "2026-05-07T11:00:00.000Z" }
+    );
+    upsertDeviceResponse(
+      createDeviceResponseTargetForBundleDevice(current, 1),
+      "not_sure",
+      "Visitor tablet",
+      { now: "2026-05-07T11:05:00.000Z" }
+    );
+    registerObservationBundle(baseline, {
+      importedAt: "2026-05-01T10:05:00.000Z",
+      evaluatedAt: "2026-05-08T00:00:00.000Z",
+    });
+    registerObservationBundle(current, {
+      importedAt: "2026-05-07T10:05:00.000Z",
+      evaluatedAt: "2026-05-08T00:00:00.000Z",
+    });
+
+    const statement = buildNetworkStatement({
+      siteId: "site-statement-change",
+      from: "2026-05-01T00:00:00.000Z",
+      to: "2026-05-07T23:59:59.999Z",
+      evaluatedAt: "2026-05-08T00:00:00.000Z",
+    });
+    const changedText = statementSection(statement, "changed").items.map((item) => item.text).join("\n");
+    const reviewText = statementSection(statement, "needs-review").items.map((item) => item.text).join("\n");
+    const unresolvedText = statementSection(statement, "unresolved-responses").items.map((item) => item.text).join("\n");
+
+    assert.match(changedText, /New device observed/);
+    assert.match(changedText, /Previously observed device not seen/);
+    assert.match(changedText, /Device identity uncertain/);
+    assert.match(changedText, /Service appeared on a matched device/);
+    assert.match(changedText, /Service no longer observed/);
+    assert.match(changedText, /Device metadata changed/);
+    assert.match(reviewText, /user statement only/i);
+    assert.match(unresolvedText, /Investigate/);
+    assert.match(unresolvedText, /Not sure/);
+    assert.match(unresolvedText, /does not change the technical finding/);
+    assertStatementExportSafe(renderNetworkStatementMarkdown(statement));
+  });
+});
+
+run("network statement downgrades insufficient week coverage and labels Packet Highway supplemental", async () => {
+  await withTempCwd(async () => {
+    const baseline = createComparisonBundle({
+      observationId: "obs-statement-short-baseline",
+      siteId: "site-statement-short",
+      networkName: "statement-short-lab",
+      observedAt: "2026-05-05T10:00:00.000Z",
+      devices: [
+        {
+          deviceId: "short-device",
+          ips: ["192.0.2.10"],
+          macs: ["02:00:00:00:00:10"],
+        },
+      ],
+    });
+    const current = createComparisonBundle({
+      observationId: "obs-statement-short-current",
+      siteId: "site-statement-short",
+      networkName: "statement-short-lab",
+      observedAt: "2026-05-07T10:00:00.000Z",
+      devices: [
+        {
+          deviceId: "short-device",
+          ips: ["192.0.2.10"],
+          macs: ["02:00:00:00:00:10"],
+        },
+      ],
+    });
+    const packetHighway = adaptPacketHighwayCaptureToObservationBundleV1({
+      capture: createPacketHighwayCapture({ generatedAt: "2026-05-06T11:00:00.000Z" }),
+      site: {
+        networkName: "statement-short-lab",
+        networkScope: "192.0.2.0/24",
+      },
+      collectionVantage: "this-computer",
+    });
+
+    registerObservationBundle(baseline, {
+      importedAt: "2026-05-05T10:05:00.000Z",
+      evaluatedAt: "2026-05-08T00:00:00.000Z",
+    });
+    registerObservationBundle(current, {
+      importedAt: "2026-05-07T10:05:00.000Z",
+      evaluatedAt: "2026-05-08T00:00:00.000Z",
+    });
+    registerObservationBundle(packetHighway, {
+      importedAt: "2026-05-06T11:05:00.000Z",
+      evaluatedAt: "2026-05-08T00:00:00.000Z",
+    });
+
+    const statement = buildNetworkStatement({
+      siteId: "site-statement-short",
+      from: "2026-05-01T00:00:00.000Z",
+      to: "2026-05-07T23:59:59.999Z",
+      evaluatedAt: "2026-05-08T00:00:00.000Z",
+    });
+    const text = statementText(statement);
+
+    assert.equal(statement.title, "Network Statement");
+    assert.equal(statement.selectedPeriod.weeklyTitleSupported, false);
+    assert.match(statement.selectedPeriod.titleReason, /do not span enough/);
+    assert.equal(statement.coverageSummary.supplementalPacketHighwayCount, 1);
+    assert.match(text, /Supplemental only/);
+    assert.match(text, /Packet Highway evidence cannot prove complete inventory/);
+    assert.doesNotMatch(text, /Weekly Network Statement/);
+  });
+});
+
+run("network statement API Markdown matches print sections and redacts export-sensitive text", async () => {
+  const statementRoute = await import("../src/app/api/statement/route.ts");
+
+  await withTempCwd(async () => {
+    const baseline = createComparisonBundle({
+      observationId: "obs-statement-privacy-baseline",
+      siteId: "site-statement-privacy",
+      networkName: "statement-privacy-lab",
+      observedAt: "2026-06-01T10:00:00.000Z",
+      coverageNotes: ["C:\\Users\\user\\secret\\scan.xml", "<packet>raw payload</packet>"],
+      devices: [
+        {
+          deviceId: "privacy-device",
+          ips: ["192.0.2.10"],
+          macs: ["02:00:00:00:00:10"],
+          ports: [{ port: 80, protocol: "tcp", service: "http" }],
+        },
+      ],
+    });
+    const current = createComparisonBundle({
+      observationId: "obs-statement-privacy-current",
+      siteId: "site-statement-privacy",
+      networkName: "statement-privacy-lab",
+      observedAt: "2026-06-07T10:00:00.000Z",
+      devices: [
+        {
+          deviceId: "privacy-device",
+          ips: ["192.0.2.11"],
+          macs: ["02:00:00:00:00:10"],
+          ports: [
+            { port: 80, protocol: "tcp", service: "http" },
+            { port: 443, protocol: "tcp", service: "https" },
+          ],
+        },
+      ],
+    });
+
+    upsertDeviceResponse(
+      createDeviceResponseTargetForBundleDevice(current),
+      "not_sure",
+      "C:\\Users\\user\\secret sk-testsecretvalue1234567890",
+      { now: "2026-06-07T11:00:00.000Z" }
+    );
+    registerObservationBundle(baseline, {
+      importedAt: "2026-06-01T10:05:00.000Z",
+      evaluatedAt: "2026-06-08T00:00:00.000Z",
+    });
+    registerObservationBundle(current, {
+      importedAt: "2026-06-07T10:05:00.000Z",
+      evaluatedAt: "2026-06-08T00:00:00.000Z",
+    });
+
+    const query = "siteId=site-statement-privacy&from=2026-06-01&to=2026-06-07&asOf=2026-06-08T00:00:00.000Z";
+    const jsonResponse = await statementRoute.GET(
+      new Request(`http://localhost/api/statement?${query}`)
+    );
+    const jsonBody = await jsonResponse.json();
+    assert.equal(jsonResponse.status, 200);
+    assert.equal(jsonBody.success, true);
+
+    const markdownResponse = await statementRoute.GET(
+      new Request(`http://localhost/api/statement?${query}&format=markdown`)
+    );
+    const markdown = await markdownResponse.text();
+
+    assert.equal(markdownResponse.status, 200);
+    assert.equal(markdownResponse.headers.get("content-type"), "text/markdown; charset=utf-8");
+    assertMarkdownContainsStatementItems(jsonBody.statement, markdown);
+    assertStatementExportSafe(markdown);
+    assertStatementExportSafe(JSON.stringify(jsonBody.statement.sections));
   });
 });
 

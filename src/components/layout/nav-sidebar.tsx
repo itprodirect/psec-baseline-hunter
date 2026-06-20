@@ -4,7 +4,7 @@ import { useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
-import { Activity, LayoutDashboard, Upload, BarChart3, GitCompare, Shield, FileSpreadsheet, Settings, History, Menu, Car } from "lucide-react";
+import { Activity, LayoutDashboard, Upload, BarChart3, GitCompare, Shield, FileSpreadsheet, Settings, History, Menu, Car, FileText } from "lucide-react";
 import { PersonaToggle } from "./persona-toggle";
 import { Button } from "@/components/ui/button";
 import {
@@ -25,6 +25,12 @@ const NAV_ITEMS = [
     href: "/activity",
     icon: Activity,
     description: "What changed",
+  },
+  {
+    title: "Statement",
+    href: "/statement",
+    icon: FileText,
+    description: "Evidence summary",
   },
   {
     title: "Start Scan Review",
@@ -135,7 +141,7 @@ function SidebarBrand() {
 
 export function NavSidebar() {
   return (
-    <aside className="flex h-screen w-64 flex-col border-r bg-background">
+    <aside className="flex h-screen w-64 flex-col border-r bg-background print:hidden">
       <SidebarBrand />
 
       <div className="border-b px-3 py-2">
@@ -152,7 +158,7 @@ export function MobileNav() {
   const [open, setOpen] = useState(false);
 
   return (
-    <header className="md:hidden border-b bg-background px-4 py-3">
+    <header className="md:hidden border-b bg-background px-4 py-3 print:hidden">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Shield className="h-5 w-5 text-primary" />
