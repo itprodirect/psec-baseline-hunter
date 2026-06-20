@@ -29,6 +29,12 @@ jobs:
       - name: Run tests
         run: npm test
 
+      - name: Install browser smoke dependencies
+        run: npx playwright install --with-deps chromium
+
+      - name: Run Packet Highway browser smoke
+        run: npm run test:browser
+
       - name: Run linter
         run: npm run lint
 

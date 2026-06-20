@@ -69,7 +69,7 @@ export function DeviceDetails({ capture, deviceId, revealSensitive, onClose }: D
     <Card>
       <CardHeader className="flex flex-row items-start justify-between space-y-0 pb-3">
         <div>
-          <CardTitle className="text-base">🏢 {title}</CardTitle>
+          <CardTitle role="heading" aria-level={2} className="text-base">🏢 {title}</CardTitle>
           {title !== displayName && (
             <p className="mt-1 text-xs text-muted-foreground">{displayName}</p>
           )}
