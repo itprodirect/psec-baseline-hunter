@@ -4079,6 +4079,137 @@ run("ingest POST is idempotent for duplicate scan uploads", async () => {
   });
 });
 
+run("ingest POST dedupes old-style observations by source run identity", async () => {
+  const ingestRoute = await import("../src/app/api/ingest/route.ts");
+
+  await withTempCwd(async () => {
+    const uploadsDir = path.join(process.cwd(), "data", "uploads");
+    const observationsDir = path.join(process.cwd(), "data", "observations");
+    const zipPath = path.join(uploadsDir, "old-style-observation-scans.zip");
+    fs.mkdirSync(uploadsDir, { recursive: true });
+    writeZip(zipPath, [
+      {
+        name: "home-lab/rawscans/2026-02-01_1000_baselinekit_v0/ports_top200_open.xml",
+        content: createObservationNmapXml([
+          {
+            ip: "192.0.2.10",
+            mac: "02:00:00:00:00:10",
+            vendor: "Example Devices",
+            hostname: "family-laptop.local",
+            ports: [{ port: 80, protocol: "tcp", service: "http" }],
+          },
+        ]),
+      },
+      {
+        name: "home-lab/rawscans/2026-02-08_1000_baselinekit_v0/ports_top200_open.xml",
+        content: createObservationNmapXml([
+          {
+            ip: "192.0.2.10",
+            mac: "02:00:00:00:00:10",
+            vendor: "Example Devices",
+            hostname: "family-laptop.local",
+            ports: [
+              { port: 80, protocol: "tcp", service: "http" },
+              { port: 443, protocol: "tcp", service: "https" },
+            ],
+          },
+        ]),
+      },
+    ]);
+
+    const ingestOnce = async () => {
+      const response = await ingestRoute.POST(
+        createJsonRequest("/api/ingest", "POST", {
+          zipPath: path.join("data", "uploads", "old-style-observation-scans.zip"),
+          network: "home-lab",
+        })
+      );
+      return response.json();
+    };
+
+    const firstBody = await ingestOnce();
+    const runsIndex = JSON.parse(
+      fs.readFileSync(path.join(process.cwd(), "data", "runs", "index.json"), "utf-8")
+    );
+    const runUids = Object.keys(runsIndex.runs).sort();
+
+    assert.equal(firstBody.success, true);
+    assert.equal(firstBody.newRuns, 2);
+    assert.equal(firstBody.observations.created, 2);
+    assert.equal(runUids.length, 2);
+
+    fs.rmSync(observationsDir, { recursive: true, force: true });
+    assert.equal(listObservations({ network: "home-lab" }).length, 0);
+
+    for (const [index, runUid] of runUids.entries()) {
+      const deterministicBundle = buildObservationBundleV1FromRun(runUid);
+      const oldStyleBundle = buildObservationBundleV1FromRun(runUid, {
+        generatedAt: `2026-06-19T12:00:0${index}.000Z`,
+      });
+
+      assert.ok(deterministicBundle);
+      assert.ok(oldStyleBundle);
+      assert.equal(oldStyleBundle.batch.sourceRunUid, deterministicBundle.batch.sourceRunUid);
+      assert.equal(oldStyleBundle.observationId, deterministicBundle.observationId);
+      assert.notEqual(
+        computeObservationBundleContentHash(oldStyleBundle),
+        computeObservationBundleContentHash(deterministicBundle),
+        "old wall-clock generatedAt must reproduce the compatibility gap"
+      );
+
+      const oldStyleResult = registerObservationBundle(oldStyleBundle, {
+        importedAt: "2026-06-19T12:30:00.000Z",
+        evaluatedAt: "2026-06-19T12:30:00.000Z",
+      });
+      assert.equal(oldStyleResult.isNew, true);
+    }
+
+    const oldStyleObservations = listObservations(
+      { network: "home-lab", order: "asc" },
+      { evaluatedAt: "2026-06-20T00:00:00.000Z" }
+    );
+    const oldStyleRegistryIds = oldStyleObservations
+      .map((entry) => entry.registryId)
+      .sort();
+    const oldStyleActivity = buildNetworkActivity({
+      evaluatedAt: "2026-06-20T00:00:00.000Z",
+    });
+
+    assert.equal(oldStyleObservations.length, 2);
+    assert.equal(oldStyleActivity.status, "ready");
+
+    const secondBody = await ingestOnce();
+    const secondObservations = listObservations(
+      { network: "home-lab", order: "asc" },
+      { evaluatedAt: "2026-06-20T00:00:00.000Z" }
+    );
+    const secondActivity = buildNetworkActivity({
+      evaluatedAt: "2026-06-20T00:00:00.000Z",
+    });
+
+    assert.equal(secondBody.success, true);
+    assert.equal(secondBody.newRuns, 0, "existing scan runs must still dedupe");
+    assert.equal(secondBody.duplicateRuns, 2);
+    assert.equal(secondBody.observations.created, 0);
+    assert.equal(secondBody.observations.duplicate, 2);
+    assert.equal(secondBody.observations.failed, 0);
+    assert.deepEqual(secondBody.observations.warnings, []);
+    assert.equal(secondObservations.length, 2, "old-style same-run observations must not duplicate");
+    assert.deepEqual(
+      secondObservations.map((entry) => entry.registryId).sort(),
+      oldStyleRegistryIds,
+      "existing old-style observation records must be preserved"
+    );
+    assert.equal(secondActivity.status, "ready");
+    assert.equal(
+      secondActivity.events.length,
+      oldStyleActivity.events.length,
+      "/activity must not gain repeated same-run events after compatibility dedupe"
+    );
+    assertObservationRegistryOutputSafe(readObservationRegistryFilesText());
+  });
+});
+
 run("ingest POST backfills a missing observation for an existing run idempotently", async () => {
   const ingestRoute = await import("../src/app/api/ingest/route.ts");
 

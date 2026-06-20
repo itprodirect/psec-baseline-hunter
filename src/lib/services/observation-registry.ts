@@ -168,6 +168,19 @@ function saveSanitizedObservationBundle(
     }
   }
 
+  const existingSourceRunObservation = findExistingObservationBySourceRunIdentity(
+    registry,
+    bundle,
+    options
+  );
+  if (existingSourceRunObservation) {
+    return {
+      record: existingSourceRunObservation,
+      isNew: false,
+      duplicateOf: existingSourceRunObservation.registryId,
+    };
+  }
+
   const importedAt = optionIsoOrNull(options.importedAt, "importedAt") ?? new Date().toISOString();
   const registryId = buildRegistryId(bundle, contentHash);
   const record = buildObservationRecord(registryId, bundle, contentHash, importedAt, {
@@ -181,6 +194,39 @@ function saveSanitizedObservationBundle(
   saveObservationRegistry(registry);
 
   return { record, isNew: true };
+}
+
+function findExistingObservationBySourceRunIdentity(
+  registry: ObservationRegistryIndex,
+  bundle: ObservationBundleV1,
+  options: ObservationFreshnessOptions
+): ObservationRegistryRecord | null {
+  const sourceRunUid = stableSourceIdentityPart(bundle.batch.sourceRunUid, "run-unknown");
+  const observationId = stableSourceIdentityPart(bundle.observationId, "obs-unknown");
+  if (!sourceRunUid && !observationId) return null;
+
+  for (const entry of Object.values(registry.observations)) {
+    const entrySourceRunUid = stableSourceIdentityPart(
+      entry.batch.sourceRunUid,
+      "run-unknown"
+    );
+    const entryObservationId = stableSourceIdentityPart(entry.observationId, "obs-unknown");
+    const matchesSourceRunUid = Boolean(sourceRunUid && entrySourceRunUid === sourceRunUid);
+    const matchesObservationId = Boolean(observationId && entryObservationId === observationId);
+
+    if (!matchesSourceRunUid && !matchesObservationId) continue;
+
+    const existing = readObservationRecord(entry.registryId, options);
+    if (existing) return existing;
+  }
+
+  return null;
+}
+
+function stableSourceIdentityPart(value: unknown, fallback: string): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed && trimmed !== fallback ? trimmed : null;
 }
 
 function readObservationRecord(
