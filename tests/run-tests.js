@@ -2098,6 +2098,72 @@ run("observation registry retains same-site observations chronologically and ded
   });
 });
 
+run("observation registry dedupes by stable source run without collapsing reused observation IDs", async () => {
+  await withTempCwd(async () => {
+    const oldStyle = createObservationRegistryBundle({
+      runUid: "compat-source-run",
+      network: "compat-dedupe-lab",
+      generatedAt: "2026-06-19T12:00:00.000Z",
+    });
+    const deterministic = createObservationRegistryBundle({
+      runUid: "compat-source-run",
+      network: "compat-dedupe-lab",
+      generatedAt: "2026-04-01T12:06:00.000Z",
+    });
+
+    assert.equal(oldStyle.batch.sourceRunUid, deterministic.batch.sourceRunUid);
+    assert.equal(oldStyle.observationId, deterministic.observationId);
+    assert.notEqual(
+      computeObservationBundleContentHash(oldStyle),
+      computeObservationBundleContentHash(deterministic)
+    );
+
+    const oldStyleResult = registerObservationBundle(oldStyle, {
+      importedAt: "2026-06-19T12:30:00.000Z",
+      evaluatedAt: "2026-06-20T00:00:00.000Z",
+    });
+    const deterministicResult = registerObservationBundle(deterministic, {
+      importedAt: "2026-06-20T12:30:00.000Z",
+      evaluatedAt: "2026-06-21T00:00:00.000Z",
+    });
+
+    assert.equal(oldStyleResult.isNew, true);
+    assert.equal(deterministicResult.isNew, false);
+    assert.equal(deterministicResult.duplicateOf, oldStyleResult.record.registryId);
+
+    const thirdParty = createObservationRegistryBundle({
+      runUid: "third-party-source-run",
+      network: "compat-dedupe-lab",
+      generatedAt: "2026-04-01T12:07:00.000Z",
+    });
+    thirdParty.observationId = oldStyle.observationId;
+    thirdParty.notes = ["Corrected third-party import that reused an observation id."];
+
+    assert.notEqual(thirdParty.batch.sourceRunUid, oldStyle.batch.sourceRunUid);
+    assert.notEqual(
+      computeObservationBundleContentHash(thirdParty),
+      computeObservationBundleContentHash(oldStyle)
+    );
+
+    const thirdPartyResult = registerObservationBundle(thirdParty, {
+      importedAt: "2026-06-21T12:30:00.000Z",
+      evaluatedAt: "2026-06-22T00:00:00.000Z",
+    });
+    const listed = listObservations(
+      { network: "compat-dedupe-lab", order: "asc" },
+      { evaluatedAt: "2026-06-22T00:00:00.000Z" }
+    );
+
+    assert.equal(thirdPartyResult.isNew, true);
+    assert.notEqual(thirdPartyResult.record.registryId, oldStyleResult.record.registryId);
+    assert.equal(listed.length, 2);
+    assert.deepEqual(
+      listed.map((entry) => entry.batch.sourceRunUid).sort(),
+      [oldStyle.batch.sourceRunUid, thirdParty.batch.sourceRunUid].sort()
+    );
+  });
+});
+
 run("observation registry sanitizes imports before persistence and omits unsafe bodies", async () => {
   await withTempCwd(async () => {
     const bundle = createObservationRegistryBundle({
@@ -3270,6 +3336,48 @@ run("packet highway save API returns a reopenable supplemental visual evidence l
   });
 });
 
+run("packet highway save API rejects malformed network names with safe validation errors", async () => {
+  const packetHighwayObservationRoute = await import("../src/app/api/packet-highway/observations/route.ts");
+
+  await withTempCwd(async () => {
+    for (const networkName of [42, ["lab"], { name: "lab" }, null, undefined]) {
+      const response = await packetHighwayObservationRoute.POST(
+        createRawJsonRequest(
+          "/api/packet-highway/observations",
+          "POST",
+          JSON.stringify({
+            capture: createPacketHighwayCapture(),
+            site: networkName === undefined ? {} : { networkName },
+            collectionVantage: "this-computer",
+          })
+        )
+      );
+      const body = await response.json();
+
+      assert.equal(response.status, 400);
+      assert.equal(body.success, false);
+      assert.match(body.error, /Choose a site or network name/);
+    }
+
+    const validResponse = await packetHighwayObservationRoute.POST(
+      createRawJsonRequest(
+        "/api/packet-highway/observations",
+        "POST",
+        JSON.stringify({
+          capture: createPacketHighwayCapture(),
+          site: { networkName: "  packet-highway-valid-lab  " },
+          collectionVantage: "this-computer",
+        })
+      )
+    );
+    const validBody = await validResponse.json();
+
+    assert.equal(validResponse.status, 200);
+    assert.equal(validBody.success, true);
+    assert.equal(validBody.observation.networkName, "packet-highway-valid-lab");
+  });
+});
+
 run("network activity links packet highway evidence without using it as primary evidence", async () => {
   await withTempCwd(async () => {
     const baseline = createComparisonBundle({
@@ -3961,11 +4069,84 @@ run("network statement downgrades insufficient week coverage and labels Packet H
 
     assert.equal(statement.title, "Network Statement");
     assert.equal(statement.selectedPeriod.weeklyTitleSupported, false);
+    assert.equal(statement.coverageSummary.hasInsufficientWeekCoverage, true);
     assert.match(statement.selectedPeriod.titleReason, /do not span enough/);
     assert.equal(statement.coverageSummary.supplementalPacketHighwayCount, 1);
     assert.match(text, /Supplemental only/);
     assert.match(text, /Packet Highway evidence cannot prove complete inventory/);
+    assert.match(text, /beginning and end of the requested week/);
     assert.doesNotMatch(text, /Weekly Network Statement/);
+  });
+});
+
+run("network statement omits weekly collection warnings for non-week ranges", async () => {
+  await withTempCwd(async () => {
+    for (const observation of [
+      { id: "day-1", observedAt: "2026-05-01T10:00:00.000Z" },
+      { id: "day-3", observedAt: "2026-05-03T10:00:00.000Z" },
+      { id: "day-15", observedAt: "2026-05-15T10:00:00.000Z" },
+    ]) {
+      registerObservationBundle(
+        createComparisonBundle({
+          observationId: `obs-statement-nonweek-${observation.id}`,
+          siteId: "site-statement-nonweek",
+          networkName: "statement-nonweek-lab",
+          observedAt: observation.observedAt,
+          devices: [
+            {
+              deviceId: "nonweek-device",
+              ips: ["192.0.2.10"],
+              macs: ["02:00:00:00:00:10"],
+              ports: [{ port: 80, protocol: "tcp", service: "http" }],
+            },
+          ],
+        }),
+        {
+          importedAt: observation.observedAt.replace("10:00:00", "10:05:00"),
+          evaluatedAt: "2026-06-01T00:00:00.000Z",
+        }
+      );
+    }
+
+    const cases = [
+      {
+        label: "one-day",
+        from: "2026-05-01T00:00:00.000Z",
+        to: "2026-05-01T23:59:59.999Z",
+      },
+      {
+        label: "multi-day non-week",
+        from: "2026-05-01T00:00:00.000Z",
+        to: "2026-05-03T23:59:59.999Z",
+      },
+      {
+        label: "monthly",
+        from: "2026-05-01T00:00:00.000Z",
+        to: "2026-05-31T23:59:59.999Z",
+      },
+    ];
+
+    for (const testCase of cases) {
+      const statement = buildNetworkStatement({
+        siteId: "site-statement-nonweek",
+        from: testCase.from,
+        to: testCase.to,
+        evaluatedAt: "2026-06-01T00:00:00.000Z",
+      });
+      const markdown = renderNetworkStatementMarkdown(statement);
+      const combinedText = `${statementText(statement)}\n${markdown}`;
+
+      assert.equal(statement.title, "Network Statement", testCase.label);
+      assert.equal(statement.selectedPeriod.requestedWeeklyRange, false, testCase.label);
+      assert.equal(statement.coverageSummary.hasInsufficientWeekCoverage, false, testCase.label);
+      assert.doesNotMatch(
+        combinedText,
+        /requested week|weekly title|unconditional weekly coverage claim|beginning and end of the requested week/i,
+        testCase.label
+      );
+      assertMarkdownContainsStatementItems(statement, markdown);
+      assertStatementExportSafe(markdown);
+    }
   });
 });
 
@@ -3978,7 +4159,11 @@ run("network statement API Markdown matches print sections and redacts export-se
       siteId: "site-statement-privacy",
       networkName: "statement-privacy-lab",
       observedAt: "2026-06-01T10:00:00.000Z",
-      coverageNotes: ["C:\\Users\\user\\secret\\scan.xml", "<packet>raw payload</packet>"],
+      coverageNotes: [
+        "C:\\Users\\user\\secret\\scan.xml",
+        "<packet>raw payload</packet>",
+        "Saw 192.168.1.5 from aa:bb:cc:dd:ee:ff, aa-bb-cc-dd-ee-11, and aabb.ccdd.ee22; rule watch-1 count 12.",
+      ],
       devices: [
         {
           deviceId: "privacy-device",
@@ -4009,7 +4194,7 @@ run("network statement API Markdown matches print sections and redacts export-se
     upsertDeviceResponse(
       createDeviceResponseTargetForBundleDevice(current),
       "not_sure",
-      "C:\\Users\\user\\secret sk-testsecretvalue1234567890",
+      "Visitor 192.168.1.9 aa-bb-cc-dd-ee-13 rule watch-1 count 12",
       { now: "2026-06-07T11:00:00.000Z" }
     );
     registerObservationBundle(baseline, {
@@ -4034,11 +4219,24 @@ run("network statement API Markdown matches print sections and redacts export-se
     );
     const markdown = await markdownResponse.text();
 
+    const serializedStatement = JSON.stringify(jsonBody.statement.sections);
+    const combinedExport = `${markdown}\n${serializedStatement}`;
+
     assert.equal(markdownResponse.status, 200);
     assert.equal(markdownResponse.headers.get("content-type"), "text/markdown; charset=utf-8");
     assertMarkdownContainsStatementItems(jsonBody.statement, markdown);
     assertStatementExportSafe(markdown);
-    assertStatementExportSafe(JSON.stringify(jsonBody.statement.sections));
+    assertStatementExportSafe(serializedStatement);
+    assert.match(combinedExport, /\[redacted ip\]/);
+    assert.match(combinedExport, /\[redacted mac\]/);
+    assert.doesNotMatch(combinedExport, /192\.168\.1\.(5|9)/);
+    assert.doesNotMatch(combinedExport, /aa:bb:cc:dd:ee:ff/i);
+    assert.doesNotMatch(combinedExport, /aa-bb-cc-dd-ee-(11|13)/i);
+    assert.doesNotMatch(combinedExport, /aabb\.ccdd\.ee22/i);
+    assert.match(combinedExport, /watch-1/);
+    assert.match(combinedExport, /count 12/);
+    assert.match(combinedExport, /obs-statement-privacy-current/);
+    assert.match(markdown, /\/activity#/);
   });
 });
 

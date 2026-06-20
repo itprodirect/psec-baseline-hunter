@@ -131,7 +131,7 @@ export function buildNetworkStatement(
       supplementalPacketHighwayCount: supplementalEvidence.length,
       hasPartialCoverage: coverageFacts.hasPartialCoverage,
       hasStaleEvidence: coverageFacts.hasStaleEvidence,
-      hasInsufficientWeekCoverage: !period.weeklyTitleSupported,
+      hasInsufficientWeekCoverage: period.requestedWeeklyRange && !period.weeklyTitleSupported,
       hasInsufficientComparisonEvidence: comparisons.length === 0,
     },
     privacy: {
@@ -252,7 +252,11 @@ function selectedPeriodSection(
     item("period-title", `Title: ${period.weeklyTitleSupported ? "Weekly Network Statement" : "Network Statement"}.`),
     item("period-range", `Selected period: ${period.label}.`),
     item("period-generated", `Statement generated: ${formatDateTime(generatedAt)}.`),
-    item("period-title-reason", period.titleReason, period.weeklyTitleSupported ? "info" : "warning"),
+    item(
+      "period-title-reason",
+      period.titleReason,
+      period.requestedWeeklyRange && !period.weeklyTitleSupported ? "warning" : "info"
+    ),
   ]);
 }
 
@@ -296,7 +300,7 @@ function coverageVantageSection(
     )
   );
 
-  if (!period.weeklyTitleSupported) {
+  if (period.requestedWeeklyRange && !period.weeklyTitleSupported) {
     items.push(item("coverage-title-gap", period.titleReason, "warning"));
   }
 
@@ -550,7 +554,7 @@ function cannotConcludeSection(
     ),
   ];
 
-  if (!period.weeklyTitleSupported) {
+  if (period.requestedWeeklyRange && !period.weeklyTitleSupported) {
     items.push(item("cannot-week", "The selected evidence does not support an unconditional weekly coverage claim.", "warning"));
   }
   if (facts.hasPartialCoverage || facts.hasStaleEvidence || facts.comparisonCount === 0) {
@@ -585,7 +589,7 @@ function nextActionsSection(
       )
     );
   }
-  if (!period.weeklyTitleSupported) {
+  if (period.requestedWeeklyRange && !period.weeklyTitleSupported) {
     actions.push(
       item(
         "action-week",
@@ -730,7 +734,7 @@ function buildSelectedPeriod(
 
   let titleReason = "Stored observations span the requested week closely enough to support the weekly title.";
   if (!requestedWeeklyRange) {
-    titleReason = "The selected range is not a one-week period, so the statement uses the general title.";
+    titleReason = "The selected range uses the general Network Statement title.";
   } else if (comparisonCount === 0) {
     titleReason = "The requested week does not have two comparable primary observations, so the weekly title is not supported.";
   } else if (!weekCovered) {
@@ -995,6 +999,11 @@ function safeHref(value: string): string {
   return "#";
 }
 
+const IPV4_ADDRESS_PATTERN =
+  /\b(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\b/g;
+const MAC_ADDRESS_PATTERN =
+  /\b(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}\b|\b[0-9A-Fa-f]{4}\.[0-9A-Fa-f]{4}\.[0-9A-Fa-f]{4}\b/g;
+
 function sanitizeExportText(value: string): string {
   const cleaned = value
     .replace(/[\u0000-\u001f\u007f]/g, " ")
@@ -1003,6 +1012,8 @@ function sanitizeExportText(value: string): string {
     .replace(/\b(?:api[_-]?key|secret|password|token)\s*[:=]\s*[^\s,;]+/gi, "[redacted secret]")
     .replace(/\bsk-[A-Za-z0-9_-]{10,}\b/g, "[redacted secret]")
     .replace(/BEGIN (?:RSA |OPENSSH |EC |DSA )?PRIVATE KEY/gi, "[redacted secret]")
+    .replace(IPV4_ADDRESS_PATTERN, "[redacted ip]")
+    .replace(MAC_ADDRESS_PATTERN, "[redacted mac]")
     .replace(/[A-Za-z]:\\[^\s,;)"']+/g, "[redacted path]")
     .replace(/\\\\[^\\\s]+\\[^\s,;)"']+/g, "[redacted path]")
     .replace(/\/(?:home|tmp|Users|var|etc|workspace|opt)\/[^\s,;)"']*/g, "[redacted path]")
