@@ -118,6 +118,13 @@ export interface IngestResponseV2 {
   runs?: RunManifestInfo[];
   newRuns?: number;
   duplicateRuns?: number;
+  observations?: {
+    created: number;
+    duplicate: number;
+    skipped: number;
+    failed: number;
+    warnings: string[];
+  };
   error?: string;
 }
 

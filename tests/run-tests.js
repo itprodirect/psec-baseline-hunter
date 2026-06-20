@@ -3864,6 +3864,124 @@ run("ingest and parse POST reject invalid bodies and preserve valid file payload
   });
 });
 
+run("ingest POST creates observation records that populate network activity", async () => {
+  const ingestRoute = await import("../src/app/api/ingest/route.ts");
+
+  await withTempCwd(async () => {
+    const uploadsDir = path.join(process.cwd(), "data", "uploads");
+    const zipPath = path.join(uploadsDir, "activity-scans.zip");
+    fs.mkdirSync(uploadsDir, { recursive: true });
+    writeZip(zipPath, [
+      {
+        name: "home-lab/rawscans/2026-02-01_1000_baselinekit_v0/ports_top200_open.xml",
+        content: createObservationNmapXml([
+          {
+            ip: "192.0.2.10",
+            mac: "02:00:00:00:00:10",
+            vendor: "Example Devices",
+            hostname: "family-laptop.local",
+            ports: [{ port: 80, protocol: "tcp", service: "http" }],
+          },
+        ]),
+      },
+      {
+        name: "home-lab/rawscans/2026-02-08_1000_baselinekit_v0/ports_top200_open.xml",
+        content: createObservationNmapXml([
+          {
+            ip: "192.0.2.10",
+            mac: "02:00:00:00:00:10",
+            vendor: "Example Devices",
+            hostname: "family-laptop.local",
+            ports: [
+              { port: 80, protocol: "tcp", service: "http" },
+              { port: 443, protocol: "tcp", service: "https" },
+            ],
+          },
+        ]),
+      },
+    ]);
+
+    const ingestResponse = await ingestRoute.POST(
+      createJsonRequest("/api/ingest", "POST", {
+        zipPath: path.join("data", "uploads", "activity-scans.zip"),
+        network: "home-lab",
+      })
+    );
+    const ingestBody = await ingestResponse.json();
+    const observations = listObservations(
+      { network: "home-lab", order: "asc" },
+      { evaluatedAt: "2026-02-09T00:00:00.000Z" }
+    );
+    const activity = buildNetworkActivity({
+      evaluatedAt: "2026-02-09T00:00:00.000Z",
+    });
+
+    assert.equal(ingestResponse.status, 200);
+    assert.equal(ingestBody.success, true);
+    assert.equal(ingestBody.runs.length, 2);
+    assert.equal(ingestBody.observations.created, 2);
+    assert.equal(ingestBody.observations.failed, 0);
+    assert.deepEqual(ingestBody.observations.warnings, []);
+    assert.equal(observations.length, 2);
+    assert.equal(activity.status, "ready");
+    assert.equal(activity.site.networkName, "home-lab");
+    assert.ok(activity.events.some((event) => event.type === "service-or-port-opened"));
+    assertObservationRegistryOutputSafe(readObservationRegistryFilesText());
+  });
+});
+
+run("ingest POST preserves scan runs when observation registration fails", async () => {
+  const ingestRoute = await import("../src/app/api/ingest/route.ts");
+
+  await withMutedConsoleMethods(["error"], async () => {
+    await withTempCwd(async () => {
+      const uploadsDir = path.join(process.cwd(), "data", "uploads");
+      const observationsPath = path.join(process.cwd(), "data", "observations");
+      const zipPath = path.join(uploadsDir, "activity-observation-failure.zip");
+      fs.mkdirSync(uploadsDir, { recursive: true });
+      fs.mkdirSync(path.dirname(observationsPath), { recursive: true });
+      fs.writeFileSync(observationsPath, "not a directory");
+      writeZip(zipPath, [
+        {
+          name: "home-lab/rawscans/2026-02-01_1000_baselinekit_v0/ports_top200_open.xml",
+          content: createObservationNmapXml([
+            {
+              ip: "192.0.2.10",
+              mac: "02:00:00:00:00:10",
+              vendor: "Example Devices",
+              hostname: "family-laptop.local",
+              ports: [{ port: 80, protocol: "tcp", service: "http" }],
+            },
+          ]),
+        },
+      ]);
+
+      const ingestResponse = await ingestRoute.POST(
+        createJsonRequest("/api/ingest", "POST", {
+          zipPath: path.join("data", "uploads", "activity-observation-failure.zip"),
+          network: "home-lab",
+        })
+      );
+      const ingestBody = await ingestResponse.json();
+      const runsIndex = JSON.parse(
+        fs.readFileSync(path.join(process.cwd(), "data", "runs", "index.json"), "utf-8")
+      );
+      const warningText = ingestBody.observations.warnings.join("\n");
+
+      assert.equal(ingestResponse.status, 200);
+      assert.equal(ingestBody.success, true);
+      assert.equal(ingestBody.runs.length, 1);
+      assert.equal(ingestBody.newRuns, 1);
+      assert.equal(Object.keys(runsIndex.runs).length, 1);
+      assert.equal(ingestBody.observations.created, 0);
+      assert.equal(ingestBody.observations.failed, 1);
+      assert.equal(ingestBody.observations.warnings.length, 1);
+      assert.match(ingestBody.observations.warnings[0], /activity observation record could not be created/);
+      assert.doesNotMatch(warningText, /[A-Za-z]:\\|\/tmp\/|rawscans|<nmaprun|192\.0\.2\.10/);
+    });
+  });
+});
+
 run("LLM rate limit identity ignores proxy headers by default", () => {
   assert.equal(
     getLLMRateLimitIdentity(
