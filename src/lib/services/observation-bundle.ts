@@ -129,7 +129,16 @@ export function adaptRunManifestToObservationBundleV1(
   manifest: RunManifest,
   options: AdaptRunOptions = {}
 ): ObservationBundleV1 {
-  const generatedAt = toIsoString(options.generatedAt) ?? new Date().toISOString();
+  // Anchor generatedAt to stable, run-derived values so adapting the same
+  // registered run is deterministic. Re-uploading a duplicate scan then yields
+  // an identical bundle (and content hash), letting the observation registry
+  // dedupe it instead of creating a repeated record. An explicit option still
+  // wins; new Date() is only a last resort when no run timestamps exist.
+  const generatedAt =
+    toIsoString(options.generatedAt) ??
+    toIsoString(manifest.timestamp) ??
+    toIsoString(manifest.createdAt) ??
+    new Date().toISOString();
   const runStartedAt = toIsoString(manifest.timestamp);
   const sources: ObservationSourceRef[] = [];
   const sourceLabelsPresent = new Set<string>();
