@@ -815,6 +815,36 @@ function assertStatementExportSafe(serialized) {
   assert.doesNotMatch(serialized, /raw packet payload|raw capture|raw scan body/i);
 }
 
+function assertStatementExportOmitsSensitiveSiteIdentifiers(serialized, rawSiteId, rawNetworkName, context) {
+  const derivedSiteId = statementDerivedIdPart(rawSiteId);
+  const derivedNetworkName = statementDerivedIdPart(rawNetworkName);
+  const derivedIdAlternatives = [derivedSiteId, derivedNetworkName]
+    .filter(Boolean)
+    .map(escapeRegExp)
+    .join("|");
+
+  assert.doesNotMatch(serialized, new RegExp(escapeRegExp(rawSiteId), "i"), `${context} exposed raw site ID`);
+  assert.doesNotMatch(serialized, new RegExp(escapeRegExp(rawNetworkName), "i"), `${context} exposed raw network name`);
+  assert.doesNotMatch(serialized, new RegExp(derivedIdAlternatives, "i"), `${context} exposed derived site identifier`);
+  assert.doesNotMatch(
+    serialized,
+    new RegExp(`obs[_-][^"\\s)]*(?:${derivedIdAlternatives})`, "i"),
+    `${context} exposed a derived observation or registry ID`
+  );
+  assert.doesNotMatch(serialized, /packet-highway\?observation=/i, `${context} exposed Packet Highway observation href`);
+  assert.doesNotMatch(serialized, /\/activity#/i, `${context} exposed Activity evidence href`);
+  assert.doesNotMatch(serialized, /"href"\s*:/i, `${context} exposed statement href fields`);
+  assert.doesNotMatch(serialized, /\]\(\/(?:activity|packet-highway)[^)]*\)/i, `${context} exposed Markdown evidence links`);
+}
+
+function statementDerivedIdPart(value) {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+}
+
 function statementText(statement) {
   return statement.sections
     .flatMap((section) => [
@@ -4065,7 +4095,9 @@ run("network statement downgrades insufficient week coverage and labels Packet H
       to: "2026-05-07T23:59:59.999Z",
       evaluatedAt: "2026-05-08T00:00:00.000Z",
     });
+    const markdown = renderNetworkStatementMarkdown(statement);
     const text = statementText(statement);
+    const packetHighwayItem = statementSection(statement, "packet-highway").items[0];
 
     assert.equal(statement.title, "Network Statement");
     assert.equal(statement.site.siteId, "site-statement-short");
@@ -4078,6 +4110,10 @@ run("network statement downgrades insufficient week coverage and labels Packet H
     assert.match(text, /Supplemental only/);
     assert.match(text, /Packet Highway evidence cannot prove complete inventory/);
     assert.match(text, /beginning and end of the requested week/);
+    assert.equal(packetHighwayItem.evidenceRefs.length, 1);
+    assert.equal(packetHighwayItem.evidenceRefs[0].kind, "packet-highway");
+    assert.match(packetHighwayItem.evidenceRefs[0].href, /^\/packet-highway\?observation=obs_/);
+    assert.match(markdown, /\[Open Packet Highway evidence\]\(\/packet-highway\?observation=obs_/);
     assert.doesNotMatch(text, /Weekly Network Statement/);
   });
 });
@@ -4087,7 +4123,7 @@ run("network statement matches Packet Highway with raw redaction-sensitive site 
     const rawSiteId = "198.51.100.42";
     const rawNetworkName = "aa:bb:cc:dd:ee:44";
     const baseline = createComparisonBundle({
-      observationId: "obs-statement-redaction-site-baseline",
+      observationId: "obs-198-51-100-42-baseline",
       siteId: rawSiteId,
       networkName: rawNetworkName,
       networkScope: "198.51.100.0/24",
@@ -4101,7 +4137,7 @@ run("network statement matches Packet Highway with raw redaction-sensitive site 
       ],
     });
     const current = createComparisonBundle({
-      observationId: "obs-statement-redaction-site-current",
+      observationId: "obs-aa-bb-cc-dd-ee-44-current",
       siteId: rawSiteId,
       networkName: rawNetworkName,
       networkScope: "198.51.100.0/24",
@@ -4148,6 +4184,7 @@ run("network statement matches Packet Highway with raw redaction-sensitive site 
     const sectionsJson = JSON.stringify(statement.sections);
     const combinedExport = `${statementJson}\n${sectionsJson}\n${markdown}`;
     const text = statementText(statement);
+    const packetHighwayItem = statementSection(statement, "packet-highway").items[0];
 
     assert.equal(statement.coverageSummary.primaryObservationCount, 2);
     assert.equal(statement.coverageSummary.comparisonCount, 1);
@@ -4156,10 +4193,18 @@ run("network statement matches Packet Highway with raw redaction-sensitive site 
     assert.equal(statement.site.networkName, "[redacted mac]");
     assert.match(text, /Supplemental Packet Highway records: 1/);
     assert.match(text, /Packet Highway visual evidence/);
+    assert.equal(packetHighwayItem.evidenceRefs.length, 0);
+    for (const section of statement.sections) {
+      for (const sectionItem of section.items) {
+        assert.equal(sectionItem.evidenceRefs.length, 0, `${section.id}/${sectionItem.id}`);
+      }
+    }
     assertMarkdownContainsStatementItems(statement, markdown);
     assertStatementExportSafe(markdown);
-    assert.doesNotMatch(combinedExport, new RegExp(escapeRegExp(rawSiteId)));
-    assert.doesNotMatch(combinedExport, new RegExp(escapeRegExp(rawNetworkName), "i"));
+    assertStatementExportOmitsSensitiveSiteIdentifiers(statementJson, rawSiteId, rawNetworkName, "statement JSON");
+    assertStatementExportOmitsSensitiveSiteIdentifiers(sectionsJson, rawSiteId, rawNetworkName, "sections JSON");
+    assertStatementExportOmitsSensitiveSiteIdentifiers(markdown, rawSiteId, rawNetworkName, "Markdown");
+    assertStatementExportOmitsSensitiveSiteIdentifiers(combinedExport, rawSiteId, rawNetworkName, "combined export");
   });
 });
 

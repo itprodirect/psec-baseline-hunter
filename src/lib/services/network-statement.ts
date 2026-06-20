@@ -64,6 +64,11 @@ interface StatementSiteIdentity {
   networkScopeRecorded: boolean;
 }
 
+interface StatementExportPolicy {
+  includeEvidenceRefs: boolean;
+  exposeObservationIds: boolean;
+}
+
 export function buildNetworkStatement(
   options: BuildNetworkStatementOptions
 ): NetworkStatementModel {
@@ -85,6 +90,7 @@ export function buildNetworkStatement(
   );
   const rawSiteIdentity = siteIdentityFromEntries(options.siteId, primaryEntries, selectedEntries);
   const site = sanitizeSiteIdentityForStatement(rawSiteIdentity);
+  const exportPolicy = statementExportPolicyFor(rawSiteIdentity);
   const allEntries = listObservations({}, freshnessOptions);
   const supplementalEvidence = supplementalEvidenceForStatement(
     entriesInRange(allEntries, from, to),
@@ -116,13 +122,13 @@ export function buildNetworkStatement(
     coverageVantageSection(primaryEntries, supplementalEvidence, coverageFacts, period),
     freshnessSection(primaryEntries),
     stableSection(comparisons, statementEvents, coverageFacts),
-    changedSection(statementEvents),
-    needsReviewSection(statementEvents),
-    unresolvedResponsesSection(statementEvents),
-    packetHighwaySection(supplementalEvidence),
+    changedSection(statementEvents, exportPolicy),
+    needsReviewSection(statementEvents, exportPolicy),
+    unresolvedResponsesSection(statementEvents, exportPolicy),
+    packetHighwaySection(supplementalEvidence, exportPolicy),
     cannotConcludeSection(coverageFacts, period, supplementalEvidence.length > 0),
     nextActionsSection(coverageFacts, period, statementEvents, supplementalEvidence.length > 0),
-    provenanceSection(comparisons, skipped, primaryEntries.length, responseCount, supplementalEvidence.length),
+    provenanceSection(comparisons, skipped, primaryEntries.length, responseCount, supplementalEvidence.length, exportPolicy),
   ];
 
   return {
@@ -431,7 +437,10 @@ function stableSection(
   ]);
 }
 
-function changedSection(events: StatementEvent[]): NetworkStatementSection {
+function changedSection(
+  events: StatementEvent[],
+  exportPolicy: StatementExportPolicy
+): NetworkStatementSection {
   if (events.length === 0) {
     return section("changed", "What changed", null, [
       item("changed-none", "No deterministic change events were produced for the selected comparisons."),
@@ -447,13 +456,16 @@ function changedSection(events: StatementEvent[]): NetworkStatementSection {
         `changed-${index + 1}`,
         `Comparison ${comparisonIndex}: ${event.title}. ${event.summary}`,
         "review",
-        [activityRef(event)]
+        statementEvidenceRefs(exportPolicy, [activityRef(event)])
       )
     )
   );
 }
 
-function needsReviewSection(events: StatementEvent[]): NetworkStatementSection {
+function needsReviewSection(
+  events: StatementEvent[],
+  exportPolicy: StatementExportPolicy
+): NetworkStatementSection {
   if (events.length === 0) {
     return section("needs-review", "What needs user review", null, [
       item("review-none", "No change events require user review from the selected comparisons."),
@@ -473,13 +485,16 @@ function needsReviewSection(events: StatementEvent[]): NetworkStatementSection {
         `review-${index + 1}`,
         `Comparison ${comparisonIndex}: ${event.reviewReason}${responseText}`,
         event.workflowPriority.level === "user-investigate" ? "review" : "info",
-        [activityRef(event)]
+        statementEvidenceRefs(exportPolicy, [activityRef(event)])
       );
     })
   );
 }
 
-function unresolvedResponsesSection(events: StatementEvent[]): NetworkStatementSection {
+function unresolvedResponsesSection(
+  events: StatementEvent[],
+  exportPolicy: StatementExportPolicy
+): NetworkStatementSection {
   const unresolved = events.filter(({ event }) => {
     const state = event.deviceResponse.statement?.state;
     return state === "not_sure" || state === "investigate";
@@ -505,14 +520,15 @@ function unresolvedResponsesSection(events: StatementEvent[]): NetworkStatementS
         `response-${index + 1}`,
         `Comparison ${comparisonIndex}: ${response.stateLabel}${friendlyName} remains unresolved for "${event.title}". This does not change the technical finding.`,
         "review",
-        [activityRef(event)]
+        statementEvidenceRefs(exportPolicy, [activityRef(event)])
       );
     })
   );
 }
 
 function packetHighwaySection(
-  supplementalEvidence: NetworkActivitySupplementalEvidence[]
+  supplementalEvidence: NetworkActivitySupplementalEvidence[],
+  exportPolicy: StatementExportPolicy
 ): NetworkStatementSection {
   if (supplementalEvidence.length === 0) {
     return section("packet-highway", "Packet Highway supplemental evidence", null, [
@@ -529,13 +545,13 @@ function packetHighwaySection(
         `packet-highway-${index + 1}`,
         `${evidence.label}: ${evidence.summary} Vantage: ${evidence.vantageLabel}; observed ${formatDateTime(evidence.observedAt)}.`,
         "info",
-        [
+        statementEvidenceRefs(exportPolicy, [
           {
             label: "Open Packet Highway evidence",
             href: evidence.href,
             kind: "packet-highway",
           },
-        ]
+        ])
       )
     )
   );
@@ -643,7 +659,8 @@ function provenanceSection(
   skipped: StatementSkippedComparison[],
   primaryObservationCount: number,
   responseCount: number,
-  supplementalCount: number
+  supplementalCount: number,
+  exportPolicy: StatementExportPolicy
 ): NetworkStatementSection {
   const items: NetworkStatementItem[] = [
     item(
@@ -657,27 +674,33 @@ function provenanceSection(
   ];
 
   for (const comparison of comparisons) {
+    const comparisonSource = exportPolicy.exposeObservationIds
+      ? `${comparison.baseline.observationId} to ${comparison.current.observationId}`
+      : "baseline observation to current observation";
     items.push(
       item(
         `provenance-comparison-${comparison.index}`,
-        `Comparison ${comparison.index}: ${comparison.baseline.observationId} to ${comparison.current.observationId}; rule ${comparison.comparison.ruleVersion}; ${comparison.events.length} ${pluralize("event", comparison.events.length)}; guardrails ${guardrailCodes(comparison.comparison.guardrails)}.`,
+        `Comparison ${comparison.index}: ${comparisonSource}; rule ${comparison.comparison.ruleVersion}; ${comparison.events.length} ${pluralize("event", comparison.events.length)}; guardrails ${guardrailCodes(comparison.comparison.guardrails)}.`,
         "info",
-        [
+        statementEvidenceRefs(exportPolicy, [
           {
             label: `Comparison ${comparison.index} activity evidence`,
             href: "/activity",
             kind: "activity",
           },
-        ]
+        ])
       )
     );
   }
 
   for (const [index, skippedComparison] of skipped.entries()) {
+    const comparisonSource = exportPolicy.exposeObservationIds
+      ? `${skippedComparison.baselineObservationId} to ${skippedComparison.currentObservationId}`
+      : "baseline observation to current observation";
     items.push(
       item(
         `provenance-skipped-${index + 1}`,
-        `Skipped comparison ${skippedComparison.baselineObservationId} to ${skippedComparison.currentObservationId}: ${skippedComparison.reason}.`,
+        `Skipped comparison ${comparisonSource}: ${skippedComparison.reason}.`,
         "warning"
       )
     );
@@ -834,6 +857,24 @@ function sanitizeSiteIdentityForStatement(
     networkName: sanitizeExportText(site.networkName),
     networkScopeRecorded: site.networkScopeRecorded,
   };
+}
+
+function statementExportPolicyFor(site: StatementSiteIdentity): StatementExportPolicy {
+  const siteIdentifierCanDeriveSensitiveIds =
+    containsExportSensitiveNetworkIdentifier(site.siteId) ||
+    containsExportSensitiveNetworkIdentifier(site.networkName);
+
+  return {
+    includeEvidenceRefs: !siteIdentifierCanDeriveSensitiveIds,
+    exposeObservationIds: !siteIdentifierCanDeriveSensitiveIds,
+  };
+}
+
+function statementEvidenceRefs(
+  exportPolicy: StatementExportPolicy,
+  evidenceRefs: NetworkStatementEvidenceRef[]
+): NetworkStatementEvidenceRef[] {
+  return exportPolicy.includeEvidenceRefs ? evidenceRefs : [];
 }
 
 function section(
@@ -1020,6 +1061,14 @@ const IPV4_ADDRESS_PATTERN =
   /\b(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\b/g;
 const MAC_ADDRESS_PATTERN =
   /\b(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}\b|\b[0-9A-Fa-f]{4}\.[0-9A-Fa-f]{4}\.[0-9A-Fa-f]{4}\b/g;
+const IPV4_ADDRESS_DETECT_PATTERN =
+  /\b(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\b/;
+const MAC_ADDRESS_DETECT_PATTERN =
+  /\b(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}\b|\b[0-9A-Fa-f]{4}\.[0-9A-Fa-f]{4}\.[0-9A-Fa-f]{4}\b/;
+
+function containsExportSensitiveNetworkIdentifier(value: string): boolean {
+  return IPV4_ADDRESS_DETECT_PATTERN.test(value) || MAC_ADDRESS_DETECT_PATTERN.test(value);
+}
 
 function sanitizeExportText(value: string): string {
   const cleaned = value
