@@ -1290,7 +1290,14 @@ run("extractZipSafely rejects traversal entries before extraction", () => {
 
 run("extractZipSafely rejects absolute path entries before extraction", () => {
   withTempDir((tempDir) => {
-    const unsafeNames = ["/evil.txt", "C:/evil.txt"];
+    const unsafeNames = [
+      "/evil.txt",
+      "C:/evil.txt",
+      "C:\\evil.txt",
+      "C:evil.txt",
+      "\\evil.txt",
+      "\\\\server\\share\\evil.txt",
+    ];
 
     unsafeNames.forEach((unsafeName, index) => {
       const zipPath = path.join(tempDir, `absolute-${index}.zip`);
@@ -1306,6 +1313,25 @@ run("extractZipSafely rejects absolute path entries before extraction", () => {
       );
       assert.equal(fs.existsSync(extractDir), false);
     });
+  });
+});
+
+run("extractZipSafely rejects backslash traversal entries before extraction", () => {
+  withTempDir((tempDir) => {
+    const zipPath = path.join(tempDir, "windows-traversal.zip");
+    const extractDir = path.join(tempDir, "extract");
+    const outsidePath = path.join(tempDir, "evil.txt");
+
+    writeZip(zipPath, [
+      { name: "safe.txt", unsafeName: "safe\\..\\evil.txt", content: "bad" },
+    ]);
+
+    assert.throws(
+      () => extractZipSafely(zipPath, extractDir),
+      /Unsafe ZIP entry rejected/
+    );
+    assert.equal(fs.existsSync(outsidePath), false);
+    assert.equal(fs.existsSync(extractDir), false);
   });
 });
 
@@ -1360,6 +1386,31 @@ run("extractZipSafely preserves a valid baseline archive layout", () => {
     writeZip(zipPath, [
       {
         name: "demo-network/rawscans/2026-01-01_0101_baseline/ports_top200_open.xml",
+        content: "<nmaprun></nmaprun>",
+      },
+    ]);
+
+    extractZipSafely(zipPath, extractDir);
+    assert.equal(fs.readFileSync(scanPath, "utf8"), "<nmaprun></nmaprun>");
+  });
+});
+
+run("extractZipSafely preserves a Windows-style baseline archive layout", () => {
+  withTempDir((tempDir) => {
+    const zipPath = path.join(tempDir, "windows-valid.zip");
+    const extractDir = path.join(tempDir, "extract");
+    const scanPath = path.join(
+      extractDir,
+      "home-lab",
+      "rawscans",
+      "2026-02-08_1000_baselinekit_v0",
+      "ports_top200_open.xml"
+    );
+
+    writeZip(zipPath, [
+      {
+        name: "placeholder.xml",
+        unsafeName: "home-lab\\rawscans\\2026-02-08_1000_baselinekit_v0\\ports_top200_open.xml",
         content: "<nmaprun></nmaprun>",
       },
     ]);
@@ -5356,6 +5407,48 @@ run("ingest and parse POST reject invalid bodies and preserve valid file payload
   });
 });
 
+run("ingest POST accepts Windows-style ZIP member paths", async () => {
+  const ingestRoute = await import("../src/app/api/ingest/route.ts");
+
+  await withTempCwd(async () => {
+    const uploadsDir = path.join(process.cwd(), "data", "uploads");
+    const zipPath = path.join(uploadsDir, "windows-style-scan.zip");
+    fs.mkdirSync(uploadsDir, { recursive: true });
+    writeZip(zipPath, [
+      {
+        name: "placeholder.xml",
+        unsafeName: "home-lab\\rawscans\\2026-02-08_1000_baselinekit_v0\\ports_top200_open.xml",
+        content: createObservationNmapXml([
+          {
+            ip: "192.0.2.10",
+            mac: "02:00:00:00:00:10",
+            vendor: "Example Devices",
+            hostname: "family-laptop.local",
+            ports: [{ port: 80, protocol: "tcp", service: "http" }],
+          },
+        ]),
+      },
+    ]);
+
+    const ingestResponse = await ingestRoute.POST(
+      createJsonRequest("/api/ingest", "POST", {
+        zipPath: path.join("data", "uploads", "windows-style-scan.zip"),
+        network: "home-lab",
+      })
+    );
+    const ingestBody = await ingestResponse.json();
+
+    assert.equal(ingestResponse.status, 200);
+    assert.equal(ingestBody.success, true);
+    assert.equal(ingestBody.runs.length, 1);
+    assert.equal(ingestBody.newRuns, 1);
+    assert.equal(ingestBody.duplicateRuns, 0);
+    assert.equal(ingestBody.observations.created, 1);
+    assert.equal(ingestBody.observations.failed, 0);
+    assert.deepEqual(ingestBody.observations.warnings, []);
+    assertObservationRegistryOutputSafe(readObservationRegistryFilesText());
+  });
+});
 run("ingest POST creates observation records that populate network activity", async () => {
   const ingestRoute = await import("../src/app/api/ingest/route.ts");
 
