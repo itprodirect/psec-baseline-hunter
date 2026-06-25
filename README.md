@@ -174,16 +174,25 @@ psec-baseline-hunter/
 Add to `.env.local`:
 
 ```bash
-# Anthropic (recommended)
-ANTHROPIC_API_KEY=sk-ant-...
-ANTHROPIC_MODEL=claude-3-5-sonnet-latest
+# Anthropic is used first when configured.
+ANTHROPIC_API_KEY=sk-ant-your-key-here
+ANTHROPIC_MODEL=claude-3-5-sonnet-20241022
 
-# Or OpenAI
-OPENAI_API_KEY=sk-...
-OPENAI_MODEL=gpt-4o-mini
+# OpenAI is used only when Anthropic is not configured.
+OPENAI_API_KEY=sk-your-key-here
+OPENAI_MODEL=gpt-4o
+
+# Optional LLM safety controls.
+LLM_REQUEST_TIMEOUT_MS=15000
+LLM_MAX_TOKENS=2000
 ```
 
-Without API keys, the app uses intelligent rule-based summaries.
+The model variables are optional; the values shown above match the current runtime defaults. Without API keys, or when route-level LLM calls fail, the app uses intelligent rule-based summaries.
+
+Current implementation notes:
+- OpenAI uses a direct Chat Completions API `fetch`, not the Responses API or the OpenAI SDK.
+- Anthropic uses a direct Messages API `fetch`, not the Anthropic SDK.
+- Future model-default or API modernization should be handled in a separate focused issue/PR.
 
 ---
 

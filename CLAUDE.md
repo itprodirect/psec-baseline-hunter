@@ -122,18 +122,24 @@ interface UserProfile {
 }
 ```
 
-### LLM Fallback
+### LLM Provider Behavior
 
-If no API key is configured, use rule-based summaries:
+Runtime provider behavior is centralized in `src/lib/llm/provider.ts`:
 
 ```typescript
-// Check for API key
-const hasLLM = process.env.ANTHROPIC_API_KEY || process.env.OPENAI_API_KEY;
-// Use rule-based fallback if no key
-const summary = hasLLM
-  ? await generateLLMSummary()
-  : generateRuleBasedSummary();
+// Provider selection order:
+1. ANTHROPIC_API_KEY -> Anthropic Messages API
+2. OPENAI_API_KEY -> OpenAI Chat Completions API
+3. Neither -> rule-based summaries
 ```
+
+Current runtime defaults:
+- `ANTHROPIC_MODEL || "claude-3-5-sonnet-20241022"`
+- `OPENAI_MODEL || "gpt-4o"`
+- `LLM_REQUEST_TIMEOUT_MS || 15000`
+- `LLM_MAX_TOKENS || 2000`
+
+The provider currently uses direct `fetch` calls. OpenAI uses Chat Completions, not the Responses API or SDK. Anthropic uses Messages API, not the Anthropic SDK. Route-level LLM failures fall back to rule-based summaries. Future model-default or API modernization belongs in a separate focused issue/PR.
 
 ---
 

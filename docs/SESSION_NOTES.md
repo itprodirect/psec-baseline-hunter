@@ -28,7 +28,7 @@ Implemented LLM-powered explanations that adapt to user profile:
 - `src/components/diff/PersonalizedDiffCard.tsx` - "Explain This" card for Changes page
 
 **Key Features:**
-- Dual LLM support (Anthropic preferred, OpenAI fallback)
+- Dual LLM support (Anthropic preferred when configured; OpenAI used when Anthropic is not configured)
 - Rule-based fallback when no API key configured
 - Privacy-first (IPs redacted by default, opt-in to include)
 - Markdown output with copy/download buttons
@@ -84,12 +84,16 @@ main branch:
 
 #### LLM Provider Selection
 
+Historical session note, corrected to match the current runtime provider behavior tracked in issue #52:
+
 ```typescript
 // Environment variables checked in order:
-1. ANTHROPIC_API_KEY → Uses Claude claude-sonnet-4-20250514
-2. OPENAI_API_KEY → Uses GPT-4o
-3. Neither → Falls back to rule-based summary
+1. ANTHROPIC_API_KEY -> Uses Anthropic model ANTHROPIC_MODEL or claude-3-5-sonnet-20241022
+2. OPENAI_API_KEY -> Uses OpenAI model OPENAI_MODEL or gpt-4o
+3. Neither -> Falls back to rule-based summary
 ```
+
+OpenAI currently uses direct Chat Completions API fetch, not Responses API or SDK. Anthropic currently uses direct Messages API fetch, not SDK. Future model/API modernization should be handled in a separate focused issue/PR.
 
 #### Persona Context Pattern
 
