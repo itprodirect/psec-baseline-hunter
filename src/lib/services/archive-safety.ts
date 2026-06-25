@@ -20,24 +20,23 @@ function isPathWithin(baseDir: string, candidatePath: string): boolean {
   );
 }
 
-function assertSafeZipEntryName(entryName: string, extractionDir: string): void {
+function normalizeZipEntrySegments(entryName: string, extractionDir: string): string[] {
   if (!entryName || entryName.includes("\0")) {
     throw new Error("Unsafe ZIP entry rejected: empty or invalid entry name");
   }
 
-  if (entryName.includes("\\")) {
-    throw new Error(`Unsafe ZIP entry rejected: ${entryName}`);
-  }
+  const normalizedName = entryName.replace(/\\/g, "/");
 
   if (
-    path.posix.isAbsolute(entryName) ||
+    path.posix.isAbsolute(normalizedName) ||
     path.win32.isAbsolute(entryName) ||
-    /^[A-Za-z]:/.test(entryName)
+    path.win32.isAbsolute(normalizedName) ||
+    /^[A-Za-z]:/.test(normalizedName)
   ) {
     throw new Error(`Unsafe ZIP entry rejected: ${entryName}`);
   }
 
-  const segments = entryName.split("/").filter(Boolean);
+  const segments = normalizedName.split("/").filter(Boolean);
   if (segments.length === 0 || segments.some(segment => segment === "." || segment === "..")) {
     throw new Error(`Unsafe ZIP entry rejected: ${entryName}`);
   }
@@ -46,6 +45,8 @@ function assertSafeZipEntryName(entryName: string, extractionDir: string): void 
   if (!isPathWithin(extractionDir, resolvedTarget)) {
     throw new Error(`Unsafe ZIP entry rejected: ${entryName}`);
   }
+
+  return segments;
 }
 
 function getUncompressedSize(entry: AdmZip.IZipEntry): number {
@@ -74,7 +75,7 @@ export function inspectZipBeforeExtraction(
 
   let totalUncompressedBytes = 0;
   for (const entry of entries) {
-    assertSafeZipEntryName(entry.entryName, extractionDir);
+    normalizeZipEntrySegments(entry.entryName, extractionDir);
 
     totalUncompressedBytes += getUncompressedSize(entry);
     if (totalUncompressedBytes > maxTotalUncompressedBytes) {
@@ -94,5 +95,16 @@ export function extractZipSafely(
   inspectZipBeforeExtraction(zip, extractionDir, limits);
 
   fs.mkdirSync(extractionDir, { recursive: true });
-  zip.extractAllTo(extractionDir, true);
+  for (const entry of zip.getEntries()) {
+    const segments = normalizeZipEntrySegments(entry.entryName, extractionDir);
+    const targetPath = path.resolve(extractionDir, ...segments);
+
+    if (entry.isDirectory) {
+      fs.mkdirSync(targetPath, { recursive: true });
+      continue;
+    }
+
+    fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+    fs.writeFileSync(targetPath, entry.getData());
+  }
 }
