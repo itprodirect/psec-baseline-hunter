@@ -86,12 +86,11 @@ main branch:
 
 Historical session note, corrected to match the current runtime provider behavior tracked in issue #52:
 
-```typescript
-// Environment variables checked in order:
-1. ANTHROPIC_API_KEY -> Uses Anthropic model ANTHROPIC_MODEL or claude-3-5-sonnet-20241022
-2. OPENAI_API_KEY -> Uses OpenAI model OPENAI_MODEL or gpt-4o
+Environment variables checked in order:
+
+1. `ANTHROPIC_API_KEY` -> Uses Anthropic model `ANTHROPIC_MODEL` or `claude-3-5-sonnet-20241022`
+2. `OPENAI_API_KEY` -> Uses OpenAI model `OPENAI_MODEL` or `gpt-4o`
 3. Neither -> Falls back to rule-based summary
-```
 
 OpenAI currently uses direct Chat Completions API fetch, not Responses API or SDK. Anthropic currently uses direct Messages API fetch, not SDK. Future model/API modernization should be handled in a separate focused issue/PR.
 

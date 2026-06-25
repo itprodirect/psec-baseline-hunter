@@ -126,12 +126,11 @@ interface UserProfile {
 
 Runtime provider behavior is centralized in `src/lib/llm/provider.ts`:
 
-```typescript
-// Provider selection order:
-1. ANTHROPIC_API_KEY -> Anthropic Messages API
-2. OPENAI_API_KEY -> OpenAI Chat Completions API
+Provider selection order:
+
+1. `ANTHROPIC_API_KEY` -> Anthropic Messages API
+2. `OPENAI_API_KEY` -> OpenAI Chat Completions API
 3. Neither -> rule-based summaries
-```
 
 Current runtime defaults:
 - `ANTHROPIC_MODEL || "claude-3-5-sonnet-20241022"`
