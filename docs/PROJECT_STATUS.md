@@ -1,6 +1,6 @@
 # PSEC Baseline Hunter - Project Status
 
-**Last Updated:** 2026-02-18
+**Last Updated:** 2026-06-27
 **Current Branch:** `main`
 **Version:** v0.6.0 - Custom Rules and History
 
@@ -138,6 +138,16 @@ src/
 |------|--------|---------|
 | 2026-02-18 | Refactor `scorecard` and `diff` pages into reusable components | Cleaner page orchestration and easier UX iteration |
 | 2026-02-18 | Update generated Next.js type reference path | Keeps generated typing references aligned |
+
+---
+
+## Session 01B Status Note
+
+- Date: 2026-06-27
+- Battery replacement is installed but still being stabilized.
+- PSEC Session 01B dogfooding was completed or advanced.
+- Next recommended PSEC action is a clean closeout / next-slice decision, not new feature work.
+- No code changes are being made in this task.
 
 ---
 
