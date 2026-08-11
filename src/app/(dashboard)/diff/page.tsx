@@ -1,38 +1,50 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { GitCompare, ArrowRight, Loader2 } from "lucide-react";
 import { useDemo } from "@/lib/context/demo-context";
 import { DiffData, RunManifestInfo, RunsListResponseV2, SavedComparison, ComparisonResponse } from "@/lib/types";
 import { PersonalizedDiffCard } from "@/components/diff/PersonalizedDiffCard";
 import { RulesManagerCard } from "@/components/rules/RulesManagerCard";
-import { diffToCSV, watchlistToCSV, downloadCSV, formatDateForFilename } from "@/lib/utils/csv-export";
+import {
+  diffToCSV,
+  diffToMarkdown,
+  downloadCSV,
+  formatDateForFilename,
+  reviewListToCSV,
+  reviewListToMarkdown,
+} from "@/lib/utils/csv-export";
 import { ExportCSVButton } from "@/components/ui/export-csv-button";
 import { DiffView } from "@/components/diff/DiffView";
-import { buildTopActions } from "@/lib/services/diff-actions";
 import { RunSelector } from "@/components/diff/RunSelector";
 import { SaveComparisonDialog } from "@/components/diff/SaveComparisonDialog";
 import { ComparisonHistoryDialog } from "@/components/diff/ComparisonHistoryDialog";
 import { DiffEmptyState } from "@/components/diff/DiffEmptyState";
 
 function DiffDisplay({ data }: { data: DiffData }) {
-  const topActions = buildTopActions(data);
+  const downloadMarkdown = (content: string, filename: string) => {
+    const blob = new Blob([content], { type: "text/markdown" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = filename;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  };
 
   return (
     <DiffView
       data={data}
-      preDetails={<PersonalizedDiffCard diffData={data} />}
-      topActions={topActions}
-      riskExposureIntroText="These newly exposed services pose immediate security risk and require action."
-      riskNoExposureText="No new P0 risk exposures detected in this comparison."
+      preDetails={data.evidence.supports.llmSummary
+        ? <PersonalizedDiffCard key={`${data.baselineRunUid}:${data.currentRunUid}`} diffData={data} />
+        : undefined}
       exportSection={(
         <div className="space-y-4">
           <p className="text-sm text-muted-foreground">
-            Export comparison results for documentation and compliance.
+            Every export includes the evidence status, coverage, identity, vantage, and limitations.
           </p>
 
           <div>
@@ -40,34 +52,18 @@ function DiffDisplay({ data }: { data: DiffData }) {
             <div className="flex gap-4">
               <button
                 className="px-4 py-2 bg-muted hover:bg-muted/80 rounded-lg text-sm font-medium transition-colors"
-                onClick={() => {
-                  const content = `# CHANGES.md\n\n## Comparison: ${data.baselineTimestamp} -> ${data.currentTimestamp}\n\n${data.summary}\n\n### New Hosts (${data.newHosts.length})\n${data.newHosts.map((h) => `- ${h.ip} (${h.hostname || "unknown"})`).join("\n")}\n\n### Ports Opened (${data.portsOpened.length})\n${data.portsOpened.map((p) => `- ${p.ip}:${p.port}/${p.protocol} (${p.service})${p.risk ? ` [${p.risk}]` : ""}`).join("\n")}`;
-                  const blob = new Blob([content], { type: "text/markdown" });
-                  const url = URL.createObjectURL(blob);
-                  const a = document.createElement("a");
-                  a.href = url;
-                  a.download = "CHANGES.md";
-                  a.click();
-                  URL.revokeObjectURL(url);
-                }}
+                onClick={() => downloadMarkdown(diffToMarkdown(data), "COMPARISON.md")}
               >
-                Download CHANGES.md
+                Download COMPARISON.md
               </button>
-              <button
-                className="px-4 py-2 bg-red-100 hover:bg-red-200 dark:bg-red-900/30 dark:hover:bg-red-900/50 text-red-700 dark:text-red-300 rounded-lg text-sm font-medium transition-colors"
-                onClick={() => {
-                  const content = `# WATCHLIST.md\n\n## Critical Exposures Requiring Action\n\nGenerated: ${new Date().toISOString()}\n\n${data.riskyExposures.map((p) => `### ${p.ip} - ${p.hostname || "unknown"}\n- **Port:** ${p.port}/${p.protocol}\n- **Service:** ${p.service}\n- **Risk Level:** ${p.risk}\n- **Action Required:** Block at perimeter or isolate to internal network\n`).join("\n")}`;
-                  const blob = new Blob([content], { type: "text/markdown" });
-                  const url = URL.createObjectURL(blob);
-                  const a = document.createElement("a");
-                  a.href = url;
-                  a.download = "WATCHLIST.md";
-                  a.click();
-                  URL.revokeObjectURL(url);
-                }}
-              >
-                Download WATCHLIST.md
-              </button>
+              {data.riskFindings.length > 0 && (
+                <button
+                  className="px-4 py-2 bg-amber-100 hover:bg-amber-200 dark:bg-amber-900/30 dark:hover:bg-amber-900/50 text-amber-700 dark:text-amber-300 rounded-lg text-sm font-medium transition-colors"
+                  onClick={() => downloadMarkdown(reviewListToMarkdown(data), "REVIEW-LIST.md")}
+                >
+                  Download REVIEW-LIST.md
+                </button>
+              )}
             </div>
           </div>
 
@@ -83,15 +79,15 @@ function DiffDisplay({ data }: { data: DiffData }) {
                   downloadCSV(csv, `${network}_${date}_changes.csv`);
                 }}
               />
-              {data.riskyExposures.length > 0 && (
+              {data.riskFindings.length > 0 && (
                 <ExportCSVButton
-                  label="Watchlist Only"
+                  label="Review List"
                   variant="default"
                   onExport={() => {
-                    const csv = watchlistToCSV(data.riskyExposures);
+                    const csv = reviewListToCSV(data.riskFindings, data.evidence);
                     const date = formatDateForFilename(data.currentTimestamp);
                     const network = data.network.replace(/[^a-z0-9-]/gi, "_");
-                    downloadCSV(csv, `${network}_${date}_watchlist.csv`);
+                    downloadCSV(csv, `${network}_${date}_review-list.csv`);
                   }}
                 />
               )}
@@ -103,12 +99,6 @@ function DiffDisplay({ data }: { data: DiffData }) {
   );
 }
 
-interface DiffDataWithScore extends DiffData {
-  riskScore: number;
-  riskLabel: string;
-  riskColor: string;
-}
-
 export default function DiffPage() {
   const { isDemoMode, demoData } = useDemo();
   const router = useRouter();
@@ -116,7 +106,7 @@ export default function DiffPage() {
   const [runs, setRuns] = useState<RunManifestInfo[]>([]);
   const [baselineRunUid, setBaselineRunUid] = useState<string | null>(null);
   const [currentRunUid, setCurrentRunUid] = useState<string | null>(null);
-  const [diffData, setDiffData] = useState<DiffDataWithScore | null>(null);
+  const [diffData, setDiffData] = useState<DiffData | null>(null);
 
   const [isLoadingRuns, setIsLoadingRuns] = useState(true);
   const [isComparing, setIsComparing] = useState(false);
@@ -133,6 +123,7 @@ export default function DiffPage() {
   const [isHistoryDialogOpen, setIsHistoryDialogOpen] = useState(false);
   const [history, setHistory] = useState<SavedComparison[]>([]);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
+  const comparisonRequest = useRef(0);
 
   useEffect(() => {
     const comparisonId = new URLSearchParams(window.location.search).get("comparison");
@@ -178,8 +169,21 @@ export default function DiffPage() {
     }
   }, [baselineRunUid, currentRunUid, isDemoMode, runs]);
 
+  useEffect(() => {
+    comparisonRequest.current += 1;
+    setDiffData(null);
+    setError(null);
+    setIsComparing(false);
+  }, [baselineRunUid, currentRunUid]);
+
   async function handleCompare() {
-    if (!baselineRunUid || !currentRunUid) return;
+    if (!baselineRunUid || !currentRunUid || baselineRunUid === currentRunUid) {
+      setDiffData(null);
+      setError("Select two different runs before comparing.");
+      return;
+    }
+
+    const requestId = ++comparisonRequest.current;
 
     setIsComparing(true);
     setError(null);
@@ -193,21 +197,27 @@ export default function DiffPage() {
       });
 
       const result = await response.json();
+      if (requestId !== comparisonRequest.current) return;
 
       if (result.success && result.data) {
         setDiffData(result.data);
       } else {
+        setDiffData(null);
         setError(result.error || "Failed to compute diff");
       }
     } catch (err) {
+      if (requestId !== comparisonRequest.current) return;
+      setDiffData(null);
       setError(err instanceof Error ? err.message : "Failed to compute diff");
     } finally {
-      setIsComparing(false);
+      if (requestId === comparisonRequest.current) {
+        setIsComparing(false);
+      }
     }
   }
 
   async function handleSaveComparison() {
-    if (!baselineRunUid || !currentRunUid) return;
+    if (!diffData?.evidence.supports.comparisonPersistence) return;
 
     setIsSaving(true);
     setSaveError(null);
@@ -217,8 +227,8 @@ export default function DiffPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          baselineRunUid,
-          currentRunUid,
+          baselineRunUid: diffData.baselineRunUid,
+          currentRunUid: diffData.currentRunUid,
           title: saveTitle || undefined,
           notes: saveNotes || undefined,
         }),
@@ -273,6 +283,24 @@ export default function DiffPage() {
   const hasEnoughRuns = runs.length >= 2;
   const canCompare = baselineRunUid && currentRunUid && baselineRunUid !== currentRunUid;
 
+  function selectBaseline(runUid: string) {
+    comparisonRequest.current += 1;
+    setBaselineRunUid(runUid);
+    setDiffData(null);
+    setIsComparing(false);
+    setError(null);
+    setSaveError(null);
+  }
+
+  function selectCurrent(runUid: string) {
+    comparisonRequest.current += 1;
+    setCurrentRunUid(runUid);
+    setDiffData(null);
+    setIsComparing(false);
+    setError(null);
+    setSaveError(null);
+  }
+
   return (
     <div className="space-y-6">
       <div>
@@ -313,7 +341,7 @@ export default function DiffPage() {
                     label="Baseline (older)"
                     runs={runs}
                     selectedRunUid={baselineRunUid}
-                    onSelect={setBaselineRunUid}
+                    onSelect={selectBaseline}
                     disabledRunUid={currentRunUid}
                     isOpen={showBaselineSelector}
                     onToggle={() => {
@@ -328,7 +356,7 @@ export default function DiffPage() {
                     label="Current (newer)"
                     runs={runs}
                     selectedRunUid={currentRunUid}
-                    onSelect={setCurrentRunUid}
+                    onSelect={selectCurrent}
                     disabledRunUid={baselineRunUid}
                     isOpen={showCurrentSelector}
                     onToggle={() => {
@@ -354,17 +382,7 @@ export default function DiffPage() {
                       </>
                     )}
                   </Button>
-                  {diffData && (
-                    <>
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm text-muted-foreground">Risk Score:</span>
-                        <Badge
-                          variant={diffData.riskScore > 50 ? "destructive" : diffData.riskScore > 25 ? "default" : "secondary"}
-                        >
-                          {diffData.riskScore}/100 - {diffData.riskLabel}
-                        </Badge>
-                      </div>
-
+                  {diffData?.evidence.supports.comparisonPersistence && (
                       <SaveComparisonDialog
                         open={isSaveDialogOpen}
                         onOpenChange={setIsSaveDialogOpen}
@@ -377,7 +395,6 @@ export default function DiffPage() {
                         onNotesChange={setSaveNotes}
                         onSave={handleSaveComparison}
                       />
-                    </>
                   )}
 
                   <ComparisonHistoryDialog

@@ -3,6 +3,14 @@
  * Convert data structures to CSV format with proper escaping
  */
 
+import type {
+  DiffData,
+  EvidenceAssessment,
+  EvidenceCoverageSnapshot,
+  PortChange,
+  ScorecardData,
+} from "@/lib/types";
+
 /**
  * Escape CSV field (handle quotes, commas, newlines)
  */
@@ -86,180 +94,371 @@ export function formatDateForFilename(date: Date | string): string {
   return `${year}-${month}-${day}`;
 }
 
-/**
- * Convert DiffData to CSV format
- * Creates a multi-section CSV with summary, new hosts, removed hosts, opened ports, closed ports
- */
-export function diffToCSV(diffData: {
-  network: string;
-  baselineTimestamp: string;
-  currentTimestamp: string;
-  newHosts: Array<{ ip: string; hostname?: string }>;
-  removedHosts: Array<{ ip: string; hostname?: string }>;
-  portsOpened: Array<{
-    ip: string;
-    port: number;
-    protocol: string;
-    service: string;
-    changeType: string;
-    risk?: string;
-  }>;
-  portsClosed: Array<{
-    ip: string;
-    port: number;
-    protocol: string;
-    service: string;
-    changeType: string;
-    risk?: string;
-  }>;
-  riskyExposures?: Array<{
-    ip: string;
-    port: number;
-    protocol: string;
-    service: string;
-    risk?: string;
-  }>;
-}): string {
-  // Summary
-  const summaryCSV = arrayToCSV(
-    [
-      { metric: "Network", value: diffData.network },
-      { metric: "Baseline Scan", value: new Date(diffData.baselineTimestamp).toLocaleString() },
-      { metric: "Current Scan", value: new Date(diffData.currentTimestamp).toLocaleString() },
-      { metric: "New Hosts", value: diffData.newHosts.length },
-      { metric: "Removed Hosts", value: diffData.removedHosts.length },
-      { metric: "Ports Opened", value: diffData.portsOpened.length },
-      { metric: "Ports Closed", value: diffData.portsClosed.length },
-      { metric: "Risky Exposures", value: diffData.riskyExposures?.length || 0 },
-    ],
-    { metric: "Metric", value: "Value" }
-  );
+type ExportRow = { metric: string; value: string | number | boolean };
 
-  // New hosts
-  const newHostsCSV = diffData.newHosts.length > 0
-    ? arrayToCSV(
-        diffData.newHosts.map((h) => ({
-          ip: h.ip,
-          hostname: h.hostname || "N/A",
-        })),
-        { ip: "IP Address", hostname: "Hostname" }
-      )
-    : "No new hosts detected";
-
-  // Removed hosts
-  const removedHostsCSV = diffData.removedHosts.length > 0
-    ? arrayToCSV(
-        diffData.removedHosts.map((h) => ({
-          ip: h.ip,
-          hostname: h.hostname || "N/A",
-        })),
-        { ip: "IP Address", hostname: "Hostname" }
-      )
-    : "No hosts removed";
-
-  // Ports opened
-  const portsOpenedCSV = diffData.portsOpened.length > 0
-    ? arrayToCSV(
-        diffData.portsOpened.map((p) => ({
-          ip: p.ip,
-          port: p.port,
-          protocol: p.protocol,
-          service: p.service || "unknown",
-          risk: p.risk || "N/A",
-        })),
-        {
-          ip: "IP Address",
-          port: "Port",
-          protocol: "Protocol",
-          service: "Service",
-          risk: "Risk Level",
-        }
-      )
-    : "No new ports opened";
-
-  // Ports closed
-  const portsClosedCSV = diffData.portsClosed.length > 0
-    ? arrayToCSV(
-        diffData.portsClosed.map((p) => ({
-          ip: p.ip,
-          port: p.port,
-          protocol: p.protocol,
-          service: p.service || "unknown",
-        })),
-        {
-          ip: "IP Address",
-          port: "Port",
-          protocol: "Protocol",
-          service: "Service",
-        }
-      )
-    : "No ports closed";
-
-  // Risky exposures
-  const riskyExposuresCSV = diffData.riskyExposures && diffData.riskyExposures.length > 0
-    ? arrayToCSV(
-        diffData.riskyExposures.map((p) => ({
-          ip: p.ip,
-          port: p.port,
-          protocol: p.protocol,
-          service: p.service || "unknown",
-          risk: p.risk || "N/A",
-        })),
-        {
-          ip: "IP Address",
-          port: "Port",
-          protocol: "Protocol",
-          service: "Service",
-          risk: "Risk Level",
-        }
-      )
-    : "";
-
-  const sections = [
-    { title: "# SUMMARY", data: summaryCSV },
-    { title: "# NEW HOSTS", data: newHostsCSV },
-    { title: "# REMOVED HOSTS", data: removedHostsCSV },
-    { title: "# PORTS OPENED", data: portsOpenedCSV },
-    { title: "# PORTS CLOSED", data: portsClosedCSV },
+function coverageRows(
+  label: string,
+  coverage: EvidenceCoverageSnapshot
+): ExportRow[] {
+  return [
+    { metric: `${label} status`, value: coverage.status },
+    { metric: `${label} score`, value: coverage.score },
+    { metric: `${label} partial`, value: coverage.partial },
+    { metric: `${label} device count`, value: coverage.deviceCount },
+    { metric: `${label} scope known`, value: coverage.scopeKnown },
+    { metric: `${label} expected sources`, value: coverage.expectedSources.join("; ") },
+    { metric: `${label} present sources`, value: coverage.presentSources.join("; ") },
+    { metric: `${label} missing sources`, value: coverage.missingSources.join("; ") },
   ];
-
-  if (riskyExposuresCSV) {
-    sections.push({ title: "# RISKY EXPOSURES (P0/P1)", data: riskyExposuresCSV });
-  }
-
-  return buildMultiSectionCSV(sections);
 }
 
-/**
- * Convert risky exposures to watchlist CSV format
- */
-export function watchlistToCSV(riskyExposures: Array<{
-  ip: string;
-  port: number;
-  protocol: string;
-  service: string;
-  risk?: string;
-}>): string {
-  if (riskyExposures.length === 0) {
-    return "No risky exposures detected";
-  }
+function evidenceRows(evidence: EvidenceAssessment): ExportRow[] {
+  return [
+    { metric: "Evidence Version", value: evidence.version },
+    { metric: "Evidence Status", value: evidence.status },
+    { metric: "Evidence reason codes", value: evidence.reasonCodes.join("; ") },
+    ...(evidence.coverage.baseline
+      ? coverageRows("Baseline coverage", evidence.coverage.baseline)
+      : []),
+    ...coverageRows("Current coverage", evidence.coverage.current),
+    { metric: "Identity status", value: evidence.identity.status },
+    { metric: "Identity uncertain count", value: evidence.identity.uncertainCount },
+    { metric: "Vantage", value: evidence.vantage.kind },
+    { metric: "External Reachability", value: evidence.vantage.externalReachability },
+    { metric: "Supports device absence", value: evidence.supports.deviceAbsence },
+    { metric: "Supports port closure", value: evidence.supports.portClosure },
+    { metric: "Supports stable baseline", value: evidence.supports.stableBaseline },
+    { metric: "Supports external reachability", value: evidence.supports.externalReachability },
+    { metric: "Supports comparison persistence", value: evidence.supports.comparisonPersistence },
+    { metric: "Supports LLM summary", value: evidence.supports.llmSummary },
+    { metric: "Limitations", value: evidence.limitations.join(" | ") },
+  ];
+}
 
+function portRows(ports: PortChange[]): string {
   return arrayToCSV(
-    riskyExposures.map((p) => ({
-      ip: p.ip,
-      port: p.port,
-      protocol: p.protocol,
-      service: p.service || "unknown",
-      risk: p.risk || "N/A",
-      action: "Review and remediate",
+    ports.map((port) => ({
+      ip: port.ip,
+      hostname: port.hostname || "N/A",
+      port: port.port,
+      protocol: port.protocol,
+      service: port.service || "unknown",
+      classification: port.risk || "N/A",
     })),
     {
       ip: "IP Address",
+      hostname: "Hostname",
       port: "Port",
       protocol: "Protocol",
       service: "Service",
-      risk: "Risk Level",
-      action: "Recommended Action",
+      classification: "Classification",
     }
   );
+}
+
+function unsupportedConclusion(evidence: EvidenceAssessment, conclusion: string): string {
+  const detail = evidence.limitations.length > 0
+    ? ` ${evidence.limitations.join(" ")}`
+    : "";
+  return `${conclusion} was not evaluated because the evidence does not support that conclusion.${detail}`;
+}
+
+/**
+ * Convert a single-run scorecard to a status-preserving multi-section CSV.
+ */
+export function scorecardToCSV(scorecardData: ScorecardData): string {
+  const evidenceCSV = arrayToCSV(
+    [
+      { metric: "Network", value: scorecardData.network },
+      { metric: "Run UID", value: scorecardData.runUid },
+      { metric: "Observation timestamp", value: scorecardData.timestamp },
+      { metric: "Summary", value: scorecardData.summary },
+      ...evidenceRows(scorecardData.evidence),
+    ],
+    { metric: "Metric", value: "Value" }
+  );
+  const metricsCSV = arrayToCSV(
+    [
+      { metric: "Observed hosts", value: scorecardData.totalHosts },
+      { metric: "Observed open ports", value: scorecardData.openPorts },
+      { metric: "Observed services", value: scorecardData.uniqueServices },
+      { metric: "Observed services requiring review", value: scorecardData.riskPorts },
+    ],
+    { metric: "Metric", value: "Value" }
+  );
+  const reviewCSV = scorecardData.riskPortsDetail.length > 0
+    ? arrayToCSV(
+        scorecardData.riskPortsDetail.map((finding) => ({
+          port: finding.port,
+          protocol: finding.protocol,
+          service: finding.service || "unknown",
+          classification: finding.risk,
+          observed_host_count: finding.hostsAffected,
+          observed_hosts: finding.hosts.join("; "),
+        })),
+        {
+          port: "Port",
+          protocol: "Protocol",
+          service: "Service",
+          classification: "Classification",
+          observed_host_count: "Observed Host Count",
+          observed_hosts: "Observed Hosts",
+        }
+      )
+    : "No review-list entries were produced by this scorecard.";
+  const topPortsCSV = scorecardData.topPorts.length > 0
+    ? arrayToCSV(
+        scorecardData.topPorts.map((port) => ({
+          port: port.port,
+          protocol: port.protocol,
+          service: port.service || "unknown",
+          observed_host_count: port.hostsAffected,
+        })),
+        {
+          port: "Port",
+          protocol: "Protocol",
+          service: "Service",
+          observed_host_count: "Observed Host Count",
+        }
+      )
+    : "No top-port entries were produced by this scorecard.";
+
+  return buildMultiSectionCSV([
+    { title: "# EVIDENCE AND SUMMARY", data: evidenceCSV },
+    { title: "# OBSERVED METRICS", data: metricsCSV },
+    { title: "# OBSERVED SERVICES REQUIRING REVIEW", data: reviewCSV },
+    { title: "# TOP OBSERVED PORTS", data: topPortsCSV },
+  ]);
+}
+
+/**
+ * Convert a comparison to a status-preserving multi-section CSV.
+ */
+export function diffToCSV(diffData: DiffData): string {
+  const evidenceCSV = arrayToCSV(
+    [
+      { metric: "Network", value: diffData.network },
+      { metric: "Baseline run UID", value: diffData.baselineRunUid },
+      { metric: "Current run UID", value: diffData.currentRunUid },
+      { metric: "Baseline timestamp", value: diffData.baselineTimestamp },
+      { metric: "Current timestamp", value: diffData.currentTimestamp },
+      { metric: "Summary", value: diffData.summary },
+      ...evidenceRows(diffData.evidence),
+    ],
+    { metric: "Metric", value: "Value" }
+  );
+  const addedDevicesCSV = diffData.newHosts.length > 0
+    ? arrayToCSV(
+        diffData.newHosts.map((host) => ({
+          ip: host.ip,
+          hostname: host.hostname || "N/A",
+        })),
+        { ip: "IP Address", hostname: "Hostname" }
+      )
+    : "No added-device findings were produced by this comparison.";
+  const deviceAbsenceCSV = diffData.evidence.supports.deviceAbsence
+    ? diffData.removedHosts.length > 0
+      ? arrayToCSV(
+          diffData.removedHosts.map((host) => ({
+            ip: host.ip,
+            hostname: host.hostname || "N/A",
+          })),
+          { ip: "IP Address", hostname: "Hostname" }
+        )
+      : "No device-absence findings were produced by this comparison."
+    : unsupportedConclusion(diffData.evidence, "Device absence");
+  const identityCSV = diffData.identityUncertain.length > 0
+    ? arrayToCSV(
+        diffData.identityUncertain.map((change) => ({
+          baseline_ip: change.baselineIp || "N/A",
+          current_ip: change.currentIp || "N/A",
+          baseline_hostname: change.baselineHostname || "N/A",
+          current_hostname: change.currentHostname || "N/A",
+          confidence: change.confidence,
+          summary: change.summary,
+        })),
+        {
+          baseline_ip: "Baseline IP",
+          current_ip: "Current IP",
+          baseline_hostname: "Baseline Hostname",
+          current_hostname: "Current Hostname",
+          confidence: "Confidence",
+          summary: "Summary",
+        }
+      )
+    : "No identity-uncertainty entries were produced by this comparison.";
+  const additionsCSV = diffData.portsOpened.length > 0
+    ? portRows(diffData.portsOpened)
+    : "No service-addition findings were produced by this comparison.";
+  const closuresCSV = diffData.evidence.supports.portClosure
+    ? diffData.portsClosed.length > 0
+      ? portRows(diffData.portsClosed)
+      : "No service-closure findings were produced by this comparison."
+    : unsupportedConclusion(diffData.evidence, "Service closure");
+  const reviewCSV = diffData.riskFindings.length > 0
+    ? portRows(diffData.riskFindings)
+    : "No review-list entries were produced by this comparison.";
+
+  return buildMultiSectionCSV([
+    { title: "# EVIDENCE AND SUMMARY", data: evidenceCSV },
+    { title: "# ADDED-DEVICE FINDINGS", data: addedDevicesCSV },
+    { title: "# DEVICE-ABSENCE FINDINGS", data: deviceAbsenceCSV },
+    { title: "# IDENTITY UNCERTAINTY", data: identityCSV },
+    { title: "# SERVICE-ADDITION FINDINGS", data: additionsCSV },
+    { title: "# SERVICE-CLOSURE FINDINGS", data: closuresCSV },
+    { title: "# OBSERVED SERVICES REQUIRING REVIEW", data: reviewCSV },
+  ]);
+}
+
+/**
+ * Convert observed services requiring review to a bounded CSV.
+ */
+export function reviewListToCSV(
+  riskFindings: PortChange[],
+  evidence?: EvidenceAssessment
+): string {
+  const reviewCSV = riskFindings.length > 0
+    ? arrayToCSV(
+        riskFindings.map((finding) => ({
+          ip: finding.ip,
+          hostname: finding.hostname || "N/A",
+          port: finding.port,
+          protocol: finding.protocol,
+          service: finding.service || "unknown",
+          classification: finding.risk || "N/A",
+          action: "Review the observed service and confirm intended access",
+        })),
+        {
+          ip: "IP Address",
+          hostname: "Hostname",
+          port: "Port",
+          protocol: "Protocol",
+          service: "Service",
+          classification: "Classification",
+          action: "Recommended Review",
+        }
+      )
+    : "No review-list entries were produced by this comparison.";
+
+  if (!evidence) return reviewCSV;
+
+  const evidenceCSV = arrayToCSV(evidenceRows(evidence), {
+    metric: "Metric",
+    value: "Value",
+  });
+  return buildMultiSectionCSV([
+    { title: "# EVIDENCE STATUS", data: evidenceCSV },
+    { title: "# OBSERVED SERVICES REQUIRING REVIEW", data: reviewCSV },
+  ]);
+}
+
+/**
+ * Backward-compatible export name. Output semantics remain review-only.
+ */
+export const watchlistToCSV = reviewListToCSV;
+
+function evidenceMarkdown(evidence: EvidenceAssessment): string {
+  const coverage = [
+    ...(evidence.coverage.baseline
+      ? [`- Baseline coverage: ${evidence.coverage.baseline.status} (${evidence.coverage.baseline.score})`]
+      : []),
+    `- Current coverage: ${evidence.coverage.current.status} (${evidence.coverage.current.score})`,
+  ];
+  const limitations = evidence.limitations.length > 0
+    ? evidence.limitations.map((limitation) => `- ${limitation}`).join("\n")
+    : "- None reported by the evidence assessment.";
+
+  return [
+    `- Evidence version: ${evidence.version}`,
+    `- Evidence status: ${evidence.status}`,
+    ...coverage,
+    `- Identity: ${evidence.identity.status} (${evidence.identity.uncertainCount} uncertain)`,
+    `- Vantage: ${evidence.vantage.kind}`,
+    `- Reachability: ${evidence.vantage.externalReachability}`,
+    `- Supports device absence: ${evidence.supports.deviceAbsence}`,
+    `- Supports port closure: ${evidence.supports.portClosure}`,
+    `- Supports stable baseline: ${evidence.supports.stableBaseline}`,
+    `- Supports external reachability: ${evidence.supports.externalReachability}`,
+    `- Supports comparison persistence: ${evidence.supports.comparisonPersistence}`,
+    `- Supports LLM summary: ${evidence.supports.llmSummary}`,
+    "",
+    "### Limitations",
+    limitations,
+  ].join("\n");
+}
+
+function markdownPortList(ports: PortChange[]): string {
+  return ports.length > 0
+    ? ports
+        .map((port) => `- ${port.ip}:${port.port}/${port.protocol} (${port.service || "unknown"})${port.risk ? ` [${port.risk}]` : ""}`)
+        .join("\n")
+    : "No entries were produced by this comparison.";
+}
+
+/**
+ * Build the downloadable comparison report with the evidence state preserved.
+ */
+export function diffToMarkdown(diffData: DiffData): string {
+  const deviceAbsence = diffData.evidence.supports.deviceAbsence
+    ? diffData.removedHosts.length > 0
+      ? diffData.removedHosts
+          .map((host) => `- ${host.ip} (${host.hostname || "unknown"})`)
+          .join("\n")
+      : "No device-absence findings were produced by this comparison."
+    : unsupportedConclusion(diffData.evidence, "Device absence");
+  const serviceClosure = diffData.evidence.supports.portClosure
+    ? markdownPortList(diffData.portsClosed)
+    : unsupportedConclusion(diffData.evidence, "Service closure");
+  const identity = diffData.identityUncertain.length > 0
+    ? diffData.identityUncertain.map((change) => `- ${change.summary}`).join("\n")
+    : "No identity-uncertainty entries were produced by this comparison.";
+
+  return [
+    "# Comparison Report",
+    "",
+    `Network: ${diffData.network}`,
+    `Baseline: ${diffData.baselineTimestamp}`,
+    `Current: ${diffData.currentTimestamp}`,
+    "",
+    "## Evidence",
+    evidenceMarkdown(diffData.evidence),
+    "",
+    "## Summary",
+    diffData.summary,
+    "",
+    `## Added-device findings (${diffData.newHosts.length})`,
+    diffData.newHosts.length > 0
+      ? diffData.newHosts.map((host) => `- ${host.ip} (${host.hostname || "unknown"})`).join("\n")
+      : "No added-device findings were produced by this comparison.",
+    "",
+    "## Device-absence findings",
+    deviceAbsence,
+    "",
+    "## Identity uncertainty",
+    identity,
+    "",
+    `## Service-addition findings (${diffData.portsOpened.length})`,
+    markdownPortList(diffData.portsOpened),
+    "",
+    "## Service-closure findings",
+    serviceClosure,
+    "",
+    `## Observed services requiring review (${diffData.riskFindings.length})`,
+    markdownPortList(diffData.riskFindings),
+  ].join("\n");
+}
+
+/**
+ * Build a review-list Markdown export with the evidence state preserved.
+ */
+export function reviewListToMarkdown(diffData: DiffData): string {
+  return [
+    "# Observed Services Requiring Review",
+    "",
+    "## Evidence",
+    evidenceMarkdown(diffData.evidence),
+    "",
+    `## Review list (${diffData.riskFindings.length})`,
+    markdownPortList(diffData.riskFindings),
+  ].join("\n");
 }

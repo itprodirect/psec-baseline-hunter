@@ -71,12 +71,10 @@ export function ComparisonHistoryDialog({
                       <span>|</span>
                       <span>{new Date(comp.createdAt).toLocaleDateString()}</span>
                       <span>|</span>
-                      <Badge
-                        variant={comp.riskScore >= 70 ? "secondary" : comp.riskScore >= 50 ? "default" : "destructive"}
-                        className="text-xs"
-                      >
-                        {comp.riskScore}/100
+                      <Badge variant={comp.diffData.evidence.status === "supported" ? "secondary" : "outline"} className="text-xs">
+                        {comp.diffData.evidence.status}
                       </Badge>
+                      <span>{comp.diffData.riskFindings.length} review-list entries</span>
                     </div>
                   </a>
                   <Button

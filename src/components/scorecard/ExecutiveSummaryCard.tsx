@@ -57,7 +57,7 @@ export function ExecutiveSummaryCard({ scorecardData }: ExecutiveSummaryCardProp
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          scorecardData,
+          runUid: scorecardData.runUid,
           userProfile: profile,
         }),
       });
@@ -99,6 +99,10 @@ export function ExecutiveSummaryCard({ scorecardData }: ExecutiveSummaryCardProp
   // Generate filename for export
   const exportFilename = `executive-summary-${scorecardData.network}-${new Date(scorecardData.timestamp).toISOString().split("T")[0]}.md`;
 
+  if (!scorecardData.evidence.supports.llmSummary) {
+    return null;
+  }
+
   return (
     <>
       {/* Main Card */}
@@ -109,7 +113,7 @@ export function ExecutiveSummaryCard({ scorecardData }: ExecutiveSummaryCardProp
             Executive Summary
           </CardTitle>
           <CardDescription>
-            Get a business-focused report for leadership with financial impact and action plan
+            Get an evidence-bounded report for leadership with review priorities and an action plan
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -200,7 +204,10 @@ export function ExecutiveSummaryCard({ scorecardData }: ExecutiveSummaryCardProp
 
           {summary && (
             <div className="space-y-4">
-              <MarkdownViewer content={summary} filename={exportFilename} />
+              <MarkdownViewer
+                content={`# Evidence\n\n- Evidence status: ${scorecardData.evidence.status}\n- Evidence version: ${scorecardData.evidence.version}\n\n## Limitations\n${scorecardData.evidence.limitations.map((limitation) => `- ${limitation}`).join("\n") || "- None reported by the evidence assessment."}\n\n${summary}`}
+                filename={exportFilename}
+              />
 
               <div className="flex gap-2">
                 <Button

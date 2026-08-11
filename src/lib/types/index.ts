@@ -170,6 +170,60 @@ export interface RiskPort {
 }
 
 /**
+ * Evidence contract shared by Scorecard and Diff consumers.
+ *
+ * This is deliberately conclusion-oriented: consumers must check `supports`
+ * before presenting absence, closure, persistence, or generated-summary claims.
+ */
+export type EvidenceAssessmentVersion = "psec.evidence.v1";
+
+export type EvidenceStatus = "supported" | "insufficient-evidence" | "uncertain";
+
+export type EvidenceReasonCode =
+  | "partial-coverage"
+  | "empty-observation"
+  | "identity-uncertain"
+  | "external-reachability-not-established";
+
+export interface EvidenceCoverageSnapshot {
+  status: "complete" | "partial" | "minimal";
+  score: number;
+  partial: boolean;
+  deviceCount: number;
+  scopeKnown: boolean;
+  expectedSources: string[];
+  presentSources: string[];
+  missingSources: string[];
+}
+
+export interface EvidenceAssessment {
+  version: EvidenceAssessmentVersion;
+  status: EvidenceStatus;
+  reasonCodes: EvidenceReasonCode[];
+  coverage: {
+    baseline?: EvidenceCoverageSnapshot;
+    current: EvidenceCoverageSnapshot;
+  };
+  identity: {
+    status: "not-applicable" | "supported" | "uncertain";
+    uncertainCount: number;
+  };
+  vantage: {
+    kind: "unverified-scan-vantage";
+    externalReachability: "not-established";
+  };
+  supports: {
+    deviceAbsence: boolean;
+    portClosure: boolean;
+    stableBaseline: false;
+    externalReachability: false;
+    comparisonPersistence: boolean;
+    llmSummary: boolean;
+  };
+  limitations: string[];
+}
+
+/**
  * Scorecard data for a single run
  */
 export interface ScorecardData {
@@ -182,6 +236,7 @@ export interface ScorecardData {
   riskPorts: number;
   topPorts: TopPort[];
   riskPortsDetail: RiskPort[];
+  evidence: EvidenceAssessment;
   summary: string;
 }
 
@@ -208,6 +263,19 @@ export interface PortChange {
 }
 
 /**
+ * A possible cross-observation identity relationship that could not be
+ * promoted to device continuity without stronger evidence.
+ */
+export interface IdentityUncertainChange {
+  baselineIp?: string;
+  currentIp?: string;
+  baselineHostname?: string;
+  currentHostname?: string;
+  confidence: "strongest" | "strong" | "medium" | "low";
+  summary: string;
+}
+
+/**
  * Diff data comparing two runs
  */
 export interface DiffData {
@@ -218,9 +286,11 @@ export interface DiffData {
   network: string;
   newHosts: HostChange[];
   removedHosts: HostChange[];
+  identityUncertain: IdentityUncertainChange[];
   portsOpened: PortChange[];
   portsClosed: PortChange[];
-  riskyExposures: PortChange[];
+  riskFindings: PortChange[];
+  evidence: EvidenceAssessment;
   summary: string;
 }
 
@@ -312,8 +382,6 @@ export interface SavedComparison {
   network: string;             // Network name
   createdAt: string;           // When comparison was created
   diffData: DiffData;          // The actual diff results
-  riskScore: number;           // Computed risk score (0-100)
-  riskLabel: string;           // "Excellent", "Good", etc.
   title?: string;              // Optional user-provided title
   notes?: string;              // Optional notes
 }

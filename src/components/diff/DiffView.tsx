@@ -1,11 +1,18 @@
 "use client";
 
-import { ReactNode } from "react";
+import type { ReactNode } from "react";
+import { AlertTriangle, ArrowRight, HelpCircle, Minus, Plus } from "lucide-react";
+import { EvidenceStatusBanner } from "@/components/evidence/EvidenceStatusBanner";
+import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Badge } from "@/components/ui/badge";
-import { AlertTriangle, Plus, Minus, Shield, ArrowRight } from "lucide-react";
-import { DiffData, HostChange, PortChange, RiskLevel } from "@/lib/types";
+import type {
+  DiffData,
+  HostChange,
+  IdentityUncertainChange,
+  PortChange,
+  RiskLevel,
+} from "@/lib/types";
 
 function formatTimestamp(timestamp: string): string {
   return new Date(timestamp).toLocaleDateString("en-US", {
@@ -18,50 +25,138 @@ function formatTimestamp(timestamp: string): string {
 
 function RiskBadge({ risk }: { risk?: RiskLevel }) {
   if (!risk) return null;
-  const variants: Record<string, "destructive" | "default" | "secondary"> = {
+  const variants: Record<RiskLevel, "destructive" | "default" | "secondary"> = {
     P0: "destructive",
     P1: "default",
     P2: "secondary",
   };
-  return <Badge variant={variants[risk] || "secondary"}>{risk}</Badge>;
+  return <Badge variant={variants[risk]}>{risk}</Badge>;
+}
+
+function FindingMetric({
+  label,
+  value,
+  icon: Icon,
+  emphasized = false,
+}: {
+  label: string;
+  value: number | string;
+  icon: typeof Plus;
+  emphasized?: boolean;
+}) {
+  return (
+    <Card className={emphasized ? "border-amber-200 dark:border-amber-900" : ""}>
+      <CardHeader className="pb-2">
+        <CardDescription className="flex items-center gap-2">
+          <Icon className="h-4 w-4" />
+          {label}
+        </CardDescription>
+        <CardTitle className="text-2xl">{value}</CardTitle>
+      </CardHeader>
+    </Card>
+  );
+}
+
+function HostTable({ entries }: { entries: HostChange[] }) {
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="border-b">
+            <th className="text-left py-2 px-4">IP Address</th>
+            <th className="text-left py-2 px-4">Hostname</th>
+          </tr>
+        </thead>
+        <tbody>
+          {entries.map((entry, index) => (
+            <tr key={`${entry.ip}-${index}`} className="border-b last:border-0">
+              <td className="py-2 px-4 font-mono">{entry.ip}</td>
+              <td className="py-2 px-4">{entry.hostname || "—"}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function PortTable({ entries, showClassification = false }: {
+  entries: PortChange[];
+  showClassification?: boolean;
+}) {
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="border-b">
+            <th className="text-left py-2 px-4">Host</th>
+            <th className="text-left py-2 px-4">Port</th>
+            <th className="text-left py-2 px-4">Service</th>
+            {showClassification && <th className="text-left py-2 px-4">Classification</th>}
+          </tr>
+        </thead>
+        <tbody>
+          {entries.map((entry, index) => (
+            <tr key={`${entry.ip}-${entry.protocol}-${entry.port}-${index}`} className="border-b last:border-0">
+              <td className="py-2 px-4">
+                <span className="font-mono">{entry.ip}</span>
+                {entry.hostname && (
+                  <span className="ml-2 text-muted-foreground">({entry.hostname})</span>
+                )}
+              </td>
+              <td className="py-2 px-4 font-mono">{entry.port}/{entry.protocol}</td>
+              <td className="py-2 px-4">{entry.service || "unknown"}</td>
+              {showClassification && (
+                <td className="py-2 px-4"><RiskBadge risk={entry.risk} /></td>
+              )}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function IdentityTable({ entries }: { entries: IdentityUncertainChange[] }) {
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="border-b">
+            <th className="text-left py-2 px-4">Baseline locator</th>
+            <th className="text-left py-2 px-4">Current locator</th>
+            <th className="text-left py-2 px-4">Confidence</th>
+            <th className="text-left py-2 px-4">Evidence note</th>
+          </tr>
+        </thead>
+        <tbody>
+          {entries.map((entry, index) => (
+            <tr key={`${entry.baselineIp || "none"}-${entry.currentIp || "none"}-${index}`} className="border-b last:border-0">
+              <td className="py-2 px-4 font-mono">{entry.baselineIp || "—"}</td>
+              <td className="py-2 px-4 font-mono">{entry.currentIp || "—"}</td>
+              <td className="py-2 px-4"><Badge variant="outline">{entry.confidence}</Badge></td>
+              <td className="py-2 px-4">{entry.summary}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
 }
 
 interface DiffViewProps {
   data: DiffData;
   preDetails?: ReactNode;
-  topActions?: string[];
-  riskExposureIntroText?: string;
-  riskNoExposureText?: string;
   exportSection: ReactNode;
 }
 
-export function DiffView({
-  data,
-  preDetails,
-  topActions = [],
-  riskExposureIntroText,
-  riskNoExposureText = "No P0 risk exposures in this comparison.",
-  exportSection,
-}: DiffViewProps) {
+export function DiffView({ data, preDetails, exportSection }: DiffViewProps) {
+  const supportsAbsence = data.evidence.supports.deviceAbsence;
+  const supportsClosure = data.evidence.supports.portClosure;
+
   return (
     <div className="space-y-6">
-      <Card className="border-amber-200 bg-amber-50/50 dark:border-amber-900 dark:bg-amber-950/20">
-        <CardContent className="pt-6">
-          <div className="flex items-start gap-4">
-            <div className="p-2 rounded-full bg-amber-100 dark:bg-amber-900">
-              <Shield className="h-5 w-5 text-amber-600 dark:text-amber-400" />
-            </div>
-            <div className="flex-1">
-              <h3 className="font-semibold text-amber-900 dark:text-amber-100">
-                Change Summary
-              </h3>
-              <p className="text-sm text-amber-700 dark:text-amber-300 mt-1">
-                {data.summary}
-              </p>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
+      <EvidenceStatusBanner evidence={data.evidence} summary={data.summary} />
 
       {preDetails}
 
@@ -81,57 +176,13 @@ export function DiffView({
         </CardContent>
       </Card>
 
-      <div className="grid gap-4 md:grid-cols-5">
-        <Card className={data.newHosts.length > 0 ? "border-green-200 dark:border-green-900" : ""}>
-          <CardHeader className="pb-2">
-            <CardDescription className="flex items-center gap-2">
-              <Plus className="h-4 w-4 text-green-600" />
-              New Hosts
-            </CardDescription>
-            <CardTitle className="text-2xl">{data.newHosts.length}</CardTitle>
-          </CardHeader>
-        </Card>
-        <Card className={data.removedHosts.length > 0 ? "border-gray-200 dark:border-gray-700" : ""}>
-          <CardHeader className="pb-2">
-            <CardDescription className="flex items-center gap-2">
-              <Minus className="h-4 w-4 text-gray-500" />
-              Removed Hosts
-            </CardDescription>
-            <CardTitle className="text-2xl">{data.removedHosts.length}</CardTitle>
-          </CardHeader>
-        </Card>
-        <Card className={data.portsOpened.length > 0 ? "border-yellow-200 dark:border-yellow-900" : ""}>
-          <CardHeader className="pb-2">
-            <CardDescription className="flex items-center gap-2">
-              <Plus className="h-4 w-4 text-yellow-600" />
-              Ports Opened
-            </CardDescription>
-            <CardTitle className="text-2xl">{data.portsOpened.length}</CardTitle>
-          </CardHeader>
-        </Card>
-        <Card>
-          <CardHeader className="pb-2">
-            <CardDescription className="flex items-center gap-2">
-              <Minus className="h-4 w-4 text-gray-500" />
-              Ports Closed
-            </CardDescription>
-            <CardTitle className="text-2xl">{data.portsClosed.length}</CardTitle>
-          </CardHeader>
-        </Card>
-        <Card className={data.riskyExposures.length > 0 ? "border-red-200 dark:border-red-900" : ""}>
-          <CardHeader className="pb-2">
-            <CardDescription className="flex items-center gap-2">
-              <AlertTriangle className="h-4 w-4 text-red-500" />
-              Risky Exposures
-            </CardDescription>
-            <CardTitle className="flex items-center gap-2 text-2xl">
-              {data.riskyExposures.length}
-              {data.riskyExposures.length > 0 && (
-                <Badge variant="destructive" className="text-xs">P0</Badge>
-              )}
-            </CardTitle>
-          </CardHeader>
-        </Card>
+      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+        <FindingMetric label="Added-device findings" value={data.newHosts.length} icon={Plus} emphasized={data.newHosts.length > 0} />
+        <FindingMetric label="Device-absence findings" value={supportsAbsence ? data.removedHosts.length : "Not evaluated"} icon={Minus} emphasized={supportsAbsence && data.removedHosts.length > 0} />
+        <FindingMetric label="Service-addition findings" value={data.portsOpened.length} icon={Plus} emphasized={data.portsOpened.length > 0} />
+        <FindingMetric label="Service-closure findings" value={supportsClosure ? data.portsClosed.length : "Not evaluated"} icon={Minus} emphasized={supportsClosure && data.portsClosed.length > 0} />
+        <FindingMetric label="Identity uncertainty" value={data.identityUncertain.length} icon={HelpCircle} emphasized={data.identityUncertain.length > 0} />
+        <FindingMetric label="Observed services requiring review" value={data.riskFindings.length} icon={AlertTriangle} emphasized={data.riskFindings.length > 0} />
       </div>
 
       <Card>
@@ -139,230 +190,112 @@ export function DiffView({
           <Tabs defaultValue="summary">
             <TabsList className="grid w-full grid-cols-5">
               <TabsTrigger value="summary">Summary</TabsTrigger>
-              <TabsTrigger value="hosts">Hosts</TabsTrigger>
-              <TabsTrigger value="ports">Ports</TabsTrigger>
-              <TabsTrigger value="risk">Risk Flags</TabsTrigger>
+              <TabsTrigger value="devices">Devices</TabsTrigger>
+              <TabsTrigger value="services">Services</TabsTrigger>
+              <TabsTrigger value="review">Review</TabsTrigger>
               <TabsTrigger value="export">Export</TabsTrigger>
             </TabsList>
 
             <TabsContent value="summary" className="mt-4">
-              <div className="space-y-4">
-                <div className="p-4 bg-muted rounded-lg">
-                  <h4 className="font-semibold mb-2">What Changed</h4>
-                  <ul className="text-sm space-y-1 text-muted-foreground">
-                    <li>{data.newHosts.length} new hosts appeared on the network</li>
-                    <li>{data.removedHosts.length} hosts were removed or went offline</li>
-                    <li>{data.portsOpened.length} new ports were opened</li>
-                    <li>{data.portsClosed.length} ports were closed</li>
-                    <li className="text-red-600 dark:text-red-400 font-medium">
-                      {data.riskyExposures.length} critical (P0) exposures require immediate attention
-                    </li>
-                  </ul>
-                </div>
-
-                {topActions.length > 0 && (
-                  <div className="p-4 bg-red-50 dark:bg-red-950/20 rounded-lg border border-red-200 dark:border-red-900">
-                    <h4 className="font-semibold mb-2 text-red-700 dark:text-red-400 flex items-center gap-2">
-                      <AlertTriangle className="h-4 w-4" />
-                      Top 3 Actions Required
-                    </h4>
-                    <ol className="text-sm space-y-2 text-red-600 dark:text-red-300 list-decimal list-inside">
-                      {topActions.map((action) => (
-                        <li key={action}>{action}</li>
-                      ))}
-                    </ol>
-                  </div>
-                )}
+              <div className="space-y-3 rounded-lg bg-muted p-4 text-sm">
+                <p>{data.newHosts.length} added-device finding(s) were produced.</p>
+                <p>
+                  {supportsAbsence
+                    ? `${data.removedHosts.length} device-absence finding(s) were produced.`
+                    : "Device absence was not evaluated because the evidence does not support that conclusion."}
+                </p>
+                <p>{data.portsOpened.length} service-addition finding(s) were produced.</p>
+                <p>
+                  {supportsClosure
+                    ? `${data.portsClosed.length} service-closure finding(s) were produced.`
+                    : "Service closure was not evaluated because the evidence does not support that conclusion."}
+                </p>
+                <p>{data.identityUncertain.length} identity-uncertainty entr{data.identityUncertain.length === 1 ? "y was" : "ies were"} produced.</p>
+                <p>{data.riskFindings.length} review-list entr{data.riskFindings.length === 1 ? "y was" : "ies were"} produced.</p>
               </div>
             </TabsContent>
 
-            <TabsContent value="hosts" className="mt-4">
-              <div className="space-y-4">
-                {data.newHosts.length > 0 && (
-                  <div>
-                    <h4 className="font-semibold mb-2 flex items-center gap-2">
-                      <Plus className="h-4 w-4 text-green-600" />
-                      New Hosts ({data.newHosts.length})
-                    </h4>
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-sm">
-                        <thead>
-                          <tr className="border-b">
-                            <th className="text-left py-2 px-4">IP Address</th>
-                            <th className="text-left py-2 px-4">Hostname</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {data.newHosts.map((h: HostChange, idx: number) => (
-                            <tr key={idx} className="border-b last:border-0 bg-green-50/50 dark:bg-green-950/10">
-                              <td className="py-2 px-4 font-mono">{h.ip}</td>
-                              <td className="py-2 px-4">{h.hostname || "—"}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                )}
+            <TabsContent value="devices" className="mt-4 space-y-5">
+              <section>
+                <h4 className="mb-2 flex items-center gap-2 font-semibold">
+                  <Plus className="h-4 w-4" />
+                  Added-device findings ({data.newHosts.length})
+                </h4>
+                {data.newHosts.length > 0
+                  ? <HostTable entries={data.newHosts} />
+                  : <p className="text-sm text-muted-foreground">No added-device findings were produced by this comparison.</p>}
+              </section>
 
-                {data.removedHosts.length > 0 && (
-                  <div>
-                    <h4 className="font-semibold mb-2 flex items-center gap-2">
-                      <Minus className="h-4 w-4 text-gray-500" />
-                      Removed Hosts ({data.removedHosts.length})
-                    </h4>
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-sm">
-                        <thead>
-                          <tr className="border-b">
-                            <th className="text-left py-2 px-4">IP Address</th>
-                            <th className="text-left py-2 px-4">Hostname</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {data.removedHosts.map((h: HostChange, idx: number) => (
-                            <tr key={idx} className="border-b last:border-0 bg-gray-50/50 dark:bg-gray-950/10">
-                              <td className="py-2 px-4 font-mono line-through">{h.ip}</td>
-                              <td className="py-2 px-4 line-through">{h.hostname || "—"}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
+              <section>
+                <h4 className="mb-2 flex items-center gap-2 font-semibold">
+                  <Minus className="h-4 w-4" />
+                  Device-absence findings
+                </h4>
+                {!supportsAbsence ? (
+                  <p className="text-sm text-amber-700 dark:text-amber-300">
+                    Not evaluated because the evidence does not support device-absence conclusions.
+                  </p>
+                ) : data.removedHosts.length > 0 ? (
+                  <HostTable entries={data.removedHosts} />
+                ) : (
+                  <p className="text-sm text-muted-foreground">No device-absence findings were produced by this comparison.</p>
                 )}
+              </section>
 
-                {data.newHosts.length === 0 && data.removedHosts.length === 0 && (
-                  <p className="text-sm text-muted-foreground">No host changes detected.</p>
-                )}
-              </div>
+              <section>
+                <h4 className="mb-2 flex items-center gap-2 font-semibold">
+                  <HelpCircle className="h-4 w-4" />
+                  Identity uncertainty ({data.identityUncertain.length})
+                </h4>
+                {data.identityUncertain.length > 0
+                  ? <IdentityTable entries={data.identityUncertain} />
+                  : <p className="text-sm text-muted-foreground">No identity-uncertainty entries were produced by this comparison.</p>}
+              </section>
             </TabsContent>
 
-            <TabsContent value="ports" className="mt-4">
-              <div className="space-y-4">
-                {data.portsOpened.length > 0 && (
-                  <div>
-                    <h4 className="font-semibold mb-2 flex items-center gap-2">
-                      <Plus className="h-4 w-4 text-yellow-600" />
-                      Ports Opened ({data.portsOpened.length})
-                    </h4>
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-sm">
-                        <thead>
-                          <tr className="border-b">
-                            <th className="text-left py-2 px-4">Host</th>
-                            <th className="text-left py-2 px-4">Port</th>
-                            <th className="text-left py-2 px-4">Service</th>
-                            <th className="text-left py-2 px-4">Risk</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {data.portsOpened.map((p: PortChange, idx: number) => (
-                            <tr key={idx} className={`border-b last:border-0 ${p.risk === "P0" ? "bg-red-50/50 dark:bg-red-950/10" : "bg-yellow-50/50 dark:bg-yellow-950/10"}`}>
-                              <td className="py-2 px-4">
-                                <span className="font-mono">{p.ip}</span>
-                                {p.hostname && <span className="text-muted-foreground ml-2">({p.hostname})</span>}
-                              </td>
-                              <td className="py-2 px-4 font-mono">{p.port}/{p.protocol}</td>
-                              <td className="py-2 px-4">{p.service}</td>
-                              <td className="py-2 px-4"><RiskBadge risk={p.risk} /></td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                )}
+            <TabsContent value="services" className="mt-4 space-y-5">
+              <section>
+                <h4 className="mb-2 flex items-center gap-2 font-semibold">
+                  <Plus className="h-4 w-4" />
+                  Service-addition findings ({data.portsOpened.length})
+                </h4>
+                {data.portsOpened.length > 0
+                  ? <PortTable entries={data.portsOpened} showClassification />
+                  : <p className="text-sm text-muted-foreground">No service-addition findings were produced by this comparison.</p>}
+              </section>
 
-                {data.portsClosed.length > 0 && (
-                  <div>
-                    <h4 className="font-semibold mb-2 flex items-center gap-2">
-                      <Minus className="h-4 w-4 text-gray-500" />
-                      Ports Closed ({data.portsClosed.length})
-                    </h4>
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-sm">
-                        <thead>
-                          <tr className="border-b">
-                            <th className="text-left py-2 px-4">Host</th>
-                            <th className="text-left py-2 px-4">Port</th>
-                            <th className="text-left py-2 px-4">Service</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {data.portsClosed.map((p: PortChange, idx: number) => (
-                            <tr key={idx} className="border-b last:border-0 bg-gray-50/50 dark:bg-gray-950/10">
-                              <td className="py-2 px-4">
-                                <span className="font-mono line-through">{p.ip}</span>
-                                {p.hostname && <span className="text-muted-foreground ml-2 line-through">({p.hostname})</span>}
-                              </td>
-                              <td className="py-2 px-4 font-mono line-through">{p.port}/{p.protocol}</td>
-                              <td className="py-2 px-4 line-through">{p.service}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
+              <section>
+                <h4 className="mb-2 flex items-center gap-2 font-semibold">
+                  <Minus className="h-4 w-4" />
+                  Service-closure findings
+                </h4>
+                {!supportsClosure ? (
+                  <p className="text-sm text-amber-700 dark:text-amber-300">
+                    Not evaluated because the evidence does not support service-closure conclusions.
+                  </p>
+                ) : data.portsClosed.length > 0 ? (
+                  <PortTable entries={data.portsClosed} />
+                ) : (
+                  <p className="text-sm text-muted-foreground">No service-closure findings were produced by this comparison.</p>
                 )}
-
-                {data.portsOpened.length === 0 && data.portsClosed.length === 0 && (
-                  <p className="text-sm text-muted-foreground">No port changes detected.</p>
-                )}
-              </div>
+              </section>
             </TabsContent>
 
-            <TabsContent value="risk" className="mt-4">
-              {data.riskyExposures.length > 0 ? (
-                <div className="space-y-4">
-                  <div className="p-4 bg-red-50 dark:bg-red-950/20 rounded-lg border border-red-200 dark:border-red-900">
-                    <h4 className="font-semibold mb-2 text-red-700 dark:text-red-400 flex items-center gap-2">
-                      <AlertTriangle className="h-4 w-4" />
-                      Critical Exposures (P0)
-                    </h4>
-                    {riskExposureIntroText && (
-                      <p className="text-sm text-red-600 dark:text-red-300 mb-4">
-                        {riskExposureIntroText}
-                      </p>
-                    )}
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-sm">
-                        <thead>
-                          <tr className="border-b border-red-200 dark:border-red-800">
-                            <th className="text-left py-2 px-4">Host</th>
-                            <th className="text-left py-2 px-4">Port</th>
-                            <th className="text-left py-2 px-4">Service</th>
-                            <th className="text-left py-2 px-4">Risk</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {data.riskyExposures.map((p: PortChange, idx: number) => (
-                            <tr key={idx} className="border-b border-red-100 dark:border-red-900 last:border-0">
-                              <td className="py-2 px-4">
-                                <span className="font-mono">{p.ip}</span>
-                                {p.hostname && <span className="text-red-500 dark:text-red-400 ml-2">({p.hostname})</span>}
-                              </td>
-                              <td className="py-2 px-4 font-mono">{p.port}/{p.protocol}</td>
-                              <td className="py-2 px-4">{p.service}</td>
-                              <td className="py-2 px-4"><RiskBadge risk={p.risk} /></td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                </div>
-              ) : (
-                <div className="p-4 bg-green-50 dark:bg-green-950/20 rounded-lg border border-green-200 dark:border-green-900">
-                  <h4 className="font-semibold text-green-700 dark:text-green-400 flex items-center gap-2">
-                    <Shield className="h-4 w-4" />
-                    No Critical Exposures
+            <TabsContent value="review" className="mt-4">
+              <div className="space-y-4 rounded-lg border border-amber-200 bg-amber-50 p-4 dark:border-amber-900 dark:bg-amber-950/20">
+                <div>
+                  <h4 className="flex items-center gap-2 font-semibold text-amber-800 dark:text-amber-200">
+                    <AlertTriangle className="h-4 w-4" />
+                    Observed services requiring review ({data.riskFindings.length})
                   </h4>
-                  <p className="text-sm text-green-600 dark:text-green-300 mt-1">
-                    {riskNoExposureText}
+                  <p className="mt-1 text-sm text-amber-700 dark:text-amber-300">
+                    The scan vantage is unverified; the result does not establish reachability beyond that vantage.
                   </p>
                 </div>
-              )}
+                {data.riskFindings.length > 0
+                  ? <PortTable entries={data.riskFindings} showClassification />
+                  : <p className="text-sm text-muted-foreground">No review-list entries were produced by this comparison.</p>}
+              </div>
             </TabsContent>
 
             <TabsContent value="export" className="mt-4">

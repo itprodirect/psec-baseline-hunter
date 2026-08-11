@@ -56,6 +56,20 @@ let buildDeviceResponseTarget;
 let upsertDeviceResponse;
 let getDeviceResponseForTarget;
 let adaptPacketHighwayCaptureToObservationBundleV1;
+let computeDiff;
+let buildDiffFromObservationBundles;
+let DiffComparisonError;
+let buildScorecardData;
+let buildScorecardDataFromObservationBundle;
+let buildDiffUserPrompt;
+let generateRuleBasedDiffSummary;
+let buildUserPrompt;
+let generateRuleBasedSummary;
+let buildExecutiveUserPrompt;
+let generateRuleBasedExecutiveSummary;
+let diffToCSV;
+let diffToMarkdown;
+let scorecardToCSV;
 
 async function loadModules() {
   const [
@@ -73,6 +87,12 @@ async function loadModules() {
     networkStatement,
     deviceResponses,
     packetHighwayObservation,
+    diffEngine,
+    riskClassifier,
+    diffPrompt,
+    scorecardPrompt,
+    executivePrompt,
+    csvExport,
   ] = await Promise.all([
     import("../src/lib/services/path-safety.ts"),
     import("../src/lib/services/archive-safety.ts"),
@@ -88,6 +108,12 @@ async function loadModules() {
     import("../src/lib/services/network-statement.ts"),
     import("../src/lib/services/device-responses.ts"),
     import("../src/lib/services/packet-highway-observation.ts"),
+    import("../src/lib/services/diff-engine.ts"),
+    import("../src/lib/services/risk-classifier.ts"),
+    import("../src/lib/llm/prompt-diff.ts"),
+    import("../src/lib/llm/prompt-scorecard.ts"),
+    import("../src/lib/llm/prompt-executive.ts"),
+    import("../src/lib/utils/csv-export.ts"),
   ]);
 
   ({ resolvePathWithin, sanitizeNetworkName } = pathSafety);
@@ -163,6 +189,12 @@ async function loadModules() {
   ({
     adaptPacketHighwayCaptureToObservationBundleV1,
   } = packetHighwayObservation);
+  ({ computeDiff, buildDiffFromObservationBundles, DiffComparisonError } = diffEngine);
+  ({ buildScorecardData, buildScorecardDataFromObservationBundle } = riskClassifier);
+  ({ buildDiffUserPrompt, generateRuleBasedDiffSummary } = diffPrompt);
+  ({ buildUserPrompt, generateRuleBasedSummary } = scorecardPrompt);
+  ({ buildExecutiveUserPrompt, generateRuleBasedExecutiveSummary } = executivePrompt);
+  ({ diffToCSV, diffToMarkdown, scorecardToCSV } = csvExport);
 }
 
 let total = 0;
@@ -205,8 +237,11 @@ function createDiffData(riskyExposures) {
     removedHosts: [],
     portsOpened: [],
     portsClosed: [],
+    identityUncertain: [],
+    riskFindings: riskyExposures,
     riskyExposures,
     summary: "summary",
+    evidence: createTestEvidence("supported", { comparison: true }),
   };
 }
 
@@ -221,7 +256,55 @@ function createScorecardData() {
     riskPorts: 0,
     topPorts: [],
     riskPortsDetail: [],
-    summary: "No critical exposures detected.",
+    summary: "No P0 or P1 services were observed in this scan evidence.",
+    evidence: createTestEvidence("supported"),
+  };
+}
+
+function createTestEvidence(status, { comparison = false } = {}) {
+  const supported = status === "supported";
+  const coverage = {
+    status: supported ? "complete" : "partial",
+    score: supported ? 1 : 0.4,
+    partial: !supported,
+    deviceCount: 1,
+    scopeKnown: true,
+    expectedSources: ["ports", "discovery", "hosts_up", "arp_snapshot", "scan_metadata"],
+    presentSources: supported
+      ? ["ports", "discovery", "hosts_up", "arp_snapshot", "scan_metadata"]
+      : ["ports"],
+    missingSources: supported ? [] : ["discovery"],
+  };
+
+  return {
+    version: "psec.evidence.v1",
+    status,
+    reasonCodes: supported
+      ? ["external-reachability-not-established"]
+      : ["partial-coverage", "external-reachability-not-established"],
+    coverage: comparison
+      ? { baseline: coverage, current: coverage }
+      : { current: coverage },
+    identity: {
+      status: comparison ? "supported" : "not-applicable",
+      uncertainCount: 0,
+    },
+    vantage: {
+      kind: "unverified-scan-vantage",
+      externalReachability: "not-established",
+    },
+    supports: {
+      deviceAbsence: comparison && supported,
+      portClosure: comparison && supported,
+      stableBaseline: false,
+      externalReachability: false,
+      comparisonPersistence: comparison && supported,
+      llmSummary: supported,
+    },
+    limitations: [
+      "External reachability is not established by this scan vantage.",
+      "Point-in-time observations do not establish continuous safety or stability.",
+    ],
   };
 }
 
@@ -237,44 +320,42 @@ async function getLLMRouteCases() {
   const [
     scorecardSummaryRoute,
     diffSummaryRoute,
-    portImpactRoute,
     executiveSummaryRoute,
   ] = await Promise.all([
     import("../src/app/api/llm/scorecard-summary/route.ts"),
     import("../src/app/api/llm/diff-summary/route.ts"),
-    import("../src/app/api/llm/port-impact/route.ts"),
     import("../src/app/api/llm/executive-summary/route.ts"),
   ]);
+
+  const withRegisteredRuns = (post) => async (request) =>
+    withTempCwd(async () => {
+      writeRunRegistryFixtures();
+      return post(request);
+    });
 
   return [
     {
       name: "scorecard summary",
       path: "/api/llm/scorecard-summary",
-      post: scorecardSummaryRoute.POST,
-      body: () => ({ scorecardData: createScorecardData() }),
+      post: withRegisteredRuns(scorecardSummaryRoute.POST),
+      body: () => ({ runUid: "current-run", scorecardData: createScorecardData() }),
     },
     {
       name: "diff summary",
       path: "/api/llm/diff-summary",
-      post: diffSummaryRoute.POST,
-      body: () => ({ diffData: createDiffData([]) }),
-    },
-    {
-      name: "port impact",
-      path: "/api/llm/port-impact",
-      post: portImpactRoute.POST,
+      post: withRegisteredRuns(diffSummaryRoute.POST),
       body: () => ({
-        port: 3389,
-        protocol: "tcp",
-        service: "ms-wbt-server",
-        userProfile: testUserProfile,
+        baselineRunUid: "baseline-run",
+        currentRunUid: "current-run",
+        diffData: createDiffData([]),
       }),
     },
     {
       name: "executive summary",
       path: "/api/llm/executive-summary",
-      post: executiveSummaryRoute.POST,
+      post: withRegisteredRuns(executiveSummaryRoute.POST),
       body: () => ({
+        runUid: "current-run",
         scorecardData: createScorecardData(),
         userProfile: testUserProfile,
       }),
@@ -482,7 +563,7 @@ async function withTempCwd(fn) {
 
   try {
     process.chdir(tempDir);
-    await fn(tempDir);
+    return await fn(tempDir);
   } finally {
     process.chdir(originalCwd);
     fs.rmSync(tempDir, { recursive: true, force: true });
@@ -518,30 +599,92 @@ function createNmapXml(ports) {
 }
 
 function writeRunRegistryFixtures(options = {}) {
+  return writeDb01RunPairFixtures({
+    baselineRunUid: options.baselineRunUid ?? "baseline-run",
+    currentRunUid: options.currentRunUid ?? "current-run",
+    baselineTimestamp: options.baselineTimestamp ?? "2026-02-01T10:00:00.000Z",
+    currentTimestamp: options.currentTimestamp ?? "2026-02-08T10:00:00.000Z",
+    baselineNetwork: options.network ?? "home-lab",
+    currentNetwork: options.network ?? "home-lab",
+    baselineScope: "10.0.0.0/24",
+    currentScope: "10.0.0.0/24",
+    baselineHosts: [
+      {
+        ip: "10.0.0.1",
+        mac: "02:00:00:00:00:01",
+        hostname: "fixture-device.local",
+        ports: [{ port: 80, protocol: "tcp", service: "http" }],
+      },
+    ],
+    currentHosts: [
+      {
+        ip: "10.0.0.1",
+        mac: "02:00:00:00:00:01",
+        hostname: "fixture-device.local",
+        ports: [
+          { port: 80, protocol: "tcp", service: "http" },
+          { port: 3389, protocol: "tcp", service: "ms-wbt-server" },
+        ],
+      },
+    ],
+  });
+}
+
+function writeDb01RunPairFixtures(options = {}) {
   const dataDir = path.join(process.cwd(), "data");
-  const scansDir = path.join(dataDir, "test-scans");
+  const scansDir = path.join(dataDir, "db01-scans");
   const runsDir = path.join(dataDir, "runs");
-  const baselineRunUid = options.baselineRunUid ?? "baseline-run";
-  const currentRunUid = options.currentRunUid ?? "current-run";
-  const baselineTimestamp = options.baselineTimestamp ?? "2026-02-01T10:00:00.000Z";
-  const currentTimestamp = options.currentTimestamp ?? "2026-02-08T10:00:00.000Z";
-  const network = options.network ?? "home-lab";
-  const baselineXmlPath = path.join(scansDir, "baseline.xml");
-  const currentXmlPath = path.join(scansDir, "current.xml");
+  const baselineRunUid = options.baselineRunUid ?? "db01-baseline";
+  const currentRunUid = options.currentRunUid ?? "db01-current";
+  const baselineTimestamp = options.baselineTimestamp ?? "2026-07-01T10:00:00.000Z";
+  const currentTimestamp = options.currentTimestamp ?? "2026-07-08T10:00:00.000Z";
+  const baselineNetwork = options.baselineNetwork ?? "db01-lab";
+  const currentNetwork = options.currentNetwork ?? baselineNetwork;
+  const baselineScope = options.baselineScope ?? "192.0.2.0/24";
+  const currentScope = options.currentScope ?? baselineScope;
+  const baselineHosts = options.baselineHosts ?? [
+    {
+      ip: "192.0.2.10",
+      mac: "02:00:00:00:00:10",
+      hostname: "db01-device.local",
+      ports: [{ port: 443, protocol: "tcp", service: "https" }],
+    },
+  ];
+  const currentHosts = options.currentHosts ?? [
+    {
+      ip: "192.0.2.10",
+      mac: "02:00:00:00:00:10",
+      hostname: "db01-device.local",
+      ports: [
+        { port: 443, protocol: "tcp", service: "https" },
+        { port: 3389, protocol: "tcp", service: "ms-wbt-server" },
+      ],
+    },
+  ];
 
   fs.mkdirSync(scansDir, { recursive: true });
   fs.mkdirSync(runsDir, { recursive: true });
-  fs.writeFileSync(
-    baselineXmlPath,
-    createNmapXml([{ port: 80, protocol: "tcp", service: "http" }])
-  );
-  fs.writeFileSync(
-    currentXmlPath,
-    createNmapXml([
-      { port: 80, protocol: "tcp", service: "http" },
-      { port: 3389, protocol: "tcp", service: "ms-wbt-server" },
-    ])
-  );
+
+  const baselineManifest = writeDb01RunArtifacts({
+    runUid: baselineRunUid,
+    timestamp: baselineTimestamp,
+    network: baselineNetwork,
+    scope: baselineScope,
+    runType: options.baselineRunType ?? "baselinekit_v0",
+    hosts: baselineHosts,
+    coverage: options.baselineCoverage ?? "complete",
+    scansDir,
+  });
+  const currentManifest = writeDb01RunArtifacts({
+    runUid: currentRunUid,
+    timestamp: currentTimestamp,
+    network: currentNetwork,
+    scope: currentScope,
+    runType: options.currentRunType ?? "baselinekit_v0",
+    hosts: currentHosts,
+    coverage: options.currentCoverage ?? "complete",
+    scansDir,
+  });
 
   fs.writeFileSync(
     path.join(runsDir, "index.json"),
@@ -549,18 +692,8 @@ function writeRunRegistryFixtures(options = {}) {
       {
         version: 1,
         runs: {
-          [baselineRunUid]: createRunManifest(
-            baselineRunUid,
-            baselineTimestamp,
-            baselineXmlPath,
-            network
-          ),
-          [currentRunUid]: createRunManifest(
-            currentRunUid,
-            currentTimestamp,
-            currentXmlPath,
-            network
-          ),
+          [baselineRunUid]: baselineManifest,
+          [currentRunUid]: currentManifest,
         },
         lastUpdated: currentTimestamp,
       },
@@ -569,7 +702,64 @@ function writeRunRegistryFixtures(options = {}) {
     )
   );
 
-  return { baselineRunUid, currentRunUid };
+  return { baselineRunUid, currentRunUid, baselineManifest, currentManifest };
+}
+
+function writeDb01RunArtifacts({
+  runUid,
+  timestamp,
+  network,
+  scope,
+  runType,
+  hosts,
+  coverage,
+  scansDir,
+}) {
+  const runFolder = path.join(scansDir, runUid);
+  const portsPath = path.join(runFolder, "ports_top200_open.xml");
+  fs.mkdirSync(runFolder, { recursive: true });
+  fs.writeFileSync(portsPath, createObservationNmapXml(hosts));
+
+  const manifest = createRunManifest(runUid, timestamp, portsPath, network);
+  manifest.runType = runType;
+  manifest.runFolder = runFolder;
+  manifest.folderName = runUid;
+
+  if (coverage === "complete") {
+    const discoveryPath = path.join(runFolder, "discovery_ping_sweep.xml");
+    const hostsUpPath = path.join(runFolder, "hosts_up.txt");
+    const arpPath = path.join(runFolder, "arp_cache.txt");
+    const metadataPath = path.join(runFolder, "scan_metadata.json");
+
+    fs.writeFileSync(discoveryPath, createObservationNmapXml(hosts.map((host) => ({ ...host, ports: [] }))));
+    fs.writeFileSync(hostsUpPath, hosts.map((host) => host.ip).filter(Boolean).join("\n"));
+    fs.writeFileSync(
+      arpPath,
+      hosts
+        .filter((host) => host.ip && host.mac)
+        .map((host) => `${host.ip} ${host.mac}`)
+        .join("\n")
+    );
+    fs.writeFileSync(
+      metadataPath,
+      JSON.stringify({
+        target: scope,
+        collectorHost: "db01-synthetic-collector",
+        startedAt: timestamp,
+        endedAt: new Date(Date.parse(timestamp) + 60_000).toISOString(),
+        scriptVersion: "db01-test",
+      })
+    );
+
+    manifest.keyFiles.discovery = [discoveryPath];
+    manifest.keyFiles.hosts_up = [hostsUpPath];
+    manifest.keyFiles.snapshots = [arpPath];
+    manifest.stats.keyFileCount = 4;
+    manifest.stats.hasHostsUp = true;
+    manifest.stats.hasDiscovery = true;
+  }
+
+  return manifest;
 }
 
 function createRunManifest(runUid, timestamp, portsXmlPath, network = "home-lab") {
@@ -596,8 +786,17 @@ function createRunManifest(runUid, timestamp, portsXmlPath, network = "home-lab"
 }
 
 function createObservationNmapXml(hosts) {
+  const scannedProtocols = [
+    ...new Set(
+      hosts.flatMap((host) => (host.ports ?? []).map((port) => port.protocol || "tcp"))
+    ),
+  ];
   return [
     "<nmaprun>",
+    ...scannedProtocols.map(
+      (protocol) =>
+        `<scaninfo type="synthetic" protocol="${protocol}" numservices="65535" services="1-65535" />`
+    ),
     ...hosts.map((host) => {
       const ipAddresses = host.ips ?? (host.ip ? [host.ip] : []);
       const addresses = [
@@ -608,10 +807,11 @@ function createObservationNmapXml(hosts) {
         ? `<hostnames><hostname name="${host.hostname}" /></hostnames>`
         : "";
       const ports = host.ports?.length
-        ? `<ports>${host.ports.map((port) => `<port protocol="${port.protocol}" portid="${port.port}"><state state="open" /><service name="${port.service}" product="${port.product ?? ""}" version="${port.version ?? ""}" /></port>`).join("")}</ports>`
+        ? `<ports>${host.ports.map((port) => `<port protocol="${port.protocol}" portid="${port.port}"><state state="open" /><service name="${port.service}" product="${port.product ?? ""}" version="${port.version ?? ""}" /></port>`).join("")}<extraports state="closed" count="${scannedProtocols.length * 65535 - new Set(host.ports.map((port) => `${port.protocol || "tcp"}:${port.port}`)).size}" /></ports>`
         : "";
       return `<host><status state="up" />${addresses}${hostnames}${ports}</host>`;
     }),
+    '<runstats><finished exit="success" /></runstats>',
     "</nmaprun>",
   ].join("");
 }
@@ -5267,7 +5467,7 @@ run("diff and comparisons POST preserve valid payload behavior", async () => {
         baselineRunUid,
         currentRunUid,
         title: "  Weekly check  ",
-        notes: "  one new RDP exposure  ",
+        notes: "  one new RDP service observation  ",
       })
     );
     const comparisonBody = await comparisonResponse.json();
@@ -5275,8 +5475,982 @@ run("diff and comparisons POST preserve valid payload behavior", async () => {
     assert.equal(comparisonResponse.status, 200);
     assert.equal(comparisonBody.success, true);
     assert.equal(comparisonBody.comparison.title, "Weekly check");
-    assert.equal(comparisonBody.comparison.notes, "one new RDP exposure");
+    assert.equal(comparisonBody.comparison.notes, "one new RDP service observation");
+    assert.equal(comparisonBody.comparison.diffData.evidence.status, "supported");
   });
+});
+
+run("DB-01 legacy diff keeps strong device identity across a changed locator", async () => {
+  await withTempCwd(async () => {
+    const { baselineRunUid, currentRunUid } = writeDb01RunPairFixtures({
+      baselineHosts: [
+        {
+          ip: "192.0.2.10",
+          mac: "02:00:00:00:00:AA",
+          hostname: "stable-device.local",
+          ports: [{ port: 443, protocol: "tcp", service: "https" }],
+        },
+      ],
+      currentHosts: [
+        {
+          ip: "192.0.2.77",
+          mac: "02:00:00:00:00:AA",
+          hostname: "stable-device.local",
+          ports: [
+            { port: 443, protocol: "tcp", service: "https" },
+            { port: 8080, protocol: "tcp", service: "http-proxy" },
+          ],
+        },
+      ],
+    });
+
+    const result = computeDiff(baselineRunUid, currentRunUid);
+    assert.ok(result);
+    assert.deepEqual(result.newHosts, []);
+    assert.deepEqual(result.removedHosts, []);
+    assert.deepEqual(result.portsOpened.map((finding) => finding.port), [8080]);
+    assert.deepEqual(result.portsClosed, []);
+  });
+});
+
+run("DB-01 locator-only continuity remains uncertain", async () => {
+  await withTempCwd(async () => {
+    const { baselineRunUid, currentRunUid } = writeDb01RunPairFixtures({
+      baselineHosts: [
+        {
+          ip: "192.0.2.20",
+          ports: [{ port: 22, protocol: "tcp", service: "ssh" }],
+        },
+      ],
+      currentHosts: [
+        {
+          ip: "192.0.2.20",
+          ports: [
+            { port: 22, protocol: "tcp", service: "ssh" },
+            { port: 3389, protocol: "tcp", service: "ms-wbt-server" },
+          ],
+        },
+      ],
+    });
+
+    const result = computeDiff(baselineRunUid, currentRunUid);
+    assert.ok(result);
+    assert.equal(result.evidence.status, "uncertain");
+    assert.ok(result.identityUncertain.length > 0);
+    assert.deepEqual(result.portsOpened, []);
+    assert.deepEqual(result.portsClosed, []);
+  });
+});
+
+run("DB-01 partial current evidence cannot create removal closure or stability", async () => {
+  await withTempCwd(async () => {
+    const { baselineRunUid, currentRunUid } = writeDb01RunPairFixtures({
+      currentCoverage: "partial",
+      currentHosts: [
+        {
+          ip: "192.0.2.10",
+          mac: "02:00:00:00:00:10",
+          hostname: "db01-device.local",
+          ports: [],
+        },
+      ],
+    });
+
+    const result = computeDiff(baselineRunUid, currentRunUid);
+    assert.ok(result);
+    assert.equal(result.evidence.status, "insufficient-evidence");
+    assert.deepEqual(result.removedHosts, []);
+    assert.deepEqual(result.portsClosed, []);
+    assert.doesNotMatch(result.summary, /stable|safe|removed|closed/i);
+  });
+});
+
+run("DB-01 partial baseline evidence cannot create device or service additions", async () => {
+  await withTempCwd(async () => {
+    const { baselineRunUid, currentRunUid } = writeDb01RunPairFixtures({
+      baselineCoverage: "partial",
+      baselineHosts: [
+        {
+          ip: "192.0.2.11",
+          mac: "02:00:00:00:00:11",
+          hostname: "partial-baseline.local",
+          ports: [{ port: 443, protocol: "tcp", service: "https" }],
+        },
+      ],
+      currentHosts: [
+        {
+          ip: "192.0.2.11",
+          mac: "02:00:00:00:00:11",
+          hostname: "partial-baseline.local",
+          ports: [
+            { port: 443, protocol: "tcp", service: "https" },
+            { port: 8080, protocol: "tcp", service: "http-proxy" },
+          ],
+        },
+        {
+          ip: "192.0.2.12",
+          mac: "02:00:00:00:00:12",
+          hostname: "current-only.local",
+          ports: [{ port: 3389, protocol: "tcp", service: "ms-wbt-server" }],
+        },
+      ],
+    });
+
+    const result = computeDiff(baselineRunUid, currentRunUid);
+    assert.ok(result);
+    assert.equal(result.evidence.status, "insufficient-evidence");
+    assert.deepEqual(result.newHosts, []);
+    assert.deepEqual(result.portsOpened, []);
+    assert.deepEqual(result.riskFindings, []);
+    assert.doesNotMatch(result.summary, /added|newly observed|service-addition/i);
+  });
+});
+
+run("DB-01 incompatible network evidence fails closed at the API", async () => {
+  const diffRoute = await import("../src/app/api/diff/route.ts");
+
+  await withTempCwd(async () => {
+    const { baselineRunUid, currentRunUid } = writeDb01RunPairFixtures({
+      baselineNetwork: "db01-site-a",
+      currentNetwork: "db01-site-b",
+    });
+    const response = await diffRoute.POST(
+      createJsonRequest("/api/diff", "POST", { baselineRunUid, currentRunUid })
+    );
+    const body = await response.json();
+
+    assert.equal(response.status, 422);
+    assert.equal(body.success, false);
+    assert.equal(body.code, "comparison_incompatible_site");
+    assert.doesNotMatch(JSON.stringify(body), /db01-site-a|db01-site-b|192\.0\.2/);
+  });
+});
+
+run("DB-01 incompatible comparison cannot be persisted or reach an LLM", async () => {
+  const [comparisonsRoute, diffSummaryRoute] = await Promise.all([
+    import("../src/app/api/comparisons/route.ts"),
+    import("../src/app/api/llm/diff-summary/route.ts"),
+  ]);
+
+  await withTempCwd(async () => {
+    const { baselineRunUid, currentRunUid } = writeDb01RunPairFixtures({
+      baselineNetwork: "db01-site-a",
+      currentNetwork: "db01-site-b",
+    });
+
+    const persistenceResponse = await comparisonsRoute.POST(
+      createJsonRequest("/api/comparisons", "POST", { baselineRunUid, currentRunUid })
+    );
+    assert.equal(persistenceResponse.status, 422);
+    assert.equal(
+      fs.existsSync(path.join(process.cwd(), "data", "comparisons", "index.json")),
+      false
+    );
+
+    let fetchCalls = 0;
+    await withEnv(
+      { OPENAI_API_KEY: "test-openai-key", ANTHROPIC_API_KEY: undefined },
+      async () => {
+        await withMockedFetch(async () => {
+          fetchCalls += 1;
+          return new Response(JSON.stringify({ choices: [{ message: { content: "unsafe" } }] }), {
+            status: 200,
+          });
+        }, async () => {
+          resetLLMRateLimitForTesting();
+          const response = await diffSummaryRoute.POST(
+            createJsonPostRequest(
+              "/api/llm/diff-summary",
+              { baselineRunUid, currentRunUid, userProfile: testUserProfile },
+              "198.51.100.212"
+            )
+          );
+          const body = await response.json();
+          assert.equal(response.status, 422);
+          assert.equal(body.code, "comparison_incompatible_site");
+          assert.equal(fetchCalls, 0);
+        });
+      }
+    );
+    resetLLMRateLimitForTesting();
+  });
+});
+
+run("DB-01 empty current observation is insufficient rather than removal or closure", async () => {
+  await withTempCwd(async () => {
+    const { baselineRunUid, currentRunUid } = writeDb01RunPairFixtures({
+      currentHosts: [],
+    });
+
+    const result = computeDiff(baselineRunUid, currentRunUid);
+    assert.ok(result);
+    assert.equal(result.evidence.status, "insufficient-evidence");
+    assert.ok(result.evidence.reasonCodes.includes("empty-observation"));
+    assert.deepEqual(result.removedHosts, []);
+    assert.deepEqual(result.portsClosed, []);
+    assert.doesNotMatch(result.summary, /stable|safe|removed|closed/i);
+  });
+});
+
+run("DB-01 address-only ports artifact is insufficient and cannot imply closure", async () => {
+  await withTempCwd(async () => {
+    const { baselineRunUid, currentRunUid } = writeDb01RunPairFixtures({
+      currentHosts: [
+        {
+          ip: "192.0.2.10",
+          mac: "02:00:00:00:00:10",
+          hostname: "db01-device.local",
+          ports: [],
+        },
+      ],
+    });
+
+    const diff = computeDiff(baselineRunUid, currentRunUid);
+    const scorecard = buildScorecardData(currentRunUid);
+    assert.ok(diff);
+    assert.ok(scorecard);
+    assert.equal(diff.evidence.status, "insufficient-evidence");
+    assert.equal(scorecard.evidence.status, "insufficient-evidence");
+    assert.ok(diff.evidence.reasonCodes.includes("partial-coverage"));
+    assert.deepEqual(diff.portsClosed, []);
+    assert.doesNotMatch(scorecard.summary, /No P0 or P1 services were observed/i);
+  });
+});
+
+run("DB-01 explicit zero-open port-state evidence remains representable", async () => {
+  await withTempCwd(async () => {
+    const { baselineRunUid, currentRunUid, currentManifest } = writeDb01RunPairFixtures({
+      currentHosts: [
+        {
+          ip: "192.0.2.10",
+          mac: "02:00:00:00:00:10",
+          hostname: "db01-device.local",
+          ports: [],
+        },
+      ],
+    });
+    fs.writeFileSync(
+      currentManifest.keyFiles.ports[0],
+      '<nmaprun><scaninfo type="synthetic" protocol="tcp" numservices="65535" services="1-65535" /><host><status state="up" /><address addr="192.0.2.10" addrtype="ipv4" /><address addr="02:00:00:00:00:10" addrtype="mac" /><ports><extraports state="closed" count="65535" /></ports></host><runstats><finished exit="success" /></runstats></nmaprun>'
+    );
+
+    const diff = computeDiff(baselineRunUid, currentRunUid);
+    const scorecard = buildScorecardData(currentRunUid);
+    assert.ok(diff);
+    assert.ok(scorecard);
+    assert.equal(diff.evidence.status, "supported");
+    assert.equal(scorecard.evidence.status, "supported");
+    assert.equal(scorecard.openPorts, 0);
+    assert.equal(scorecard.riskPorts, 0);
+    assert.deepEqual(diff.portsClosed.map((finding) => finding.port), [443]);
+    assert.match(scorecard.summary, /No P0 or P1 services were observed within the recorded coverage/i);
+    assert.match(scorecard.summary, /does not establish overall security/i);
+  });
+});
+
+run("DB-01 per-device port coverage prevents cross-device closure and addition claims", async () => {
+  await withTempCwd(async () => {
+    const sharedHosts = [
+      {
+        ip: "192.0.2.50",
+        mac: "02:00:00:00:00:50",
+        hostname: "device-a.local",
+        ports: [{ port: 443, protocol: "tcp", service: "https" }],
+      },
+      {
+        ip: "192.0.2.51",
+        mac: "02:00:00:00:00:51",
+        hostname: "device-b.local",
+        ports: [{ port: 80, protocol: "tcp", service: "http" }],
+      },
+    ];
+    const { baselineRunUid, currentRunUid, currentManifest } = writeDb01RunPairFixtures({
+      baselineHosts: sharedHosts,
+      currentHosts: sharedHosts,
+    });
+    fs.writeFileSync(
+      currentManifest.keyFiles.ports[0],
+      createObservationNmapXml([{ ...sharedHosts[0], ports: [] }, sharedHosts[1]])
+    );
+
+    const diff = computeDiff(baselineRunUid, currentRunUid);
+    const scorecard = buildScorecardData(currentRunUid);
+    assert.ok(diff);
+    assert.ok(scorecard);
+    assert.equal(diff.evidence.status, "insufficient-evidence");
+    assert.equal(scorecard.evidence.status, "insufficient-evidence");
+    assert.deepEqual(diff.portsClosed, []);
+  });
+
+  await withTempCwd(async () => {
+    const baselineHosts = [
+      {
+        ip: "192.0.2.60",
+        mac: "02:00:00:00:00:60",
+        hostname: "device-a.local",
+        ports: [{ port: 443, protocol: "tcp", service: "https" }],
+      },
+      {
+        ip: "192.0.2.61",
+        mac: "02:00:00:00:00:61",
+        hostname: "device-b.local",
+        ports: [{ port: 80, protocol: "tcp", service: "http" }],
+      },
+    ];
+    const currentHosts = [
+      {
+        ...baselineHosts[0],
+        ports: [
+          { port: 443, protocol: "tcp", service: "https" },
+          { port: 8080, protocol: "tcp", service: "http-proxy" },
+        ],
+      },
+      baselineHosts[1],
+    ];
+    const { baselineRunUid, currentRunUid, baselineManifest } = writeDb01RunPairFixtures({
+      baselineHosts,
+      currentHosts,
+    });
+    fs.writeFileSync(
+      baselineManifest.keyFiles.ports[0],
+      createObservationNmapXml([{ ...baselineHosts[0], ports: [] }, baselineHosts[1]])
+    );
+
+    const diff = computeDiff(baselineRunUid, currentRunUid);
+    assert.ok(diff);
+    assert.equal(diff.evidence.status, "insufficient-evidence");
+    assert.deepEqual(diff.portsOpened, []);
+    assert.deepEqual(diff.riskFindings, []);
+  });
+});
+
+run("DB-01 incompatible declared port ranges cannot create closure conclusions", async () => {
+  await withTempCwd(async () => {
+    const { baselineRunUid, currentRunUid, currentManifest } = writeDb01RunPairFixtures({
+      currentHosts: [
+        {
+          ip: "192.0.2.10",
+          mac: "02:00:00:00:00:10",
+          hostname: "db01-device.local",
+          ports: [],
+        },
+      ],
+    });
+    fs.writeFileSync(
+      currentManifest.keyFiles.ports[0],
+      '<nmaprun><scaninfo type="synthetic" protocol="tcp" numservices="1" services="22" /><host><status state="up" /><address addr="192.0.2.10" addrtype="ipv4" /><address addr="02:00:00:00:00:10" addrtype="mac" /><ports><extraports state="closed" count="1" /></ports></host><runstats><finished exit="success" /></runstats></nmaprun>'
+    );
+
+    const diff = computeDiff(baselineRunUid, currentRunUid);
+    assert.ok(diff);
+    assert.equal(diff.evidence.status, "insufficient-evidence");
+    assert.deepEqual(diff.portsClosed, []);
+    assert.match(diff.summary, /insufficient/i);
+    assert.doesNotMatch(diff.summary, /service was closed|services were closed|baseline is stable/i);
+  });
+});
+
+run("DB-01 incomplete states within a declared port range cannot imply closure", async () => {
+  await withTempCwd(async () => {
+    const { baselineRunUid, currentRunUid, currentManifest } = writeDb01RunPairFixtures({
+      currentHosts: [
+        {
+          ip: "192.0.2.10",
+          mac: "02:00:00:00:00:10",
+          hostname: "db01-device.local",
+          ports: [],
+        },
+      ],
+    });
+    fs.writeFileSync(
+      currentManifest.keyFiles.ports[0],
+      '<nmaprun><scaninfo type="synthetic" protocol="tcp" numservices="65535" services="1-65535" /><host><status state="up" /><address addr="192.0.2.10" addrtype="ipv4" /><address addr="02:00:00:00:00:10" addrtype="mac" /><ports><port protocol="tcp" portid="22"><state state="closed" /></port></ports></host><runstats><finished exit="success" /></runstats></nmaprun>'
+    );
+
+    const diff = computeDiff(baselineRunUid, currentRunUid);
+    const scorecard = buildScorecardData(currentRunUid);
+    assert.ok(diff);
+    assert.ok(scorecard);
+    assert.equal(diff.evidence.status, "insufficient-evidence");
+    assert.equal(scorecard.evidence.status, "insufficient-evidence");
+    assert.deepEqual(diff.portsClosed, []);
+    assert.equal(diff.evidence.supports.comparisonPersistence, false);
+    assert.equal(diff.evidence.supports.llmSummary, false);
+  });
+});
+
+run("DB-01 ambiguous current port states cannot imply closure", async () => {
+  await withTempCwd(async () => {
+    const { baselineRunUid, currentRunUid, currentManifest } = writeDb01RunPairFixtures({
+      currentHosts: [
+        {
+          ip: "192.0.2.10",
+          mac: "02:00:00:00:00:10",
+          hostname: "db01-device.local",
+          ports: [],
+        },
+      ],
+    });
+    fs.writeFileSync(
+      currentManifest.keyFiles.ports[0],
+      '<nmaprun><scaninfo type="synthetic" protocol="tcp" numservices="1" services="443" /><host><status state="up" /><address addr="192.0.2.10" addrtype="ipv4" /><address addr="02:00:00:00:00:10" addrtype="mac" /><ports><port protocol="tcp" portid="443"><state state="open|filtered" /></port></ports></host><runstats><finished exit="success" /></runstats></nmaprun>'
+    );
+
+    const diff = computeDiff(baselineRunUid, currentRunUid);
+    assert.ok(diff);
+    assert.equal(diff.evidence.status, "insufficient-evidence");
+    assert.deepEqual(diff.portsClosed, []);
+    assert.equal(diff.evidence.supports.comparisonPersistence, false);
+    assert.doesNotMatch(diff.summary, /service was closed|service closure/i);
+  });
+});
+
+run("DB-01 failed sibling artifacts cannot contribute scan-range coverage", async () => {
+  await withTempCwd(async () => {
+    const { baselineManifest, currentManifest } = writeDb01RunPairFixtures({
+      currentHosts: [
+        {
+          ip: "192.0.2.10",
+          mac: "02:00:00:00:00:10",
+          hostname: "db01-device.local",
+          ports: [],
+        },
+      ],
+    });
+    const successfulPort22Path = path.join(currentManifest.runFolder, "ports_22.xml");
+    const failedFullRangePath = path.join(currentManifest.runFolder, "ports_failed_full.xml");
+    fs.writeFileSync(
+      successfulPort22Path,
+      '<nmaprun><scaninfo type="synthetic" protocol="tcp" numservices="1" services="22" /><host><status state="up" /><address addr="192.0.2.10" addrtype="ipv4" /><address addr="02:00:00:00:00:10" addrtype="mac" /><ports><port protocol="tcp" portid="22"><state state="closed" /></port></ports></host><runstats><finished exit="success" /></runstats></nmaprun>'
+    );
+    fs.writeFileSync(
+      failedFullRangePath,
+      '<nmaprun><scaninfo type="synthetic" protocol="tcp" numservices="65535" services="1-65535" /><host><status state="up" /><address addr="192.0.2.10" addrtype="ipv4" /><address addr="02:00:00:00:00:10" addrtype="mac" /><ports><extraports state="closed" count="65535" /></ports></host><runstats><finished exit="error" /></runstats></nmaprun>'
+    );
+    currentManifest.keyFiles.ports = [successfulPort22Path, failedFullRangePath];
+
+    const baseline = adaptRunManifestToObservationBundleV1(baselineManifest);
+    const current = adaptRunManifestToObservationBundleV1(currentManifest);
+    const diff = buildDiffFromObservationBundles(baseline, current);
+    const currentCoverage = current.devices.flatMap((device) => device.portCoverage ?? []);
+
+    assert.equal(current.coverage.status, "partial");
+    assert.equal(diff.evidence.status, "insufficient-evidence");
+    assert.deepEqual(diff.portsClosed, []);
+    assert.equal(
+      currentCoverage.some((coverage) =>
+        coverage.ranges.some((range) => 443 >= range.start && 443 <= range.end)
+      ),
+      false
+    );
+  });
+});
+
+run("DB-01 failed Nmap evidence cannot imply device or service absence", async () => {
+  await withTempCwd(async () => {
+    const baselineHosts = [
+      {
+        ip: "192.0.2.10",
+        mac: "02:00:00:00:00:10",
+        hostname: "device-a.local",
+        ports: [{ port: 443, protocol: "tcp", service: "https" }],
+      },
+      {
+        ip: "192.0.2.11",
+        mac: "02:00:00:00:00:11",
+        hostname: "device-b.local",
+        ports: [{ port: 80, protocol: "tcp", service: "http" }],
+      },
+    ];
+    const { baselineRunUid, currentRunUid, currentManifest } = writeDb01RunPairFixtures({
+      baselineHosts,
+      currentHosts: [baselineHosts[0]],
+    });
+    const failedXml = fs
+      .readFileSync(currentManifest.keyFiles.ports[0], "utf8")
+      .replace('exit="success"', 'exit="error"');
+    fs.writeFileSync(currentManifest.keyFiles.ports[0], failedXml);
+
+    const diff = computeDiff(baselineRunUid, currentRunUid);
+    assert.ok(diff);
+    assert.equal(diff.evidence.status, "insufficient-evidence");
+    assert.ok(diff.evidence.reasonCodes.includes("partial-coverage"));
+    assert.deepEqual(diff.removedHosts, []);
+    assert.deepEqual(diff.portsClosed, []);
+    assert.equal(diff.evidence.supports.comparisonPersistence, false);
+    assert.equal(diff.evidence.supports.llmSummary, false);
+  });
+});
+
+run("DB-01 conflicting network scopes fail closed with privacy-safe diagnostics", async () => {
+  const diffRoute = await import("../src/app/api/diff/route.ts");
+
+  await withTempCwd(async () => {
+    const { baselineRunUid, currentRunUid } = writeDb01RunPairFixtures({
+      baselineScope: "192.0.2.0/24",
+      currentScope: "198.51.100.0/24",
+    });
+    const response = await diffRoute.POST(
+      createJsonRequest("/api/diff", "POST", { baselineRunUid, currentRunUid })
+    );
+    const body = await response.json();
+
+    assert.equal(response.status, 422);
+    assert.equal(body.code, "comparison_incompatible_site");
+    assert.doesNotMatch(JSON.stringify(body), /192\.0\.2|198\.51\.100/);
+  });
+});
+
+run("DB-01 incompatible scan run types fail closed", async () => {
+  const diffRoute = await import("../src/app/api/diff/route.ts");
+
+  await withTempCwd(async () => {
+    const { baselineRunUid, currentRunUid } = writeDb01RunPairFixtures({
+      baselineRunType: "baselinekit_v0",
+      currentRunType: "smoketest",
+    });
+    const response = await diffRoute.POST(
+      createJsonRequest("/api/diff", "POST", { baselineRunUid, currentRunUid })
+    );
+    const body = await response.json();
+
+    assert.equal(response.status, 422);
+    assert.equal(body.code, "comparison_incompatible_scan");
+    assert.doesNotMatch(JSON.stringify(body), /baselinekit|smoketest|192\.0\.2/);
+  });
+});
+
+run("DB-01 internal-only P0 observation stays a bounded service review finding", async () => {
+  await withTempCwd(async () => {
+    const { currentRunUid } = writeDb01RunPairFixtures({
+      currentHosts: [
+        {
+          ip: "192.0.2.30",
+          mac: "02:00:00:00:00:30",
+          hostname: "review-device.local",
+          ports: [{ port: 3389, protocol: "tcp", service: "ms-wbt-server" }],
+        },
+      ],
+    });
+    const scorecard = buildScorecardData(currentRunUid);
+    assert.ok(scorecard);
+    assert.equal(scorecard.evidence.vantage.externalReachability, "not-established");
+    assert.equal(scorecard.riskPorts, 1);
+
+    const prompt = buildUserPrompt(scorecard, testUserProfile);
+    const fallback = generateRuleBasedSummary(scorecard, testUserProfile);
+    const executivePrompt = buildExecutiveUserPrompt(scorecard, testUserProfile);
+    const executiveFallback = generateRuleBasedExecutiveSummary(scorecard, testUserProfile);
+    const combined = [scorecard.summary, prompt, fallback, executivePrompt, executiveFallback].join("\n");
+
+    assert.match(combined, /external reachability (?:is )?not established|does not establish (?:internet|external)/i);
+    assert.doesNotMatch(
+      combined,
+      /is exposed to (?:the )?internet|accessible from outside|perimeter (?:is )?(?:secure|failed)|breach probability|\$[0-9]|no critical security issues|no urgent actions/i
+    );
+  });
+});
+
+run("DB-01 P1-only Scorecard reports the observed review finding", async () => {
+  await withTempCwd(async () => {
+    const { currentRunUid } = writeDb01RunPairFixtures({
+      currentHosts: [
+        {
+          ip: "192.0.2.31",
+          mac: "02:00:00:00:00:31",
+          hostname: "p1-review-device.local",
+          ports: [{ port: 8080, protocol: "tcp", service: "http-proxy" }],
+        },
+      ],
+    });
+    const scorecard = buildScorecardData(currentRunUid);
+    assert.ok(scorecard);
+    assert.equal(scorecard.riskPorts, 1);
+    assert.equal(scorecard.riskPortsDetail[0].risk, "P1");
+    assert.match(scorecard.summary, /0 P0 and 1 P1 service finding/i);
+    assert.doesNotMatch(scorecard.summary, /No P0 or P1 services were observed/i);
+  });
+});
+
+run("DB-01 Diff review findings include newly observed P1 services", async () => {
+  await withTempCwd(async () => {
+    const { baselineRunUid, currentRunUid } = writeDb01RunPairFixtures({
+      baselineHosts: [
+        {
+          ip: "192.0.2.32",
+          mac: "02:00:00:00:00:32",
+          hostname: "p1-diff-device.local",
+          ports: [{ port: 443, protocol: "tcp", service: "https" }],
+        },
+      ],
+      currentHosts: [
+        {
+          ip: "192.0.2.32",
+          mac: "02:00:00:00:00:32",
+          hostname: "p1-diff-device.local",
+          ports: [
+            { port: 443, protocol: "tcp", service: "https" },
+            { port: 8080, protocol: "tcp", service: "http-proxy" },
+          ],
+        },
+      ],
+    });
+    const diff = computeDiff(baselineRunUid, currentRunUid);
+    assert.ok(diff);
+    assert.equal(diff.riskFindings.length, 1);
+    assert.equal(diff.riskFindings[0].risk, "P1");
+    assert.match(diff.summary, /P0\/P1-classified service finding/i);
+    assert.doesNotMatch(diff.summary, /newly observed P0 service finding/i);
+    const fallback = generateRuleBasedDiffSummary(diff, testUserProfile);
+    assert.match(fallback, /1 P0\/P1-classified service observation requiring review/i);
+  });
+});
+
+run("DB-01 complete compatible scan with zero risk findings remains bounded and supported", async () => {
+  await withTempCwd(async () => {
+    const { currentRunUid } = writeDb01RunPairFixtures({
+      currentHosts: [
+        {
+          ip: "192.0.2.40",
+          mac: "02:00:00:00:00:40",
+          hostname: "ordinary-device.local",
+          ports: [{ port: 443, protocol: "tcp", service: "https" }],
+        },
+      ],
+    });
+    const scorecard = buildScorecardData(currentRunUid);
+    assert.ok(scorecard);
+    assert.equal(scorecard.evidence.status, "supported");
+    assert.equal(scorecard.riskPorts, 0);
+    assert.match(scorecard.summary, /no P0 or P1 services were observed|no priority services were observed/i);
+    assert.doesNotMatch(scorecard.summary, /safe|no security risk|expected parameters|normal|clean/i);
+
+    const fallback = generateRuleBasedSummary(scorecard, testUserProfile);
+    assert.match(fallback, /does not establish|not an all-clear|not a safety/i);
+    assert.doesNotMatch(fallback, /no critical security issues|no urgent actions|clean security posture/i);
+  });
+});
+
+run("DB-01 insufficient comparison cannot be persisted", async () => {
+  const comparisonsRoute = await import("../src/app/api/comparisons/route.ts");
+
+  await withTempCwd(async () => {
+    const { baselineRunUid, currentRunUid } = writeDb01RunPairFixtures({
+      currentCoverage: "partial",
+    });
+    const response = await comparisonsRoute.POST(
+      createJsonRequest("/api/comparisons", "POST", { baselineRunUid, currentRunUid })
+    );
+    const body = await response.json();
+
+    assert.equal(response.status, 422);
+    assert.equal(body.success, false);
+    assert.equal(body.code, "comparison_insufficient_evidence");
+    assert.equal(fs.existsSync(path.join(process.cwd(), "data", "comparisons", "index.json")), false);
+  });
+});
+
+run("DB-01 legacy saved comparisons without evidence do not render as supported", async () => {
+  const comparisonsRoute = await import("../src/app/api/comparisons/route.ts");
+
+  await withTempCwd(async () => {
+    const comparisonsDir = path.join(process.cwd(), "data", "comparisons");
+    const legacyDiffData = { ...createDiffData([]) };
+    delete legacyDiffData.evidence;
+    fs.mkdirSync(comparisonsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(comparisonsDir, "index.json"),
+      JSON.stringify({
+        version: 1,
+        comparisons: {
+          LEGACY01: {
+            comparisonId: "LEGACY01",
+            baselineRunUid: "legacy-a",
+            currentRunUid: "legacy-b",
+            network: "legacy-network",
+            createdAt: "2026-01-01T00:00:00.000Z",
+            diffData: legacyDiffData,
+            riskScore: 100,
+            riskLabel: "Excellent",
+          },
+        },
+        lastUpdated: "2026-01-01T00:00:00.000Z",
+      })
+    );
+
+    const response = await comparisonsRoute.GET(
+      new Request("http://localhost/api/comparisons")
+    );
+    const body = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(body.success, true);
+    assert.deepEqual(body.comparisons, []);
+  });
+});
+
+run("DB-01 insufficient comparison cannot invoke an LLM", async () => {
+  const diffSummaryRoute = await import("../src/app/api/llm/diff-summary/route.ts");
+
+  await withTempCwd(async () => {
+    const { baselineRunUid, currentRunUid } = writeDb01RunPairFixtures({
+      currentCoverage: "partial",
+    });
+    const unsafeLegacyDiff = computeDiff(baselineRunUid, currentRunUid);
+    let fetchCalls = 0;
+
+    await withEnv(
+      { OPENAI_API_KEY: "test-openai-key", ANTHROPIC_API_KEY: undefined },
+      async () => {
+        await withMockedFetch(async () => {
+          fetchCalls += 1;
+          return new Response(JSON.stringify({ choices: [{ message: { content: "unsafe" } }] }), {
+            status: 200,
+          });
+        }, async () => {
+          resetLLMRateLimitForTesting();
+          const response = await diffSummaryRoute.POST(
+            createJsonPostRequest(
+              "/api/llm/diff-summary",
+              {
+                baselineRunUid,
+                currentRunUid,
+                diffData: unsafeLegacyDiff,
+                userProfile: testUserProfile,
+              },
+              "198.51.100.210"
+            )
+          );
+          const body = await response.json();
+
+          assert.equal(response.status, 422);
+          assert.equal(body.code, "comparison_insufficient_evidence");
+          assert.equal(fetchCalls, 0);
+        });
+      }
+    );
+    resetLLMRateLimitForTesting();
+  });
+});
+
+run("DB-01 insufficient Scorecard cannot invoke summary or executive LLM paths", async () => {
+  const [scorecardSummaryRoute, executiveSummaryRoute] = await Promise.all([
+    import("../src/app/api/llm/scorecard-summary/route.ts"),
+    import("../src/app/api/llm/executive-summary/route.ts"),
+  ]);
+
+  await withTempCwd(async () => {
+    const { currentRunUid } = writeDb01RunPairFixtures({ currentCoverage: "partial" });
+    let fetchCalls = 0;
+
+    await withEnv(
+      { OPENAI_API_KEY: "test-openai-key", ANTHROPIC_API_KEY: undefined },
+      async () => {
+        await withMockedFetch(async () => {
+          fetchCalls += 1;
+          return new Response(JSON.stringify({ choices: [{ message: { content: "unsafe" } }] }), {
+            status: 200,
+          });
+        }, async () => {
+          resetLLMRateLimitForTesting();
+          for (const [pathname, post, body] of [
+            [
+              "/api/llm/scorecard-summary",
+              scorecardSummaryRoute.POST,
+              { runUid: currentRunUid, userProfile: testUserProfile },
+            ],
+            [
+              "/api/llm/executive-summary",
+              executiveSummaryRoute.POST,
+              { runUid: currentRunUid, userProfile: testUserProfile },
+            ],
+          ]) {
+            const response = await post(
+              createJsonPostRequest(pathname, body, `198.51.100.${pathname.includes("executive") ? "214" : "213"}`)
+            );
+            const responseBody = await response.json();
+            assert.equal(response.status, 422);
+            assert.equal(responseBody.code, "scorecard_insufficient_evidence");
+          }
+          assert.equal(fetchCalls, 0);
+        });
+      }
+    );
+    resetLLMRateLimitForTesting();
+  });
+});
+
+run("DB-01 free-form providers cannot supply evidence summaries", async () => {
+  const routeCases = await getLLMRouteCases();
+  let fetchCalls = 0;
+  const unsafeProviderText = [
+    "## Evidence Status",
+    "Status: supported.",
+    "External reachability is not established.",
+    "Internet exposure is confirmed and the network is safe, although compromise cannot be proven.",
+    "No changes were detected; all devices are accounted for and the security posture is strong.",
+    "Financial impact is $5,000,000, although breach probability cannot be estimated.",
+  ].join("\n");
+
+  await withEnv(
+    { OPENAI_API_KEY: "test-openai-key", ANTHROPIC_API_KEY: undefined },
+    async () => {
+      await withMockedFetch(async () => {
+        fetchCalls += 1;
+        return new Response(
+          JSON.stringify({ choices: [{ message: { content: unsafeProviderText } }] }),
+          { status: 200 }
+        );
+      }, async () => {
+          for (let index = 0; index < routeCases.length; index += 1) {
+            const routeCase = routeCases[index];
+            resetLLMRateLimitForTesting();
+            const response = await routeCase.post(
+              createJsonPostRequest(
+                routeCase.path,
+                routeCase.body(),
+                `198.51.100.${220 + index}`
+              )
+            );
+            const body = await response.json();
+
+            assert.equal(response.status, 200, routeCase.name);
+            assert.equal(body.success, true, routeCase.name);
+            assert.equal(body.isRuleBased, true, routeCase.name);
+            assert.equal(body.provider, "rule-based", routeCase.name);
+            assert.doesNotMatch(
+              body.summary,
+              /internet exposure is confirmed|network is safe|no changes were detected|all devices are accounted for|security posture is strong|financial impact is \$5,000,000/i,
+              routeCase.name
+            );
+            assert.match(
+              body.summary,
+              /does not establish reachability|reachability beyond.*not established|do not establish reachability/i,
+              routeCase.name
+            );
+          }
+          assert.equal(fetchCalls, 0);
+        });
+    }
+  );
+  resetLLMRateLimitForTesting();
+});
+
+run("DB-01 internal port-impact path cannot invoke an LLM", async () => {
+  const portImpactRoute = await import("../src/app/api/llm/port-impact/route.ts");
+  let fetchCalls = 0;
+
+  await withEnv(
+    { OPENAI_API_KEY: "test-openai-key", ANTHROPIC_API_KEY: undefined },
+    async () => {
+      await withMockedFetch(async () => {
+        fetchCalls += 1;
+        return new Response(JSON.stringify({ choices: [{ message: { content: "{}" } }] }), {
+          status: 200,
+        });
+      }, async () => {
+        resetLLMRateLimitForTesting();
+        const response = await portImpactRoute.POST(
+          createJsonPostRequest(
+            "/api/llm/port-impact",
+            { port: 3389, protocol: "tcp", service: "ms-wbt-server" },
+            "198.51.100.211"
+          )
+        );
+        const body = await response.json();
+
+        assert.equal(response.status, 422);
+        assert.equal(body.code, "external_evidence_required");
+        assert.equal(fetchCalls, 0);
+      });
+    }
+  );
+  resetLLMRateLimitForTesting();
+});
+
+run("DB-01 API and exports preserve the same evidence status", async () => {
+  const diffRoute = await import("../src/app/api/diff/route.ts");
+
+  await withTempCwd(async () => {
+    const { baselineRunUid, currentRunUid } = writeDb01RunPairFixtures({
+      currentCoverage: "partial",
+    });
+    const response = await diffRoute.POST(
+      createJsonRequest("/api/diff", "POST", { baselineRunUid, currentRunUid })
+    );
+    const body = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(body.data.evidence.status, "insufficient-evidence");
+    const csv = diffToCSV(body.data);
+    const markdown = diffToMarkdown(body.data);
+    assert.match(csv, /Evidence Status,insufficient-evidence/);
+    assert.match(csv, /External Reachability,not-established/);
+    assert.match(csv, /Supports device absence,false/);
+    assert.match(csv, /Supports port closure,false/);
+    assert.match(csv, /Supports stable baseline,false/);
+    assert.match(csv, /Supports external reachability,false/);
+    assert.match(csv, /Supports comparison persistence,false/);
+    assert.match(csv, /Supports LLM summary,false/);
+    assert.match(markdown, /Supports stable baseline: false/);
+    assert.match(markdown, /Supports external reachability: false/);
+    assert.doesNotMatch(csv, /Network baseline is stable|No hosts removed|No ports closed/);
+  });
+});
+
+run("DB-01 scorecard export and rule fallback preserve evidence limitations", async () => {
+  await withTempCwd(async () => {
+    const { currentRunUid } = writeDb01RunPairFixtures({ currentCoverage: "partial" });
+    const scorecard = buildScorecardData(currentRunUid);
+    assert.ok(scorecard);
+
+    const csv = scorecardToCSV(scorecard);
+    const fallback = generateRuleBasedSummary(scorecard, testUserProfile);
+    assert.match(csv, /Evidence Status,insufficient-evidence/);
+    assert.match(csv, /External Reachability,not-established/);
+    assert.match(fallback, /insufficient evidence/i);
+    assert.doesNotMatch(fallback, /safe|clean|normal|no urgent actions|no security risk/i);
+  });
+});
+
+run("DB-01 production demo payload remains explicitly fail closed", () => {
+  const demo = JSON.parse(
+    fs.readFileSync(path.join(process.cwd(), "data", "demo", "demo-data.json"), "utf8")
+  );
+
+  for (const scorecard of [demo.baselineScorecard, demo.currentScorecard]) {
+    assert.equal(scorecard.evidence.version, "psec.evidence.v1");
+    assert.equal(scorecard.evidence.status, "insufficient-evidence");
+    assert.equal(scorecard.evidence.supports.llmSummary, false);
+    assert.equal(scorecard.riskPorts, scorecard.riskPortsDetail.length);
+    assert.deepEqual(scorecard.evidence.coverage.current.expectedSources, [
+      "ports",
+      "discovery",
+      "hosts_up",
+      "arp_snapshot",
+      "scan_metadata",
+    ]);
+    assert.deepEqual(scorecard.evidence.coverage.current.missingSources, [
+      "arp_snapshot",
+      "scan_metadata",
+    ]);
+  }
+
+  assert.equal(demo.diff.evidence.status, "insufficient-evidence");
+  assert.equal(demo.diff.evidence.supports.deviceAbsence, false);
+  assert.equal(demo.diff.evidence.supports.portClosure, false);
+  assert.equal(demo.diff.evidence.supports.comparisonPersistence, false);
+  assert.equal(demo.diff.evidence.supports.llmSummary, false);
+  assert.deepEqual(demo.diff.newHosts, []);
+  assert.deepEqual(demo.diff.removedHosts, []);
+  assert.deepEqual(demo.diff.portsOpened, []);
+  assert.deepEqual(demo.diff.portsClosed, []);
+  assert.deepEqual(demo.diff.riskFindings, []);
+  assert.ok(demo.diff.identityUncertain.length > 0);
+  assert.doesNotMatch(
+    demo.diff.summary,
+    /internet exposure|perimeter failure|breach probability|financial impact|network (?:is )?safe/i
+  );
 });
 
 run("inventory POST rejects malformed devices and preserves valid adds", async () => {

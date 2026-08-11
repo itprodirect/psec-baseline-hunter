@@ -1,12 +1,12 @@
 "use client";
 
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { AlertTriangle, Network, Server } from "lucide-react";
+import { EvidenceStatusBanner } from "@/components/evidence/EvidenceStatusBanner";
 import { Badge } from "@/components/ui/badge";
-import { AlertTriangle, Shield, Server, Network } from "lucide-react";
-import { ScorecardData, RiskPort, TopPort } from "@/lib/types";
-import { PersonalizedSummaryCard } from "@/components/scorecard/PersonalizedSummaryCard";
-import { PortImpactCard } from "@/components/scorecard/PortImpactCard";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import type { RiskPort, ScorecardData, TopPort } from "@/lib/types";
 import { ExecutiveSummaryCard } from "@/components/scorecard/ExecutiveSummaryCard";
+import { PersonalizedSummaryCard } from "@/components/scorecard/PersonalizedSummaryCard";
 import { QuickRuleButton } from "@/components/scorecard/QuickRuleButton";
 
 function RiskBadge({ risk }: { risk: string }) {
@@ -24,35 +24,25 @@ interface ScorecardDisplayProps {
 }
 
 export function ScorecardDisplay({ data, actions }: ScorecardDisplayProps) {
+  const canGenerateSummary = data.evidence.supports.llmSummary;
+
   return (
     <div className="space-y-6">
-      <Card className="border-blue-200 bg-blue-50/50 dark:border-blue-900 dark:bg-blue-950/20">
-        <CardContent className="pt-6">
-          <div className="flex items-start gap-4">
-            <div className="p-2 rounded-full bg-blue-100 dark:bg-blue-900">
-              <Shield className="h-5 w-5 text-blue-600 dark:text-blue-400" />
-            </div>
-            <div className="flex-1">
-              <h3 className="font-semibold text-blue-900 dark:text-blue-100">
-                Analysis Summary
-              </h3>
-              <p className="text-sm text-blue-700 dark:text-blue-300 mt-1">
-                {data.summary}
-              </p>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
+      <EvidenceStatusBanner evidence={data.evidence} summary={data.summary} />
 
-      <PersonalizedSummaryCard scorecardData={data} />
-      <ExecutiveSummaryCard scorecardData={data} />
+      {canGenerateSummary && (
+        <>
+          <PersonalizedSummaryCard key={`personalized-${data.runUid}`} scorecardData={data} />
+          <ExecutiveSummaryCard key={`executive-${data.runUid}`} scorecardData={data} />
+        </>
+      )}
 
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
         <Card>
           <CardHeader className="pb-2">
             <CardDescription className="flex items-center gap-2">
               <Server className="h-4 w-4" />
-              Total Hosts
+              Observed Hosts
             </CardDescription>
             <CardTitle className="text-4xl">{data.totalHosts}</CardTitle>
           </CardHeader>
@@ -61,50 +51,43 @@ export function ScorecardDisplay({ data, actions }: ScorecardDisplayProps) {
           <CardHeader className="pb-2">
             <CardDescription className="flex items-center gap-2">
               <Network className="h-4 w-4" />
-              Open Ports
+              Observed Open Ports
             </CardDescription>
             <CardTitle className="text-4xl">{data.openPorts}</CardTitle>
           </CardHeader>
         </Card>
         <Card>
           <CardHeader className="pb-2">
-            <CardDescription>Services</CardDescription>
+            <CardDescription>Observed Services</CardDescription>
             <CardTitle className="text-4xl">{data.uniqueServices}</CardTitle>
           </CardHeader>
         </Card>
-        <Card>
+        <Card className={data.riskPortsDetail.length > 0 ? "border-amber-200 dark:border-amber-900" : ""}>
           <CardHeader className="pb-2">
             <CardDescription className="flex items-center gap-2">
               <AlertTriangle className="h-4 w-4" />
-              Risk Ports
+              Observed Services Requiring Review
             </CardDescription>
-            <CardTitle className="text-4xl flex items-center gap-2">
-              {data.riskPorts}
-              {data.riskPorts > 0 && (
-                <Badge variant="destructive" className="text-xs">
-                  Action Needed
-                </Badge>
-              )}
-            </CardTitle>
+            <CardTitle className="text-4xl">{data.riskPortsDetail.length}</CardTitle>
           </CardHeader>
         </Card>
       </div>
 
-      {actions && actions.length > 0 && data.riskPorts > 0 && (
+      {actions && actions.length > 0 && data.riskPortsDetail.length > 0 && (
         <Card className="border-amber-200 dark:border-amber-900">
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-amber-700 dark:text-amber-400">
               <AlertTriangle className="h-5 w-5" />
-              Recommended Actions
+              Recommended Review Steps
             </CardTitle>
             <CardDescription>
-              Top priorities based on risk analysis
+              Review steps derived from the observed services and configured policy.
             </CardDescription>
           </CardHeader>
           <CardContent>
             <ol className="space-y-2 text-sm list-decimal list-inside">
-              {actions.map((action, idx) => (
-                <li key={idx} className="text-amber-700 dark:text-amber-300">
+              {actions.map((action, index) => (
+                <li key={`${action}-${index}`} className="text-amber-700 dark:text-amber-300">
                   {action}
                 </li>
               ))}
@@ -113,81 +96,83 @@ export function ScorecardDisplay({ data, actions }: ScorecardDisplayProps) {
         </Card>
       )}
 
-      {data.riskPortsDetail.length > 0 && (
-        <Card className="border-red-200 dark:border-red-900">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-red-700 dark:text-red-400">
-              <AlertTriangle className="h-5 w-5" />
-              Risk Exposures
-            </CardTitle>
-            <CardDescription>
-              Ports requiring immediate attention
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-4">
-              {data.riskPortsDetail.map((rp: RiskPort, idx: number) => (
-                <div key={idx} className="space-y-2">
-                  <div className="flex items-start justify-between p-4 bg-red-50 dark:bg-red-950/20 rounded-lg">
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <span className="font-mono font-semibold">
-                          {rp.port}/{rp.protocol}
-                        </span>
-                        <span className="text-muted-foreground">{rp.service}</span>
-                        <RiskBadge risk={rp.risk} />
-                      </div>
-                      <p className="text-sm text-muted-foreground mt-1">
-                        Exposed on {rp.hostsAffected} host{rp.hostsAffected !== 1 ? "s" : ""}:{" "}
-                        <span className="font-mono text-xs">
-                          {rp.hosts.slice(0, 3).join(", ")}
-                          {rp.hosts.length > 3 && ` +${rp.hosts.length - 3} more`}
-                        </span>
-                      </p>
-                    </div>
-                    <QuickRuleButton riskPort={rp} network={data.network} />
-                  </div>
-
-                  {(rp.risk === "P0" || rp.risk === "P1") && (
-                    <PortImpactCard riskPort={rp} />
-                  )}
-                </div>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      <Card>
+      <Card className={data.riskPortsDetail.length > 0 ? "border-amber-200 dark:border-amber-900" : ""}>
         <CardHeader>
-          <CardTitle>Top Ports</CardTitle>
+          <CardTitle className="flex items-center gap-2 text-amber-700 dark:text-amber-400">
+            <AlertTriangle className="h-5 w-5" />
+            Observed Services Requiring Review
+          </CardTitle>
           <CardDescription>
-            Most common open ports across scanned hosts
+            The scan vantage is unverified; these observations require contextual review.
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b">
-                  <th className="text-left py-2 px-4">Port</th>
-                  <th className="text-left py-2 px-4">Protocol</th>
-                  <th className="text-left py-2 px-4">Service</th>
-                  <th className="text-right py-2 px-4">Hosts Affected</th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.topPorts.map((tp: TopPort, idx: number) => (
-                  <tr key={idx} className="border-b last:border-0">
-                    <td className="py-2 px-4 font-mono">{tp.port}</td>
-                    <td className="py-2 px-4">{tp.protocol}</td>
-                    <td className="py-2 px-4">{tp.service}</td>
-                    <td className="py-2 px-4 text-right">{tp.hostsAffected}</td>
+          {data.riskPortsDetail.length > 0 ? (
+            <div className="space-y-3">
+              {data.riskPortsDetail.map((finding: RiskPort, index: number) => (
+                <div key={`${finding.protocol}-${finding.port}-${index}`} className="flex items-start justify-between gap-4 rounded-lg bg-amber-50 p-4 dark:bg-amber-950/20">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono font-semibold">
+                        {finding.port}/{finding.protocol}
+                      </span>
+                      <span className="text-muted-foreground">{finding.service}</span>
+                      <RiskBadge risk={finding.risk} />
+                    </div>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      Observed on {finding.hostsAffected} host{finding.hostsAffected !== 1 ? "s" : ""}: {" "}
+                      <span className="font-mono text-xs">
+                        {finding.hosts.slice(0, 3).join(", ")}
+                        {finding.hosts.length > 3 && ` +${finding.hosts.length - 3} more`}
+                      </span>
+                    </p>
+                  </div>
+                  <QuickRuleButton riskPort={finding} network={data.network} />
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              No review-list entries were produced by this scorecard.
+            </p>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Top Observed Ports</CardTitle>
+          <CardDescription>
+            Most frequently observed open ports in this run.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          {data.topPorts.length > 0 ? (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b">
+                    <th className="text-left py-2 px-4">Port</th>
+                    <th className="text-left py-2 px-4">Protocol</th>
+                    <th className="text-left py-2 px-4">Service</th>
+                    <th className="text-right py-2 px-4">Observed Host Count</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody>
+                  {data.topPorts.map((port: TopPort, index: number) => (
+                    <tr key={`${port.protocol}-${port.port}-${index}`} className="border-b last:border-0">
+                      <td className="py-2 px-4 font-mono">{port.port}</td>
+                      <td className="py-2 px-4">{port.protocol}</td>
+                      <td className="py-2 px-4">{port.service}</td>
+                      <td className="py-2 px-4 text-right">{port.hostsAffected}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground">No top-port entries were produced by this scorecard.</p>
+          )}
         </CardContent>
       </Card>
     </div>

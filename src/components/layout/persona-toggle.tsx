@@ -41,7 +41,7 @@ export function PersonaToggle() {
           {hasProfile ? (
             <>Summaries are tailored to your profile. Click <strong>&quot;Explain This&quot;</strong> on any page to adjust.</>
           ) : (
-            <>Click <strong>&quot;Explain This for My Situation&quot;</strong> on Health Overview or Changes to personalize your reports.</>
+            <>Use the evidence-summary controls on Observation Overview or Changes to generate bounded reports.</>
           )}
         </span>
       </div>

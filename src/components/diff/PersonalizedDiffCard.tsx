@@ -32,7 +32,8 @@ export function PersonalizedDiffCard({ diffData }: PersonalizedDiffCardProps) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          diffData,
+          baselineRunUid: diffData.baselineRunUid,
+          currentRunUid: diffData.currentRunUid,
           userProfile: profile,
         }),
       });
@@ -61,6 +62,10 @@ export function PersonalizedDiffCard({ diffData }: PersonalizedDiffCardProps) {
     setError(null);
   };
 
+  if (!diffData.evidence.supports.llmSummary) {
+    return null;
+  }
+
   // Initial state - show the "Explain" button
   if (!summary && !isLoading && !error) {
     return (
@@ -69,10 +74,10 @@ export function PersonalizedDiffCard({ diffData }: PersonalizedDiffCardProps) {
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-purple-700 dark:text-purple-400">
               <MessageSquareText className="h-5 w-5" />
-              Personalized Change Report
+              Evidence-Bounded Change Report
             </CardTitle>
             <CardDescription>
-              Get a plain-English explanation of what changed and why it matters
+              Generate a deterministic explanation from the verified comparison evidence
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -82,7 +87,7 @@ export function PersonalizedDiffCard({ diffData }: PersonalizedDiffCardProps) {
               variant="outline"
             >
               <Sparkles className="h-4 w-4" />
-              Explain These Changes
+              Generate Change Summary
             </Button>
           </CardContent>
         </Card>
@@ -104,7 +109,7 @@ export function PersonalizedDiffCard({ diffData }: PersonalizedDiffCardProps) {
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-purple-700 dark:text-purple-400">
             <MessageSquareText className="h-5 w-5" />
-            Personalized Change Report
+            Evidence-Bounded Change Report
           </CardTitle>
         </CardHeader>
         <CardContent>
@@ -160,7 +165,7 @@ export function PersonalizedDiffCard({ diffData }: PersonalizedDiffCardProps) {
               )}
               {isRuleBased && (
                 <span className="text-xs text-muted-foreground">
-                  (No API key configured)
+                  (Deterministic evidence renderer)
                 </span>
               )}
             </CardDescription>
@@ -179,7 +184,7 @@ export function PersonalizedDiffCard({ diffData }: PersonalizedDiffCardProps) {
       <CardContent>
         {summary && (
           <MarkdownViewer
-            content={summary}
+            content={`# Evidence\n\n- Evidence status: ${diffData.evidence.status}\n- Evidence version: ${diffData.evidence.version}\n\n## Limitations\n${diffData.evidence.limitations.map((limitation) => `- ${limitation}`).join("\n") || "- None reported by the evidence assessment."}\n\n${summary}`}
             filename={`change-report-${diffData.network}-${new Date().toISOString().split("T")[0]}.md`}
           />
         )}

@@ -15,6 +15,8 @@ import type {
   ObservationEvidenceConfidence,
   ObservationEvidenceKind,
   ObservationOpenPort,
+  ObservationPortCoverage,
+  ObservationPortRange,
   ObservationSourceKind,
   ObservationSourceRef,
   ObservationSupplementalEvidence,
@@ -94,6 +96,17 @@ interface ParsedNmapHost {
   hostnames: string[];
   vendors: string[];
   openPorts: ObservationOpenPort[];
+  /** True only when usable states account for the full declared scan range. */
+  hasPortStateEvidence?: boolean;
+}
+
+interface ParsedNmapArtifact {
+  hosts: ParsedNmapHost[];
+  portScanRanges: Array<{
+    protocol: string;
+    ranges: ObservationPortRange[];
+  }>;
+  completionStatus: "success" | "failed" | "unknown";
 }
 
 interface ParsedScanMetadata {
@@ -113,6 +126,7 @@ interface DeviceAccumulator {
   vendors: Set<string>;
   evidence: Map<string, DeviceIdentityEvidence>;
   openPorts: Map<string, ObservationOpenPort>;
+  portCoverage: Map<string, ObservationPortCoverage>;
   firstSeen: string | null;
   lastSeen: string | null;
   notes: Set<string>;
@@ -146,6 +160,7 @@ export function adaptRunManifestToObservationBundleV1(
   const runStartedAt = toIsoString(manifest.timestamp);
   const sources: ObservationSourceRef[] = [];
   const sourceLabelsPresent = new Set<string>();
+  const unusableCoverageLabels = new Set<string>();
   const coverageNotes: string[] = [];
   const bundleNotes: string[] = [];
   const deviceIndex = createDeviceIndex(runStartedAt);
@@ -204,12 +219,44 @@ export function adaptRunManifestToObservationBundleV1(
     for (const xmlPath of xmlPaths) {
       const source = addSource("nmap-xml", label, xmlPath, false, 0);
       try {
-        const hosts = parseNmapHosts(xmlPath, source.sourceId);
+        const parsedArtifact = parseNmapHosts(xmlPath, source.sourceId);
+        const hosts = parsedArtifact.hosts;
         source.parsed = true;
         source.recordCount = hosts.length;
-        sourceLabelsPresent.add(coverageLabelForSource(label));
+        const completed = parsedArtifact.completionStatus === "success";
+        const supportsDeclaredCapability =
+          completed &&
+          (label !== "ports" ||
+            (parsedArtifact.portScanRanges.length > 0 &&
+              hosts.some((host) => host.hasPortStateEvidence === true)));
+        if (supportsDeclaredCapability) {
+          sourceLabelsPresent.add(coverageLabelForSource(label));
+        } else {
+          unusableCoverageLabels.add(coverageLabelForSource(label));
+          const note = !completed
+            ? "The Nmap artifact did not record successful completion and cannot support absence, closure, or no-change conclusions."
+            : "The ports artifact did not account for its complete declared scan range and cannot support port absence or closure conclusions.";
+          source.notes.push(note);
+          coverageNotes.push(note);
+        }
         for (const host of hosts) {
-          mergeHostObservation(deviceIndex, host, source.sourceId, "observed", runStartedAt);
+          const portCoverage: ObservationPortCoverage[] =
+            label === "ports" && completed && host.hasPortStateEvidence
+              ? parsedArtifact.portScanRanges.map((coverage) => ({
+                  sourceId: source.sourceId,
+                  protocol: coverage.protocol,
+                  ranges: coverage.ranges,
+                }))
+              : [];
+          mergeHostObservation(
+            deviceIndex,
+            host,
+            source.sourceId,
+            "observed",
+            runStartedAt,
+            [],
+            portCoverage
+          );
         }
       } catch (error) {
         const note = isObservationArtifactReadError(error)
@@ -217,8 +264,16 @@ export function adaptRunManifestToObservationBundleV1(
           : "Nmap XML could not be parsed.";
         source.notes.push(note);
         coverageNotes.push(`${label} was present but could not be parsed.`);
+        unusableCoverageLabels.add(coverageLabelForSource(label));
       }
     }
+  }
+
+  // Multiple artifacts for one capability are treated as one evidence set.
+  // A failed/partial member prevents a successful sibling from silently
+  // upgrading the whole capability to complete.
+  for (const label of unusableCoverageLabels) {
+    sourceLabelsPresent.delete(label);
   }
 
   const hostsUpPath = firstExistingFile(manifest.keyFiles.hosts_up || []);
@@ -476,7 +531,7 @@ function coverageStatusFor(score: number, missingSources: string[]): Observation
   return "partial";
 }
 
-function parseNmapHosts(xmlPath: string, sourceId: string): ParsedNmapHost[] {
+function parseNmapHosts(xmlPath: string, sourceId: string): ParsedNmapArtifact {
   assertFileSize(
     xmlPath,
     MAX_OBSERVATION_NMAP_XML_BYTES,
@@ -492,13 +547,18 @@ function parseNmapHosts(xmlPath: string, sourceId: string): ParsedNmapHost[] {
     ignoreAttributes: false,
     attributeNamePrefix: "@_",
     processEntities: false,
-    isArray: (name) => ["host", "address", "hostname", "port"].includes(name),
+    isArray: (name) =>
+      ["scaninfo", "host", "address", "hostname", "port", "extraports"].includes(name),
   });
   const root = asRecord(parser.parse(xmlContent));
   const nmaprun = asRecord(root?.nmaprun);
-  if (!nmaprun) return [];
+  if (!nmaprun) {
+    return { hosts: [], portScanRanges: [], completionStatus: "unknown" };
+  }
 
   const hosts: ParsedNmapHost[] = [];
+  const portScanRanges = parseNmapPortScanRanges(nmaprun);
+  const completionStatus = parseNmapCompletionStatus(nmaprun);
   for (const host of asRecordArray(nmaprun.host)) {
     const status = attr(asRecord(host.status), "@_state");
     if (status && status !== "up") continue;
@@ -526,8 +586,17 @@ function parseNmapHosts(xmlPath: string, sourceId: string): ParsedNmapHost[] {
       .map((hostname) => safeText(attr(hostname, "@_name"), 120))
       .filter(Boolean);
 
+    const portsRecord = asRecord(host.ports);
+    const portRecords = asRecordArray(portsRecord?.port);
+    const extraPortRecords = asRecordArray(portsRecord?.extraports);
+    const hasPortStateEvidence = hasCompleteDeclaredPortStateCoverage(
+      portRecords,
+      extraPortRecords,
+      portScanRanges
+    );
+
     const openPorts: ObservationOpenPort[] = [];
-    for (const port of asRecordArray(asRecord(host.ports)?.port)) {
+    for (const port of portRecords) {
       const state = attr(asRecord(port.state), "@_state");
       if (state !== "open") continue;
       const portNumber = Number.parseInt(attr(port, "@_portid"), 10);
@@ -551,11 +620,131 @@ function parseNmapHosts(xmlPath: string, sourceId: string): ParsedNmapHost[] {
         hostnames: uniqueStrings(hostnames),
         vendors: uniqueStrings(vendors),
         openPorts,
+        hasPortStateEvidence,
       });
     }
   }
 
-  return hosts;
+  return { hosts, portScanRanges, completionStatus };
+}
+
+const USABLE_EXPLICIT_NMAP_PORT_STATES = new Set(["open", "closed"]);
+
+function hasCompleteDeclaredPortStateCoverage(
+  portRecords: XmlRecord[],
+  extraPortRecords: XmlRecord[],
+  declarations: Array<{ protocol: string; ranges: ObservationPortRange[] }>
+): boolean {
+  if (declarations.length === 0) return false;
+
+  const declaredCount = declarations.reduce(
+    (total, declaration) => total + rangeCardinality(declaration.ranges),
+    0
+  );
+  if (declaredCount <= 0) return false;
+
+  const explicitPorts = new Set<string>();
+  for (const port of portRecords) {
+    const protocol = safeText(attr(port, "@_protocol"), 16).toLowerCase();
+    const portNumber = Number.parseInt(attr(port, "@_portid"), 10);
+    const state = attr(asRecord(port.state), "@_state").toLowerCase();
+    const declaration = declarations.find((candidate) => candidate.protocol === protocol);
+    if (
+      !declaration ||
+      !Number.isInteger(portNumber) ||
+      !declaration.ranges.some(
+        (range) => portNumber >= range.start && portNumber <= range.end
+      ) ||
+      !USABLE_EXPLICIT_NMAP_PORT_STATES.has(state)
+    ) {
+      return false;
+    }
+    const key = `${protocol}:${portNumber}`;
+    if (explicitPorts.has(key)) return false;
+    explicitPorts.add(key);
+  }
+
+  let extraPortCount = 0;
+  for (const extraPorts of extraPortRecords) {
+    const count = Number.parseInt(attr(extraPorts, "@_count"), 10);
+    const state = attr(extraPorts, "@_state").toLowerCase();
+    // Extraports do not identify individual ports. Only an exact closed state
+    // can safely establish that the remaining declared ports were not open.
+    if (!Number.isInteger(count) || count < 0 || state !== "closed") {
+      return false;
+    }
+    extraPortCount += count;
+  }
+
+  return explicitPorts.size + extraPortCount === declaredCount;
+}
+
+function parseNmapCompletionStatus(
+  nmaprun: XmlRecord
+): "success" | "failed" | "unknown" {
+  const exit = attr(asRecord(asRecord(nmaprun.runstats)?.finished), "@_exit")
+    .trim()
+    .toLowerCase();
+  if (exit === "success") return "success";
+  if (exit) return "failed";
+  return "unknown";
+}
+
+function parseNmapPortScanRanges(
+  nmaprun: XmlRecord
+): Array<{ protocol: string; ranges: ObservationPortRange[] }> {
+  const scanInfoRecords = asRecordArray(nmaprun.scaninfo);
+  if (scanInfoRecords.length === 0) return [];
+  const byProtocol = new Map<string, ObservationPortRange[]>();
+  for (const scanInfo of scanInfoRecords) {
+    const protocol = safeText(attr(scanInfo, "@_protocol"), 16).toLowerCase();
+    if (!protocol) return [];
+    const ranges = parseDeclaredPortRanges(attr(scanInfo, "@_services"));
+    const numServices = Number.parseInt(attr(scanInfo, "@_numservices"), 10);
+    if (
+      ranges.length === 0 ||
+      !Number.isInteger(numServices) ||
+      numServices <= 0 ||
+      numServices !== rangeCardinality(ranges)
+    ) {
+      return [];
+    }
+    byProtocol.set(protocol, mergePortRanges([...(byProtocol.get(protocol) ?? []), ...ranges]));
+  }
+  return [...byProtocol.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([protocol, ranges]) => ({ protocol, ranges }));
+}
+
+function rangeCardinality(ranges: ObservationPortRange[]): number {
+  return ranges.reduce((total, range) => total + range.end - range.start + 1, 0);
+}
+
+function parseDeclaredPortRanges(value: string): ObservationPortRange[] {
+  const ranges: ObservationPortRange[] = [];
+  for (const token of value.split(",")) {
+    const match = /^\s*(\d{1,5})(?:-(\d{1,5}))?\s*$/.exec(token);
+    if (!match) continue;
+    const start = Number.parseInt(match[1], 10);
+    const end = Number.parseInt(match[2] ?? match[1], 10);
+    if (start < 0 || end > 65535 || start > end) continue;
+    ranges.push({ start, end });
+  }
+  return mergePortRanges(ranges);
+}
+
+function mergePortRanges(ranges: ObservationPortRange[]): ObservationPortRange[] {
+  const sorted = [...ranges].sort((left, right) => left.start - right.start || left.end - right.end);
+  const merged: ObservationPortRange[] = [];
+  for (const range of sorted) {
+    const previous = merged[merged.length - 1];
+    if (previous && range.start <= previous.end + 1) {
+      previous.end = Math.max(previous.end, range.end);
+    } else {
+      merged.push({ ...range });
+    }
+  }
+  return merged.slice(0, 512);
 }
 
 function parseHostsUp(filePath: string): string[] {
@@ -651,6 +840,7 @@ function createDeviceIndex(defaultSeenAt: string | null) {
       vendors: new Set(),
       evidence: new Map(),
       openPorts: new Map(),
+      portCoverage: new Map(),
       firstSeen: defaultSeenAt,
       lastSeen: defaultSeenAt,
       notes: new Set(),
@@ -677,7 +867,8 @@ function mergeHostObservation(
     kind: ObservationEvidenceKind;
     value: string;
     confidence: ObservationEvidenceConfidence;
-  }> = []
+  }> = [],
+  portCoverage: ObservationPortCoverage[] = []
 ): void {
   const existingKeys = [
     ...host.macs.map((mac) => index.macIndex.get(mac)).filter((key): key is string => Boolean(key)),
@@ -725,6 +916,10 @@ function mergeHostObservation(
     const key = `${port.protocol}:${port.port}:${port.service ?? ""}:${port.product ?? ""}:${port.version ?? ""}:${port.sourceId}`;
     device.openPorts.set(key, port);
   }
+  for (const coverage of portCoverage) {
+    const key = `${coverage.sourceId}|${coverage.protocol}`;
+    device.portCoverage.set(key, coverage);
+  }
 }
 
 function repointDeviceIndexes(
@@ -746,6 +941,7 @@ function mergeDeviceAccumulators(target: DeviceAccumulator, source: DeviceAccumu
   for (const value of source.vendors) target.vendors.add(value);
   for (const [key, value] of source.evidence) target.evidence.set(key, value);
   for (const [key, value] of source.openPorts) target.openPorts.set(key, value);
+  for (const [key, value] of source.portCoverage) target.portCoverage.set(key, value);
   for (const value of source.notes) target.notes.add(value);
   if (source.firstSeen && (!target.firstSeen || source.firstSeen < target.firstSeen)) {
     target.firstSeen = source.firstSeen;
@@ -770,6 +966,8 @@ function deviceIndexToDevices(index: ReturnType<typeof createDeviceIndex>): Obse
       openPorts: [...device.openPorts.values()]
         .sort((a, b) => a.port - b.port || a.protocol.localeCompare(b.protocol))
         .slice(0, MAX_OPEN_PORTS_PER_DEVICE),
+      portCoverage: [...device.portCoverage.values()]
+        .sort((a, b) => a.protocol.localeCompare(b.protocol) || a.sourceId.localeCompare(b.sourceId)),
       notes: [...device.notes].slice(0, 10),
     }));
 }
@@ -836,6 +1034,14 @@ function sanitizeDevice(raw: Record<string, unknown>, sourceIds: Set<string>): O
         .slice(0, MAX_OPEN_PORTS_PER_DEVICE)
     : [];
 
+  const portCoverage = Array.isArray(raw.portCoverage)
+    ? raw.portCoverage
+        .filter(isRecord)
+        .map((coverage) => sanitizePortCoverage(coverage, sourceIds))
+        .filter((coverage): coverage is ObservationPortCoverage => coverage !== null)
+        .slice(0, 50)
+    : [];
+
   return {
     deviceId: safeId(raw.deviceId, "dev-unknown"),
     firstSeen: isoOrNull(raw.firstSeen),
@@ -846,8 +1052,35 @@ function sanitizeDevice(raw: Record<string, unknown>, sourceIds: Set<string>): O
     vendors: sanitizeStringArray(raw.vendors, 120),
     identityEvidence,
     openPorts,
+    portCoverage,
     notes: sanitizeNotes(raw.notes),
   };
+}
+
+function sanitizePortCoverage(
+  raw: Record<string, unknown>,
+  sourceIds: Set<string>
+): ObservationPortCoverage | null {
+  const sourceId = safeId(raw.sourceId, "");
+  const protocol = safeText(raw.protocol, 16).toLowerCase();
+  if (!sourceId || !sourceIds.has(sourceId) || !protocol || !Array.isArray(raw.ranges)) {
+    return null;
+  }
+
+  const ranges = mergePortRanges(
+    raw.ranges
+      .filter(isRecord)
+      .map((range) => ({ start: Number(range.start), end: Number(range.end) }))
+      .filter(
+        (range) =>
+          Number.isInteger(range.start) &&
+          Number.isInteger(range.end) &&
+          range.start >= 0 &&
+          range.end <= 65535 &&
+          range.start <= range.end
+      )
+  );
+  return ranges.length > 0 ? { sourceId, protocol, ranges } : null;
 }
 
 function sanitizeEvidence(

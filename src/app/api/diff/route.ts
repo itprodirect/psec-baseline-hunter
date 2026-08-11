@@ -1,11 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
+  AMBIGUOUS_RUN_COMPARISON_ERROR,
   computeDiff,
-  computeRiskScore,
-  getDiffComparisonGuardrailError,
-  getRiskScoreLabel,
+  isDiffComparisonError,
 } from "@/lib/services/diff-engine";
-import { DiffData } from "@/lib/types";
+import type { DiffData } from "@/lib/types";
 import { getSafeErrorMessage } from "@/lib/services/api-response-safety";
 import {
   isRequestValidationError,
@@ -20,52 +19,55 @@ export interface DiffRequest {
 
 export interface DiffResponse {
   success: boolean;
-  data?: DiffData & {
-    riskScore: number;
-    riskLabel: string;
-    riskColor: string;
-  };
+  data?: DiffData;
+  code?: string;
   error?: string;
 }
 
-/**
- * POST /api/diff
- * Computes diff between two runs
- */
+function comparisonErrorResponse(error: { code: string }) {
+  switch (error.code) {
+    case "unknown-site":
+    case "different-sites":
+    case "different-networks":
+    case "conflicting-network-scope":
+      return {
+        code: "comparison_incompatible_site",
+        error: "The selected observations do not contain compatible site evidence.",
+      };
+    case "incompatible-run-type":
+      return {
+        code: "comparison_incompatible_scan",
+        error: "The selected observations were not produced by compatible scan types.",
+      };
+    case "invalid-chronology":
+      return {
+        code: "comparison_invalid_chronology",
+        error: "The selected observations are not in a valid chronological order.",
+      };
+    default:
+      return {
+        code: "comparison_ambiguous",
+        error: "The selected observations cannot be compared unambiguously.",
+      };
+  }
+}
+
+/** Compute an evidence-bounded Diff without adding synthetic safety scores. */
 export async function POST(request: NextRequest): Promise<NextResponse<DiffResponse>> {
   try {
-    const body: DiffRequest = validateDiffBody(await readJsonObject(request));
-    const { baselineRunUid, currentRunUid } = body;
-
-    const guardrailError = getDiffComparisonGuardrailError(baselineRunUid, currentRunUid);
-    if (guardrailError) {
-      return NextResponse.json(
-        { success: false, error: guardrailError },
-        { status: 400 }
-      );
-    }
-
+    const { baselineRunUid, currentRunUid }: DiffRequest = validateDiffBody(
+      await readJsonObject(request)
+    );
     const diffData = computeDiff(baselineRunUid, currentRunUid);
 
     if (!diffData) {
       return NextResponse.json(
-        { success: false, error: "Could not compute diff. Check that both runs exist and have port scan data." },
+        { success: false, error: "Comparison data was not found." },
         { status: 404 }
       );
     }
 
-    const riskScore = computeRiskScore(diffData);
-    const { label: riskLabel, color: riskColor } = getRiskScoreLabel(riskScore);
-
-    return NextResponse.json({
-      success: true,
-      data: {
-        ...diffData,
-        riskScore,
-        riskLabel,
-        riskColor,
-      },
-    });
+    return NextResponse.json({ success: true, data: diffData });
   } catch (error) {
     if (isRequestValidationError(error)) {
       return NextResponse.json(
@@ -73,13 +75,22 @@ export async function POST(request: NextRequest): Promise<NextResponse<DiffRespo
         { status: 400 }
       );
     }
+    if (isDiffComparisonError(error)) {
+      // Preserve the established client contract for same-minute ambiguity;
+      // all compatibility and chronology failures use privacy-safe 422 codes.
+      if (error.code === "ambiguous-comparison") {
+        return NextResponse.json(
+          { success: false, code: "comparison_ambiguous", error: AMBIGUOUS_RUN_COMPARISON_ERROR },
+          { status: 400 }
+        );
+      }
+      const response = comparisonErrorResponse(error);
+      return NextResponse.json({ success: false, ...response }, { status: 422 });
+    }
 
     console.error("Diff error:", error);
     return NextResponse.json(
-      {
-        success: false,
-        error: getSafeErrorMessage(error, "Failed to compute diff"),
-      },
+      { success: false, error: getSafeErrorMessage(error, "Failed to compute diff") },
       { status: 500 }
     );
   }

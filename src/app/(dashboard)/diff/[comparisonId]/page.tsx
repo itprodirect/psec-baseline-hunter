@@ -12,7 +12,7 @@ import {
   Clock,
 } from "lucide-react";
 import { SavedComparison, ComparisonResponse } from "@/lib/types";
-import { diffToCSV, watchlistToCSV, downloadCSV, formatDateForFilename } from "@/lib/utils/csv-export";
+import { diffToCSV, reviewListToCSV, downloadCSV, formatDateForFilename } from "@/lib/utils/csv-export";
 import { DiffView } from "@/components/diff/DiffView";
 
 export default function SavedComparisonPage({
@@ -31,6 +31,7 @@ export default function SavedComparisonPage({
     async function loadComparison() {
       setIsLoading(true);
       setError(null);
+      setComparison(null);
 
       try {
         const response = await fetch(`/api/comparisons/${comparisonId}`);
@@ -39,9 +40,11 @@ export default function SavedComparisonPage({
         if (data.success && data.comparison) {
           setComparison(data.comparison);
         } else {
+          setComparison(null);
           setError(data.error || "Comparison not found");
         }
       } catch (err) {
+        setComparison(null);
         setError(err instanceof Error ? err.message : "Failed to load comparison");
       } finally {
         setIsLoading(false);
@@ -103,16 +106,8 @@ export default function SavedComparisonPage({
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <Badge
-            variant={
-              comparison.riskScore >= 70
-                ? "secondary"
-                : comparison.riskScore >= 50
-                ? "default"
-                : "destructive"
-            }
-          >
-            Risk Score: {comparison.riskScore}/100 - {comparison.riskLabel}
+          <Badge variant={data.evidence.status === "supported" ? "secondary" : "outline"}>
+            Evidence: {data.evidence.status}
           </Badge>
           <Button variant="outline" size="sm" onClick={copyShareableUrl}>
             <LinkIcon className="h-4 w-4 mr-1" />
@@ -134,7 +129,7 @@ export default function SavedComparisonPage({
         exportSection={(
           <div className="space-y-4">
             <p className="text-sm text-muted-foreground">
-              Export comparison results for documentation and compliance.
+              Every export includes the evidence status, coverage, identity, vantage, and limitations.
             </p>
 
             <div>
@@ -151,17 +146,17 @@ export default function SavedComparisonPage({
                 >
                   Download All Changes (CSV)
                 </button>
-                {data.riskyExposures.length > 0 && (
+                {data.riskFindings.length > 0 && (
                   <button
-                    className="px-4 py-2 bg-red-100 hover:bg-red-200 dark:bg-red-900/30 dark:hover:bg-red-900/50 text-red-700 dark:text-red-300 rounded-lg text-sm font-medium transition-colors"
+                    className="px-4 py-2 bg-amber-100 hover:bg-amber-200 dark:bg-amber-900/30 dark:hover:bg-amber-900/50 text-amber-700 dark:text-amber-300 rounded-lg text-sm font-medium transition-colors"
                     onClick={() => {
-                      const csv = watchlistToCSV(data.riskyExposures);
+                      const csv = reviewListToCSV(data.riskFindings, data.evidence);
                       const date = formatDateForFilename(data.currentTimestamp);
                       const network = data.network.replace(/[^a-z0-9-]/gi, "_");
-                      downloadCSV(csv, `${network}_${date}_watchlist.csv`);
+                      downloadCSV(csv, `${network}_${date}_review-list.csv`);
                     }}
                   >
-                    Download Watchlist (CSV)
+                    Download Review List (CSV)
                   </button>
                 )}
               </div>

@@ -32,7 +32,7 @@ export function PersonalizedSummaryCard({ scorecardData }: PersonalizedSummaryCa
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          scorecardData,
+          runUid: scorecardData.runUid,
           userProfile: profile,
         }),
       });
@@ -61,6 +61,10 @@ export function PersonalizedSummaryCard({ scorecardData }: PersonalizedSummaryCa
     setError(null);
   };
 
+  if (!scorecardData.evidence.supports.llmSummary) {
+    return null;
+  }
+
   // Initial state - show the "Explain" button
   if (!summary && !isLoading && !error) {
     return (
@@ -69,10 +73,10 @@ export function PersonalizedSummaryCard({ scorecardData }: PersonalizedSummaryCa
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-purple-700 dark:text-purple-400">
               <MessageSquareText className="h-5 w-5" />
-              Personalized Explanation
+              Evidence-Bounded Explanation
             </CardTitle>
             <CardDescription>
-              Get a plain-English summary tailored to your role and technical level
+              Generate a deterministic plain-English summary from the verified evidence contract
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -82,7 +86,7 @@ export function PersonalizedSummaryCard({ scorecardData }: PersonalizedSummaryCa
               variant="outline"
             >
               <Sparkles className="h-4 w-4" />
-              Explain This for My Situation
+              Generate Evidence Summary
             </Button>
           </CardContent>
         </Card>
@@ -104,7 +108,7 @@ export function PersonalizedSummaryCard({ scorecardData }: PersonalizedSummaryCa
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-purple-700 dark:text-purple-400">
             <MessageSquareText className="h-5 w-5" />
-            Personalized Explanation
+            Evidence-Bounded Explanation
           </CardTitle>
         </CardHeader>
         <CardContent>
@@ -150,7 +154,7 @@ export function PersonalizedSummaryCard({ scorecardData }: PersonalizedSummaryCa
           <div>
             <CardTitle className="flex items-center gap-2 text-purple-700 dark:text-purple-400">
               <MessageSquareText className="h-5 w-5" />
-              Your Security Report
+              Your Observation Report
             </CardTitle>
             <CardDescription className="flex items-center gap-2 mt-1">
               {provider && (
@@ -160,7 +164,7 @@ export function PersonalizedSummaryCard({ scorecardData }: PersonalizedSummaryCa
               )}
               {isRuleBased && (
                 <span className="text-xs text-muted-foreground">
-                  (No API key configured)
+                  (Deterministic evidence renderer)
                 </span>
               )}
             </CardDescription>
@@ -179,8 +183,8 @@ export function PersonalizedSummaryCard({ scorecardData }: PersonalizedSummaryCa
       <CardContent>
         {summary && (
           <MarkdownViewer
-            content={summary}
-            filename={`security-report-${scorecardData.network}-${new Date().toISOString().split("T")[0]}.md`}
+            content={`# Evidence\n\n- Evidence status: ${scorecardData.evidence.status}\n- Evidence version: ${scorecardData.evidence.version}\n\n## Limitations\n${scorecardData.evidence.limitations.map((limitation) => `- ${limitation}`).join("\n") || "- None reported by the evidence assessment."}\n\n${summary}`}
+            filename={`observation-report-${scorecardData.network}-${new Date().toISOString().split("T")[0]}.md`}
           />
         )}
       </CardContent>

@@ -268,7 +268,7 @@ export default function RulesPage() {
                 <Label htmlFor="reason">Reason</Label>
                 <Textarea
                   id="reason"
-                  placeholder="Why is this rule needed? (e.g., 'Internal dev server, safe for our network')"
+                  placeholder="Why is this rule needed? (e.g., 'Approved internal development service')"
                   value={formReason}
                   onChange={(e) => setFormReason(e.target.value)}
                   required

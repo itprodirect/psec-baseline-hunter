@@ -252,7 +252,7 @@ export default function UploadPage() {
                 <div className="mt-3 flex flex-wrap gap-2">
                   <Button asChild size="sm" variant="outline">
                     <Link href="/scorecard">
-                      Review Health Overview
+                      Review Observation Overview
                       <ArrowRight className="h-4 w-4 ml-1" />
                     </Link>
                   </Button>

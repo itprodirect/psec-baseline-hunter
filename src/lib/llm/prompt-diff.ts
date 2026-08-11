@@ -1,11 +1,10 @@
 /**
- * Prompt Templates for Diff Summaries
- * Generates personalized explanations of what changed between two scans
+ * Evidence-bounded prompt templates for Diff summaries.
  */
 
-import { DiffData } from "@/lib/types";
+import type { DiffData } from "@/lib/types";
 import {
-  UserProfile,
+  type UserProfile,
   REDACTED_PLACEHOLDER,
   TECHNICAL_LEVEL_LABELS,
   PROFESSION_LABELS,
@@ -14,292 +13,198 @@ import {
 } from "@/lib/types/userProfile";
 import { PORT_SERVICE_NAMES } from "@/lib/constants/risk-ports";
 
-/**
- * Build the system prompt for diff explanations
- */
+function evidenceLimitations(data: DiffData): string {
+  return data.evidence.limitations.length > 0
+    ? data.evidence.limitations.map((limitation) => `- ${limitation}`).join("\n")
+    : "- No additional limitations were recorded.";
+}
+
+/** Build the system prompt for a comparison explanation. */
 export function buildDiffSystemPrompt(profile: UserProfile): string {
   const techLevel = TECHNICAL_LEVEL_LABELS[profile.technicalLevel];
   const profession = PROFESSION_LABELS[profile.profession];
   const tone = TONE_LABELS[profile.tone];
 
-  const contextDescriptions = profile.contextFactors
-    .map((f) => CONTEXT_FACTOR_LABELS[f].description)
-    .join(", ");
+  return `You are a cybersecurity advisor reporting only conclusions supported by two network observations.
 
-  return `You are a cybersecurity advisor explaining what changed between two network scans.
-
-AUDIENCE PROFILE:
-- Technical Level: ${techLevel.label} (${techLevel.description})
+AUDIENCE:
+- Technical level: ${techLevel.label} (${techLevel.description})
 - Role: ${profession.label} (${profession.description})
-- Context: ${contextDescriptions || "General use"}
-- Preferred Tone: ${tone.label} (${tone.description})
+- Tone: ${tone.label} (${tone.description})
 
-WRITING GUIDELINES:
-1. Focus on CHANGES - what's different now vs before
-2. Explain implications of each significant change
-3. Prioritize new risks over improvements
-4. Use the ${tone.label.toLowerCase()} tone throughout
-5. If IPs are marked as ${REDACTED_PLACEHOLDER}, refer to them as "a device" or "affected system"
+EVIDENCE RULES (mandatory):
+1. Treat the supplied evidence status, support flags, and limitations as authoritative.
+2. Never convert a missing, partial, incompatible, or uncertain observation into a device-removal, service-closure, no-change, or persistent-identity conclusion.
+3. An IP address or other network locator alone does not establish persistent device identity.
+4. An internally observed service does not establish Internet exposure, external reachability, perimeter failure, compromise, incident likelihood, or monetary impact.
+5. A P0 classification means an observed service requires review; it is not proof of exposure or compromise.
+6. A zero count is limited to the recorded observations. Never turn it into an all-clear, a no-risk claim, or a claim that the environment is stable or operating normally.
+7. Do not invent facts, probabilities, costs, compliance consequences, or positive reassurance.
+8. If an address is ${REDACTED_PLACEHOLDER}, call it "a device" and do not attempt to reconstruct it.
 
-OUTPUT FORMAT (use these exact headings in markdown):
+OUTPUT FORMAT (markdown):
+## Evidence Status
+State the exact status and the material limitations first.
 
-## What Changed (Summary)
-3-5 bullet points summarizing the key changes in plain language
+## Observed Changes
+Report only the supported changes and explicitly label identity uncertainty.
 
-## What This Means for You
-2-3 sentences explaining the implications for their specific situation (${profession.label})
+## Review Actions
+Give verification-oriented actions tied to observed facts.
 
-## Actions to Take
-Numbered list with specific steps - prioritize new risks
+## Questions
+Ask concise questions that would establish intent or stronger evidence.
 
-## Good News
-Brief mention of any positive changes (ports closed, hosts removed if intentional)
-
-## Questions About These Changes
-2-3 questions that would help understand if these changes were intentional
-
-## Notes
-Brief note about what this comparison does and doesn't tell us`;
+## Limits
+Restate what the collection vantage cannot establish.`;
 }
 
-/**
- * Redact sensitive information from diff data
- */
+/** Redact addresses and hostnames before data is sent to a provider. */
 export function redactDiffData(data: DiffData, includeDetails: boolean): DiffData {
-  if (includeDetails) {
-    return data;
-  }
+  if (includeDetails) return data;
 
   return {
     ...data,
-    newHosts: data.newHosts.map((h) => ({
-      ...h,
+    network: REDACTED_PLACEHOLDER,
+    newHosts: data.newHosts.map((host) => ({
+      ...host,
       ip: REDACTED_PLACEHOLDER,
-      hostname: h.hostname ? REDACTED_PLACEHOLDER : undefined,
+      hostname: host.hostname ? REDACTED_PLACEHOLDER : undefined,
     })),
-    removedHosts: data.removedHosts.map((h) => ({
-      ...h,
+    removedHosts: data.removedHosts.map((host) => ({
+      ...host,
       ip: REDACTED_PLACEHOLDER,
-      hostname: h.hostname ? REDACTED_PLACEHOLDER : undefined,
+      hostname: host.hostname ? REDACTED_PLACEHOLDER : undefined,
     })),
-    portsOpened: data.portsOpened.map((p) => ({
-      ...p,
-      ip: REDACTED_PLACEHOLDER,
-      hostname: p.hostname ? REDACTED_PLACEHOLDER : undefined,
+    identityUncertain: data.identityUncertain.map((change) => ({
+      ...change,
+      baselineIp: change.baselineIp ? REDACTED_PLACEHOLDER : undefined,
+      currentIp: change.currentIp ? REDACTED_PLACEHOLDER : undefined,
+      baselineHostname: change.baselineHostname ? REDACTED_PLACEHOLDER : undefined,
+      currentHostname: change.currentHostname ? REDACTED_PLACEHOLDER : undefined,
     })),
-    portsClosed: data.portsClosed.map((p) => ({
-      ...p,
+    portsOpened: data.portsOpened.map((port) => ({
+      ...port,
       ip: REDACTED_PLACEHOLDER,
-      hostname: p.hostname ? REDACTED_PLACEHOLDER : undefined,
+      hostname: port.hostname ? REDACTED_PLACEHOLDER : undefined,
     })),
-    riskyExposures: data.riskyExposures.map((p) => ({
-      ...p,
+    portsClosed: data.portsClosed.map((port) => ({
+      ...port,
       ip: REDACTED_PLACEHOLDER,
-      hostname: p.hostname ? REDACTED_PLACEHOLDER : undefined,
+      hostname: port.hostname ? REDACTED_PLACEHOLDER : undefined,
+    })),
+    riskFindings: data.riskFindings.map((port) => ({
+      ...port,
+      ip: REDACTED_PLACEHOLDER,
+      hostname: port.hostname ? REDACTED_PLACEHOLDER : undefined,
     })),
   };
 }
 
-/**
- * Build the user prompt with diff data
- */
+/** Build an evidence-explicit user prompt from server-recomputed Diff data. */
 export function buildDiffUserPrompt(data: DiffData, profile: UserProfile): string {
-  const redactedData = redactDiffData(data, profile.includeNetworkDetails);
+  const redacted = redactDiffData(data, profile.includeNetworkDetails);
+  const context = profile.contextFactors
+    .map((factor) => `- ${CONTEXT_FACTOR_LABELS[factor].label}`)
+    .join("\n");
+  const riskDetails = redacted.riskFindings.length
+    ? redacted.riskFindings
+        .slice(0, 10)
+        .map((finding) => {
+          const service = PORT_SERVICE_NAMES[finding.port] || finding.service || `Port ${finding.port}`;
+          return `- ${finding.risk || "unclassified"}: ${service} (${finding.port}/${finding.protocol}) on ${finding.ip}`;
+        })
+        .join("\n")
+    : "- No P0/P1-classified service change was recorded in this comparison.";
 
-  const formatDate = (ts: string) => new Date(ts).toLocaleDateString();
+  return `Create a bounded comparison report from the evidence below.
 
-  let prompt = `Please analyze these network changes and create a personalized report.
+EVIDENCE CONTRACT:
+- Version: ${redacted.evidence.version}
+- Status: ${redacted.evidence.status}
+- Reason codes: ${redacted.evidence.reasonCodes.join(", ") || "none"}
+- Identity status: ${redacted.evidence.identity.status}
+- Identity relationships remaining uncertain: ${redacted.evidence.identity.uncertainCount}
+- Supports device-absence conclusions: ${redacted.evidence.supports.deviceAbsence}
+- Supports service-closure conclusions: ${redacted.evidence.supports.portClosure}
+- Supports a stable-baseline conclusion: ${redacted.evidence.supports.stableBaseline}
+- Establishes reachability beyond the scan vantage: ${redacted.evidence.supports.externalReachability}
+- External reachability is not established by these observations.
 
-COMPARISON DETAILS:
-- Network: ${redactedData.network}
-- Baseline Scan: ${formatDate(redactedData.baselineTimestamp)}
-- Current Scan: ${formatDate(redactedData.currentTimestamp)}
+LIMITATIONS:
+${evidenceLimitations(redacted)}
 
-CHANGE SUMMARY:
-- New hosts appeared: ${redactedData.newHosts.length}
-- Hosts removed/offline: ${redactedData.removedHosts.length}
-- Ports newly opened: ${redactedData.portsOpened.length}
-- Ports closed: ${redactedData.portsClosed.length}
-- Critical (P0) new exposures: ${redactedData.riskyExposures.length}
+RECORDED COMPARISON:
+- Network: ${redacted.network}
+- Baseline observation: ${redacted.baselineTimestamp}
+- Current observation: ${redacted.currentTimestamp}
+- New devices supported by identity evidence: ${redacted.newHosts.length}
+- Device absences supported by coverage and identity evidence: ${redacted.removedHosts.length}
+- Uncertain identity relationships: ${redacted.identityUncertain.length}
+- Newly observed services: ${redacted.portsOpened.length}
+- Service closures supported by coverage evidence: ${redacted.portsClosed.length}
+- P0/P1-classified service observations requiring review: ${redacted.riskFindings.length}
+- Server summary: ${redacted.summary}
 
-CURRENT SUMMARY: ${redactedData.summary}
+REVIEW-CLASSIFIED SERVICE OBSERVATIONS:
+${riskDetails}
 
-`;
+USER CONTEXT:
+${context || "- General use"}
 
-  // Add critical exposures detail
-  if (redactedData.riskyExposures.length > 0) {
-    prompt += `NEW CRITICAL EXPOSURES (Require Immediate Attention):\n`;
-    for (const p of redactedData.riskyExposures) {
-      const serviceName = PORT_SERVICE_NAMES[p.port] || p.service || `Port ${p.port}`;
-      prompt += `- ${p.risk}: ${serviceName} (${p.port}/${p.protocol}) on ${p.ip}${p.hostname ? ` (${p.hostname})` : ""}\n`;
-    }
-    prompt += "\n";
-  }
-
-  // Add new ports opened
-  if (redactedData.portsOpened.length > 0) {
-    prompt += `ALL NEWLY OPENED PORTS:\n`;
-    for (const p of redactedData.portsOpened.slice(0, 10)) {
-      const serviceName = PORT_SERVICE_NAMES[p.port] || p.service || `Port ${p.port}`;
-      prompt += `- ${serviceName} (${p.port}/${p.protocol}) on ${p.ip}${p.risk ? ` [${p.risk}]` : ""}\n`;
-    }
-    if (redactedData.portsOpened.length > 10) {
-      prompt += `  ... and ${redactedData.portsOpened.length - 10} more\n`;
-    }
-    prompt += "\n";
-  }
-
-  // Add new hosts
-  if (redactedData.newHosts.length > 0) {
-    prompt += `NEW HOSTS DISCOVERED:\n`;
-    for (const h of redactedData.newHosts.slice(0, 5)) {
-      prompt += `- ${h.ip}${h.hostname ? ` (${h.hostname})` : ""}\n`;
-    }
-    if (redactedData.newHosts.length > 5) {
-      prompt += `  ... and ${redactedData.newHosts.length - 5} more\n`;
-    }
-    prompt += "\n";
-  }
-
-  // Add positive changes
-  if (redactedData.portsClosed.length > 0 || redactedData.removedHosts.length > 0) {
-    prompt += `POSITIVE CHANGES (if intentional):\n`;
-    if (redactedData.portsClosed.length > 0) {
-      prompt += `- ${redactedData.portsClosed.length} ports were closed\n`;
-    }
-    if (redactedData.removedHosts.length > 0) {
-      prompt += `- ${redactedData.removedHosts.length} hosts went offline or were decommissioned\n`;
-    }
-    prompt += "\n";
-  }
-
-  // Add user context
-  if (profile.contextFactors.length > 0) {
-    const contextDescriptions = profile.contextFactors
-      .map((f) => `- ${CONTEXT_FACTOR_LABELS[f].label}`)
-      .join("\n");
-    prompt += `USER'S SITUATION:\n${contextDescriptions}\n\n`;
-  }
-
-  prompt += `Generate the personalized change report using the format specified in your instructions.`;
-
-  return prompt;
+Use the required headings. Preserve every evidence limitation and do not strengthen the conclusions.`;
 }
 
-/**
- * Generate a rule-based fallback summary for diff
- */
+/** Generate an evidence-bounded fallback without invoking a provider. */
 export function generateRuleBasedDiffSummary(data: DiffData, profile: UserProfile): string {
-  const profession = PROFESSION_LABELS[profile.profession].label;
-  const p0Exposures = data.riskyExposures.filter((r) => r.risk === "P0");
+  void profile;
+  let summary = `## Evidence Status\n\n`;
+  summary += `Status: **${data.evidence.status}** (${data.evidence.version}).\n\n`;
+  summary += data.evidence.limitations.map((limitation) => `- ${limitation}`).join("\n");
+  summary += `\n\n## Observed Changes\n\n`;
 
-  let summary = `## What Changed (Summary)\n\n`;
-
-  summary += `- ${data.newHosts.length} new device${data.newHosts.length !== 1 ? "s" : ""} appeared on your network\n`;
-  summary += `- ${data.removedHosts.length} device${data.removedHosts.length !== 1 ? "s" : ""} went offline or were removed\n`;
-  summary += `- ${data.portsOpened.length} new port${data.portsOpened.length !== 1 ? "s" : ""} opened (services started)\n`;
-  summary += `- ${data.portsClosed.length} port${data.portsClosed.length !== 1 ? "s" : ""} closed (services stopped)\n`;
-
-  if (p0Exposures.length > 0) {
-    summary += `- **${p0Exposures.length} critical security exposure${p0Exposures.length !== 1 ? "s" : ""} detected**\n`;
-  }
-
-  summary += `\n## What This Means for You\n\n`;
-
-  if (p0Exposures.length === 0 && data.portsOpened.length === 0 && data.newHosts.length === 0) {
-    summary += `As a ${profession.toLowerCase()}, you'll be glad to know your network appears stable. `;
-    summary += `No new risks were introduced since the last scan.\n`;
-  } else if (p0Exposures.length > 0) {
-    const topService = PORT_SERVICE_NAMES[p0Exposures[0].port] || `Port ${p0Exposures[0].port}`;
-    summary += `As a ${profession.toLowerCase()}, the new ${topService} exposure is concerning. `;
-    summary += `This service is commonly targeted by attackers and should be addressed promptly.\n`;
-  } else if (data.portsOpened.length > 0) {
-    summary += `As a ${profession.toLowerCase()}, review the newly opened ports to confirm they were intentional. `;
-    summary += `Unexpected services could indicate configuration drift or unauthorized changes.\n`;
+  if (!data.evidence.supports.llmSummary) {
+    summary += `Insufficient evidence: the available observations do not support a generated comparison narrative. Review the limitations above and collect compatible, complete observations before drawing change conclusions.\n`;
   } else {
-    summary += `As a ${profession.toLowerCase()}, the new devices on your network should be verified. `;
-    summary += `Make sure you recognize all ${data.newHosts.length} new device${data.newHosts.length !== 1 ? "s" : ""}.\n`;
-  }
-
-  summary += `\n## Actions to Take\n\n`;
-
-  const actions: string[] = [];
-
-  if (p0Exposures.length > 0) {
-    const service = PORT_SERVICE_NAMES[p0Exposures[0].port] || `Port ${p0Exposures[0].port}`;
-    actions.push(`**Block ${service}** at your firewall - this is the top priority`);
-  }
-
-  if (data.newHosts.length > 0) {
-    actions.push(`Verify the ${data.newHosts.length} new device${data.newHosts.length !== 1 ? "s are" : " is"} authorized`);
-  }
-
-  if (data.portsOpened.length > p0Exposures.length) {
-    actions.push(`Review the ${data.portsOpened.length - p0Exposures.length} other new ports to confirm they're needed`);
-  }
-
-  if (actions.length === 0) {
-    actions.push("No immediate actions required");
-    actions.push("Continue regular security monitoring");
-  }
-
-  actions.forEach((action, i) => {
-    summary += `${i + 1}. ${action}\n`;
-  });
-
-  summary += `\n## Good News\n\n`;
-
-  if (data.portsClosed.length > 0 || p0Exposures.length === 0) {
-    if (data.portsClosed.length > 0) {
-      summary += `${data.portsClosed.length} port${data.portsClosed.length !== 1 ? "s were" : " was"} closed since last scan - `;
-      summary += `if intentional, this reduces your attack surface.\n`;
+    summary += `- ${data.newHosts.length} device addition${data.newHosts.length === 1 ? "" : "s"} supported by the recorded identity evidence\n`;
+    summary += `- ${data.removedHosts.length} device absence${data.removedHosts.length === 1 ? "" : "s"} supported by the recorded coverage and identity evidence\n`;
+    summary += `- ${data.portsOpened.length} newly observed service${data.portsOpened.length === 1 ? "" : "s"}\n`;
+    summary += `- ${data.portsClosed.length} service closure${data.portsClosed.length === 1 ? "" : "s"} supported by the recorded coverage evidence\n`;
+    summary += `- ${data.riskFindings.length} P0/P1-classified service observation${data.riskFindings.length === 1 ? "" : "s"} requiring review\n`;
+    if (
+      data.newHosts.length === 0 &&
+      data.removedHosts.length === 0 &&
+      data.portsOpened.length === 0 &&
+      data.portsClosed.length === 0
+    ) {
+      summary += `\nNo supported changes were recorded between these two observations. This statement is limited to their declared scope and coverage.\n`;
     }
-    if (p0Exposures.length === 0) {
-      summary += `No new critical (P0) exposures were introduced.\n`;
-    }
-  } else {
-    summary += `The comparison itself is useful - you now know exactly what changed.\n`;
   }
 
-  summary += `\n## Questions About These Changes\n\n`;
-
-  if (data.newHosts.length > 0) {
-    summary += `- Do you recognize the ${data.newHosts.length} new device${data.newHosts.length !== 1 ? "s" : ""} that appeared?\n`;
-  }
-  if (data.portsOpened.length > 0) {
-    summary += `- Were the newly opened ports part of a planned change?\n`;
-  }
-  if (data.removedHosts.length > 0) {
-    summary += `- Were the ${data.removedHosts.length} offline device${data.removedHosts.length !== 1 ? "s" : ""} intentionally decommissioned?\n`;
-  }
-  if (data.newHosts.length === 0 && data.portsOpened.length === 0 && data.removedHosts.length === 0) {
-    summary += `- When was your last intentional network change?\n`;
-    summary += `- Is this level of stability expected for your environment?\n`;
-  }
-
-  summary += `\n## Notes\n\n`;
-  summary += `This comparison shows changes between two point-in-time scans. `;
-  summary += `It cannot detect changes that occurred and reverted between scans, `;
-  summary += `or whether changes were authorized.`;
-
+  summary += `\n## Review Actions\n\n`;
+  summary += `1. Confirm that each recorded service and device change was intended.\n`;
+  summary += `2. Review access controls for every P0/P1-classified service observation.\n`;
+  summary += `3. Collect evidence from the appropriate vantage before making reachability or incident conclusions.\n`;
+  summary += `\n## Questions\n\n`;
+  summary += `- Were the recorded device and service changes planned?\n`;
+  summary += `- Do the two observations cover the same declared scope and collection sources?\n`;
+  summary += `\n## Limits\n\n`;
+  summary += `These observations describe what the collection points recorded. They do not establish reachability beyond those collection points, compromise, likelihood, cost, or overall security.`;
   return summary;
 }
 
-/**
- * Request payload for the diff summary API
- */
+/** Request payload for the server-authoritative Diff summary API. */
 export interface DiffSummaryRequest {
-  diffData: DiffData;
-  userProfile: UserProfile;
+  baselineRunUid: string;
+  currentRunUid: string;
+  userProfile?: UserProfile;
 }
 
-/**
- * Response payload from the diff summary API
- */
 export interface DiffSummaryResponse {
   success: boolean;
   summary?: string;
   provider?: string;
   isRuleBased?: boolean;
+  code?: string;
   error?: string;
 }

@@ -1,81 +1,78 @@
-/**
- * Executive Summary API Route
- * Generates business-focused security reports for leadership
- */
-
 import { NextRequest, NextResponse } from "next/server";
-import { callLLM } from "@/lib/llm/provider";
 import {
-  buildExecutiveSystemPrompt,
-  buildExecutiveUserPrompt,
-  generateRuleBasedExecutiveSummary
+  generateRuleBasedExecutiveSummary,
 } from "@/lib/llm/prompt-executive";
-import { ExecutiveSummaryResponse } from "@/lib/types";
+import { DEFAULT_USER_PROFILE, type UserProfile } from "@/lib/types/userProfile";
+import { buildScorecardData } from "@/lib/services/risk-classifier";
+import {
+  isRequestValidationError,
+  readJsonObject,
+  validateResourceId,
+} from "@/lib/services/request-validation";
 import { getSafeErrorMessage } from "@/lib/services/api-response-safety";
 import {
   consumeLLMRateLimit,
   LLM_RATE_LIMIT_ERROR_RESPONSE,
 } from "@/lib/services/llm-rate-limit";
 
-export async function POST(req: NextRequest) {
-  const rateLimit = consumeLLMRateLimit(req);
+const INSUFFICIENT_SCORECARD_RESPONSE = {
+  success: false,
+  code: "scorecard_insufficient_evidence",
+  error: "Complete observation evidence is required before an executive summary can be generated.",
+} as const;
+
+/** Generate a leadership summary only from a server-rebuilt, supported Scorecard. */
+export async function POST(request: NextRequest) {
+  const rateLimit = consumeLLMRateLimit(request);
   if (!rateLimit.allowed) {
     return NextResponse.json(LLM_RATE_LIMIT_ERROR_RESPONSE, { status: 429 });
   }
 
   try {
-    const body = await req.json();
-    const { scorecardData, userProfile } = body;
+    const body = await readJsonObject(request);
+    const runUid = validateResourceId(body.runUid, "runUid");
+    const userProfile = (body.userProfile as UserProfile | undefined) || DEFAULT_USER_PROFILE;
+    const scorecardData = buildScorecardData(runUid);
 
-    // Validate required fields
-    if (!scorecardData || !userProfile) {
-      return NextResponse.json({
-        success: false,
-        error: "Missing required fields: scorecardData and userProfile are required"
-      } as ExecutiveSummaryResponse, { status: 400 });
+    if (!scorecardData) {
+      return NextResponse.json(
+        { success: false, error: "Scorecard data was not found." },
+        { status: 404 }
+      );
     }
 
-    // Profile is required for executive summary
-    if (!userProfile.profession || !userProfile.technicalLevel) {
-      return NextResponse.json({
-        success: false,
-        error: "Complete user profile required. Please configure your profile first."
-      } as ExecutiveSummaryResponse, { status: 400 });
+    if (
+      scorecardData.evidence?.version !== "psec.evidence.v1" ||
+      scorecardData.evidence.status !== "supported" ||
+      scorecardData.evidence.supports.llmSummary !== true
+    ) {
+      return NextResponse.json(INSUFFICIENT_SCORECARD_RESPONSE, { status: 422 });
     }
 
-    // Build prompts
-    const systemPrompt = buildExecutiveSystemPrompt(userProfile);
-    const userPrompt = buildExecutiveUserPrompt(scorecardData, userProfile);
-
-    // Call LLM
-    const llmResponse = await callLLM(systemPrompt, userPrompt);
-
-    if (!llmResponse.success || !llmResponse.content) {
-      // Fall back to rule-based
-      console.log("LLM failed for executive summary, using rule-based fallback");
-      const ruleBasedSummary = generateRuleBasedExecutiveSummary(scorecardData, userProfile);
-
-      return NextResponse.json({
-        success: true,
-        summary: ruleBasedSummary,
-        provider: "rule-based",
-        isRuleBased: true
-      } as ExecutiveSummaryResponse);
-    }
-
-    // Return LLM-generated summary
+    // Leadership prose is rendered from fixed evidence-aware templates. A
+    // free-form provider cannot be allowed to invent breach, reachability, or
+    // financial conclusions that this scan vantage does not support.
     return NextResponse.json({
       success: true,
-      summary: llmResponse.content,
-      provider: llmResponse.provider,
-      isRuleBased: false
-    } as ExecutiveSummaryResponse);
-
+      summary: generateRuleBasedExecutiveSummary(scorecardData, userProfile),
+      provider: "rule-based",
+      isRuleBased: true,
+    });
   } catch (error) {
+    if (isRequestValidationError(error)) {
+      return NextResponse.json(
+        { success: false, error: error.message },
+        { status: 400 }
+      );
+    }
+
     console.error("Executive summary API error:", error);
-    return NextResponse.json({
-      success: false,
-      error: getSafeErrorMessage(error, "Failed to generate executive summary")
-    } as ExecutiveSummaryResponse, { status: 500 });
+    return NextResponse.json(
+      {
+        success: false,
+        error: getSafeErrorMessage(error, "Failed to generate executive summary"),
+      },
+      { status: 500 }
+    );
   }
 }

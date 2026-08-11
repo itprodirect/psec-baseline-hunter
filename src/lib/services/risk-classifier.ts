@@ -1,18 +1,34 @@
 /**
  * Risk Classification Service
- * Analyzes port findings and classifies them by risk level
+ * Classifies observed services without converting scan vantage into exposure
+ * or overall-security conclusions.
  */
 
-import { PortFinding, RiskPort, RiskLevel, ScorecardData } from "@/lib/types";
-import { getEffectivePortRisk, P0_ACTIONS } from "@/lib/constants/risk-ports";
-import { parsePorts, topPorts } from "./nmap-parser";
+import type {
+  EvidenceAssessment,
+  PortFinding,
+  RiskLevel,
+  RiskPort,
+  ScorecardData,
+} from "@/lib/types";
+import type { ObservationBundleV1 } from "@/lib/types/observation-bundle";
+import { getEffectivePortRisk, getPortRisk } from "@/lib/constants/risk-ports";
+import { topPorts } from "./nmap-parser";
 import { getRunByUid } from "./run-registry";
-import * as fs from "fs";
+import { adaptRunManifestToObservationBundleV1 } from "./observation-bundle";
+import { buildScorecardEvidenceAssessment } from "./evidence-policy";
 
-/**
- * Classify a list of port findings by risk level
- * Considers custom rules for the specified network
- */
+export type ScorecardRiskResolver = (
+  port: number,
+  protocol: string,
+  network: string
+) => RiskLevel | null;
+
+export interface BuildScorecardOptions {
+  riskResolver?: ScorecardRiskResolver;
+}
+
+/** Classify open port observations, including configured custom rules. */
 export function classifyPorts(findings: PortFinding[], network: string): {
   p0: PortFinding[];
   p1: PortFinding[];
@@ -29,7 +45,6 @@ export function classifyPorts(findings: PortFinding[], network: string): {
   for (const finding of findings) {
     if (finding.state !== "open") continue;
 
-    // Use getEffectivePortRisk to apply custom rules
     const risk = getEffectivePortRisk(finding.port, finding.protocol, network);
     switch (risk) {
       case "P0":
@@ -49,21 +64,25 @@ export function classifyPorts(findings: PortFinding[], network: string): {
   return result;
 }
 
-/**
- * Aggregate risk ports with host lists
- * Considers custom rules for the specified network
- */
+/** Aggregate risk-classified observed services with host lists. */
 export function aggregateRiskPorts(findings: PortFinding[], network: string): RiskPort[] {
-  const openFindings = findings.filter((f) => f.state === "open");
+  return aggregateRiskPortsWithResolver(findings, network, getEffectivePortRisk);
+}
+
+function aggregateRiskPortsWithResolver(
+  findings: PortFinding[],
+  network: string,
+  riskResolver: ScorecardRiskResolver
+): RiskPort[] {
   const portMap = new Map<string, RiskPort>();
 
-  for (const finding of openFindings) {
-    // Use getEffectivePortRisk to apply custom rules
-    const risk = getEffectivePortRisk(finding.port, finding.protocol, network);
-    if (!risk) continue; // Whitelisted or unclassified
+  for (const finding of findings) {
+    if (finding.state !== "open") continue;
+
+    const risk = riskResolver(finding.port, finding.protocol, network);
+    if (!risk) continue;
 
     const key = `${finding.protocol}:${finding.port}`;
-
     if (!portMap.has(key)) {
       portMap.set(key, {
         port: finding.port,
@@ -82,147 +101,168 @@ export function aggregateRiskPorts(findings: PortFinding[], network: string): Ri
     }
   }
 
-  // Sort by risk level (P0 first), then by hosts affected
   const riskOrder: Record<RiskLevel, number> = { P0: 0, P1: 1, P2: 2 };
   return Array.from(portMap.values()).sort((a, b) => {
     const riskDiff = riskOrder[a.risk] - riskOrder[b.risk];
-    if (riskDiff !== 0) return riskDiff;
-    return b.hostsAffected - a.hostsAffected;
+    return riskDiff !== 0 ? riskDiff : b.hostsAffected - a.hostsAffected;
   });
 }
 
-/**
- * Generate top 3 recommended actions based on risk findings
- */
+/** Generate review actions for observed P0/P1 services. */
 export function generateActions(riskPorts: RiskPort[]): string[] {
   const actions: string[] = [];
-  const p0Ports = riskPorts.filter((r) => r.risk === "P0");
+  const prioritized = [
+    ...riskPorts.filter((riskPort) => riskPort.risk === "P0"),
+    ...riskPorts.filter((riskPort) => riskPort.risk === "P1"),
+  ];
 
-  for (const rp of p0Ports.slice(0, 3)) {
-    const action = P0_ACTIONS[rp.port];
-    if (action) {
-      const hostInfo = rp.hostsAffected === 1
-        ? `on ${rp.hosts[0]}`
-        : `on ${rp.hostsAffected} hosts`;
-      actions.push(`${action} (${rp.port}/${rp.protocol} ${hostInfo})`);
-    } else {
-      actions.push(`Block port ${rp.port}/${rp.protocol} at perimeter (${rp.hostsAffected} hosts)`);
-    }
+  for (const riskPort of prioritized.slice(0, 3)) {
+    const target = riskPort.service || `port ${riskPort.port}`;
+    const hostScope =
+      riskPort.hostsAffected === 1 ? "1 observed host" : `${riskPort.hostsAffected} observed hosts`;
+    actions.push(
+      `Review access controls for ${target} and confirm the observed service is required (${riskPort.port}/${riskPort.protocol} on ${hostScope})`
+    );
   }
 
-  // If we don't have 3 actions yet, add P1 recommendations
-  const p1Ports = riskPorts.filter((r) => r.risk === "P1");
-  for (const rp of p1Ports.slice(0, 3 - actions.length)) {
-    actions.push(`Review and restrict ${rp.service || `port ${rp.port}`} access (${rp.hostsAffected} hosts)`);
-  }
-
-  // Generic action if still not enough
   if (actions.length === 0) {
-    actions.push("No critical exposures detected - continue monitoring");
+    actions.push(
+      "No P0 or P1 services were observed within the recorded scan coverage; continue evidence collection and routine review"
+    );
   }
 
-  return actions.slice(0, 3);
+  return actions;
 }
 
-/**
- * Generate human-readable summary
- */
+/** Generate an evidence-bounded human-readable Scorecard summary. */
 export function generateSummary(
   totalHosts: number,
   openPorts: number,
-  riskPorts: RiskPort[]
+  riskPorts: RiskPort[],
+  evidence?: EvidenceAssessment
 ): string {
-  const p0Count = riskPorts.filter((r) => r.risk === "P0").length;
-  const p0Hosts = new Set(riskPorts.filter((r) => r.risk === "P0").flatMap((r) => r.hosts)).size;
+  const p0Ports = riskPorts.filter((riskPort) => riskPort.risk === "P0");
+  const p1Ports = riskPorts.filter((riskPort) => riskPort.risk === "P1");
+  const reviewPorts = [...p0Ports, ...p1Ports];
+  const reviewHosts = new Set(reviewPorts.flatMap((riskPort) => riskPort.hosts)).size;
 
-  if (p0Count === 0) {
-    return `Scan shows ${totalHosts} hosts with ${openPorts} open ports. No critical (P0) exposures detected. Standard services are running within expected parameters.`;
+  if (evidence?.status === "insufficient-evidence") {
+    return `Recorded ${totalHosts} devices and ${openPorts} open service observations, but collection coverage is insufficient for a complete conclusion. Review the evidence limitations.`;
   }
 
-  const topP0 = riskPorts.find((r) => r.risk === "P0");
-  const serviceName = topP0?.service || `port ${topP0?.port}`;
-
-  if (p0Count === 1) {
-    return `Scan shows ${totalHosts} hosts with ${openPorts} open ports. One critical exposure: ${serviceName} on ${p0Hosts} host${p0Hosts !== 1 ? "s" : ""}. Recommend immediate remediation.`;
+  if (totalHosts === 0) {
+    return "No devices were recorded in this observation. This does not establish device absence or overall network security.";
   }
 
-  return `Scan shows ${totalHosts} hosts with ${openPorts} open ports. ${p0Count} critical exposures detected affecting ${p0Hosts} hosts. Most urgent: ${serviceName}. Immediate action required.`;
+  if (reviewPorts.length === 0) {
+    return `Recorded ${totalHosts} devices and ${openPorts} open service observations. No P0 or P1 services were observed within the recorded coverage; this does not establish overall security.`;
+  }
+
+  return `Recorded ${totalHosts} devices and ${openPorts} open service observations. ${p0Ports.length} P0 and ${p1Ports.length} P1 service finding${reviewPorts.length === 1 ? "" : "s"} affected ${reviewHosts} observed host${reviewHosts === 1 ? "" : "s"}; review service need and access controls.`;
 }
 
 /**
- * Read hosts_up.txt to get total host count
+ * Build a Scorecard from an already-normalized observation.
+ *
+ * With the default static risk resolver this function performs no registry or
+ * artifact I/O and is deterministic for the supplied bundle.
  */
-function readHostsUpCount(hostsUpPath: string): number {
-  try {
-    const content = fs.readFileSync(hostsUpPath, "utf-8");
-    const lines = content.split("\n").filter((line) => line.trim() && !line.startsWith("#"));
-    return lines.length;
-  } catch {
-    return 0;
-  }
-}
-
-/**
- * Build scorecard data for a run
- */
-export function buildScorecardData(runUid: string): ScorecardData | null {
-  const manifest = getRunByUid(runUid);
-  if (!manifest) {
-    return null;
-  }
-
-  // Find the ports XML file
-  const portsFiles = manifest.keyFiles.ports || [];
-  const portsXml = portsFiles.find((f) => f.endsWith(".xml"));
-
-  if (!portsXml || !fs.existsSync(portsXml)) {
-    return null;
-  }
-
-  // Parse ports
-  const findings = parsePorts(portsXml);
-  const openFindings = findings.filter((f) => f.state === "open");
-
-  // Get top ports
-  const topPortsList = topPorts(findings, 10);
-
-  // Classify and aggregate risks (pass network name for custom rules)
-  const riskPortsList = aggregateRiskPorts(findings, manifest.network);
-
-  // Count unique hosts and services
-  const uniqueHosts = new Set(openFindings.map((f) => f.ip));
-  const uniqueServices = new Set(openFindings.map((f) => f.service).filter(Boolean));
-
-  // Try to get host count from hosts_up.txt
-  const hostsUpFiles = manifest.keyFiles.hosts_up || [];
-  let totalHosts = uniqueHosts.size;
-  if (hostsUpFiles.length > 0 && fs.existsSync(hostsUpFiles[0])) {
-    const hostsUpCount = readHostsUpCount(hostsUpFiles[0]);
-    if (hostsUpCount > 0) {
-      totalHosts = hostsUpCount;
-    }
-  }
-
-  // Generate summary
-  const summary = generateSummary(totalHosts, openFindings.length, riskPortsList);
+export function buildScorecardDataFromObservationBundle(
+  bundle: ObservationBundleV1,
+  options: BuildScorecardOptions = {}
+): ScorecardData {
+  const riskResolver = options.riskResolver ?? staticRiskResolver;
+  const findings = observationFindings(bundle);
+  const riskPorts = aggregateRiskPortsWithResolver(
+    findings,
+    bundle.site.networkName,
+    riskResolver
+  );
+  const relevantRiskPorts = riskPorts.filter(
+    (riskPort) => riskPort.risk === "P0" || riskPort.risk === "P1"
+  );
+  const evidence = buildScorecardEvidenceAssessment(bundle);
+  const uniqueServices = new Set(
+    findings.map((finding) => finding.service).filter(Boolean)
+  );
 
   return {
-    runUid,
-    network: manifest.network,
-    timestamp: manifest.timestamp || new Date().toISOString(),
-    totalHosts,
-    openPorts: openFindings.length,
+    runUid: bundle.batch.sourceRunUid,
+    network: bundle.site.networkName,
+    timestamp: observedAt(bundle),
+    totalHosts: bundle.devices.length,
+    openPorts: findings.length,
     uniqueServices: uniqueServices.size,
-    riskPorts: riskPortsList.filter((r) => r.risk === "P0" || r.risk === "P1").length,
-    topPorts: topPortsList,
-    riskPortsDetail: riskPortsList.filter((r) => r.risk === "P0" || r.risk === "P1"),
-    summary,
+    riskPorts: relevantRiskPorts.length,
+    topPorts: topPorts(findings, 10),
+    riskPortsDetail: relevantRiskPorts,
+    evidence,
+    summary: generateSummary(bundle.devices.length, findings.length, riskPorts, evidence),
   };
 }
 
-/**
- * Get actions for a scorecard
- */
+/** Alias retained for concise fixture-oriented imports. */
+export const buildScorecardFromObservationBundle =
+  buildScorecardDataFromObservationBundle;
+
+/** Build a Scorecard from a registered run while preserving custom rules. */
+export function buildScorecardData(runUid: string): ScorecardData | null {
+  const manifest = getRunByUid(runUid);
+  if (!manifest) return null;
+
+  const bundle = adaptRunManifestToObservationBundleV1(manifest);
+  return buildScorecardDataFromObservationBundle(bundle, {
+    riskResolver: getEffectivePortRisk,
+  });
+}
+
 export function getScorecardActions(scorecardData: ScorecardData): string[] {
   return generateActions(scorecardData.riskPortsDetail);
+}
+
+function observationFindings(bundle: ObservationBundleV1): PortFinding[] {
+  const findings = new Map<string, PortFinding>();
+
+  bundle.devices.forEach((device, deviceIndex) => {
+    const address =
+      device.ips[0] ?? device.hostnames[0] ?? `unaddressed-device-${deviceIndex + 1}`;
+    const hostname = device.hostnames[0] ?? "";
+
+    for (const port of device.openPorts) {
+      const key = `${device.deviceId}|${port.protocol.toLowerCase()}:${port.port}`;
+      const existing = findings.get(key);
+      const candidate: PortFinding = {
+        ip: address,
+        hostname,
+        protocol: port.protocol,
+        port: port.port,
+        state: "open",
+        service: port.service ?? "unknown",
+        product: port.product ?? "",
+        version: port.version ?? "",
+        sourceXml: port.sourceId,
+      };
+
+      if (!existing || existing.service === "unknown") findings.set(key, candidate);
+    }
+  });
+
+  return [...findings.values()];
+}
+
+function staticRiskResolver(port: number): RiskLevel | null {
+  return getPortRisk(port);
+}
+
+function observedAt(bundle: ObservationBundleV1): string {
+  return firstValidIso(bundle.batch.endedAt) ??
+    firstValidIso(bundle.batch.startedAt) ??
+    firstValidIso(bundle.batch.generatedAt) ??
+    bundle.batch.generatedAt;
+}
+
+function firstValidIso(value: string | null): string | null {
+  if (!value) return null;
+  const time = Date.parse(value);
+  return Number.isNaN(time) ? null : new Date(time).toISOString();
 }

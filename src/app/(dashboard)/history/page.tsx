@@ -78,14 +78,6 @@ export default function HistoryPage() {
     });
   }
 
-  function getRiskBadgeVariant(
-    riskLabel: string
-  ): "default" | "destructive" | "secondary" {
-    if (riskLabel === "Critical" || riskLabel === "Poor") return "destructive";
-    if (riskLabel === "Fair") return "default";
-    return "secondary";
-  }
-
   // Filter comparisons by search term
   const filteredComparisons = comparisons.filter((c) =>
     c.network.toLowerCase().includes(search.toLowerCase()) ||
@@ -166,7 +158,7 @@ export default function HistoryPage() {
           <CardHeader>
             <CardTitle>Saved Comparisons ({filteredComparisons.length})</CardTitle>
             <CardDescription>
-              Click a comparison to view full details and analysis
+              Click a comparison to view its evidence status and bounded findings
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -180,8 +172,8 @@ export default function HistoryPage() {
                     <div className="flex items-center gap-3">
                       <Network className="h-4 w-4 text-muted-foreground" />
                       <span className="font-semibold">{comparison.network}</span>
-                      <Badge variant={getRiskBadgeVariant(comparison.riskLabel)}>
-                        {comparison.riskLabel} ({comparison.riskScore})
+                      <Badge variant={comparison.diffData.evidence.status === "supported" ? "secondary" : "outline"}>
+                        {comparison.diffData.evidence.status}
                       </Badge>
                       {comparison.title && (
                         <span className="text-sm text-muted-foreground">
@@ -195,8 +187,7 @@ export default function HistoryPage() {
                         {formatDate(comparison.createdAt)}
                       </div>
                       <div>
-                        {comparison.diffData.riskyExposures.length} risky exposure
-                        {comparison.diffData.riskyExposures.length !== 1 ? "s" : ""}
+                        {comparison.diffData.riskFindings.length} review-list {comparison.diffData.riskFindings.length === 1 ? "entry" : "entries"}
                       </div>
                       <div>
                         {comparison.diffData.newHosts.length} new host

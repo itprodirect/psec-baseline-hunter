@@ -102,6 +102,17 @@ export interface ObservationOpenPort {
   sourceId: string;
 }
 
+export interface ObservationPortRange {
+  start: number;
+  end: number;
+}
+
+export interface ObservationPortCoverage {
+  sourceId: string;
+  protocol: string;
+  ranges: ObservationPortRange[];
+}
+
 export interface ObservationDevice {
   deviceId: string;
   firstSeen: string | null;
@@ -112,6 +123,8 @@ export interface ObservationDevice {
   vendors: string[];
   identityEvidence: DeviceIdentityEvidence[];
   openPorts: ObservationOpenPort[];
+  /** Declared Nmap scan ranges for this device, only when port-state evidence was present. */
+  portCoverage?: ObservationPortCoverage[];
   notes: string[];
 }
 

@@ -170,7 +170,7 @@ export function QuickRuleButton({ riskPort, network }: QuickRuleButtonProps) {
               <Label htmlFor="quick-reason">Reason</Label>
               <Textarea
                 id="quick-reason"
-                placeholder="Why is this rule needed? (e.g., 'Internal dev server, safe for our network')"
+                placeholder="Why is this rule needed? (e.g., 'Approved internal development service')"
                 value={formReason}
                 onChange={(e) => setFormReason(e.target.value)}
                 required

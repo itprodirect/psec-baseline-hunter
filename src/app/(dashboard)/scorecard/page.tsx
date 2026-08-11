@@ -1,12 +1,12 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Loader2 } from "lucide-react";
 import { useDemo } from "@/lib/context/demo-context";
 import { ScorecardData, RunManifestInfo, RunsListResponseV2 } from "@/lib/types";
 import { ExportCSVButton } from "@/components/ui/export-csv-button";
-import { arrayToCSV, downloadCSV, buildMultiSectionCSV, formatDateForFilename } from "@/lib/utils/csv-export";
+import { downloadCSV, formatDateForFilename, scorecardToCSV } from "@/lib/utils/csv-export";
 import { ScorecardDisplay } from "@/components/scorecard/ScorecardDisplay";
 import { ScorecardRunSelector } from "@/components/scorecard/ScorecardRunSelector";
 import { ScorecardEmptyState } from "@/components/scorecard/ScorecardEmptyState";
@@ -31,6 +31,7 @@ export default function ScorecardPage() {
   const [isLoadingRuns, setIsLoadingRuns] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showRunSelector, setShowRunSelector] = useState(false);
+  const scorecardRequest = useRef(0);
 
   useEffect(() => {
     async function loadRuns() {
@@ -59,14 +60,26 @@ export default function ScorecardPage() {
   }, [isDemoMode, runs, selectedRunUid]);
 
   useEffect(() => {
-    if (!selectedRunUid || isDemoMode) return;
+    const requestId = ++scorecardRequest.current;
+    if (!selectedRunUid || isDemoMode) {
+      setIsLoading(false);
+      return;
+    }
+
+    const controller = new AbortController();
 
     async function loadScorecard() {
       setIsLoading(true);
       setError(null);
+      setScorecardData(null);
+      setActions([]);
       try {
-        const response = await fetch(`/api/scorecard/${selectedRunUid}`);
+        const response = await fetch(`/api/scorecard/${selectedRunUid}`, {
+          signal: controller.signal,
+        });
         const data = await response.json();
+        if (controller.signal.aborted || requestId !== scorecardRequest.current) return;
+
         if (data.success && data.data) {
           setScorecardData(data.data);
           setActions(data.data.actions || []);
@@ -75,97 +88,45 @@ export default function ScorecardPage() {
           setScorecardData(null);
         }
       } catch (err) {
+        if (controller.signal.aborted || requestId !== scorecardRequest.current) return;
         setError(err instanceof Error ? err.message : "Failed to load scorecard");
         setScorecardData(null);
       } finally {
-        setIsLoading(false);
+        if (!controller.signal.aborted && requestId === scorecardRequest.current) {
+          setIsLoading(false);
+        }
       }
     }
     loadScorecard();
+
+    return () => controller.abort();
   }, [selectedRunUid, isDemoMode]);
 
   const displayData = isDemoMode && demoData ? demoData.currentScorecard : scorecardData;
   const displayActions = isDemoMode && demoData ? [] : actions;
+
+  const handleSelectRun = (runUid: string) => {
+    scorecardRequest.current += 1;
+    setSelectedRunUid(runUid);
+    setScorecardData(null);
+    setActions([]);
+    setError(null);
+    setIsLoading(false);
+  };
 
   const handleExportCSV = () => {
     if (!displayData) return;
 
     const date = formatDateForFilename(displayData.timestamp || new Date());
     const network = displayData.network.replace(/[^a-z0-9-]/gi, "_");
-
-    const summaryCSV = arrayToCSV(
-      [
-        {
-          metric: "Total Hosts",
-          value: displayData.totalHosts,
-        },
-        {
-          metric: "Open Ports",
-          value: displayData.openPorts,
-        },
-        {
-          metric: "Unique Services",
-          value: displayData.uniqueServices,
-        },
-        {
-          metric: "Risk Ports (P0/P1)",
-          value: displayData.riskPorts,
-        },
-      ],
-      {
-        metric: "Metric",
-        value: "Value",
-      }
-    );
-
-    const riskPortsCSV = arrayToCSV(
-      displayData.riskPortsDetail.map((rp) => ({
-        port: rp.port,
-        protocol: rp.protocol,
-        service: rp.service || "unknown",
-        risk_level: rp.risk,
-        hosts_affected: rp.hostsAffected,
-        hosts: rp.hosts.join("; "),
-      })),
-      {
-        port: "Port",
-        protocol: "Protocol",
-        service: "Service",
-        risk_level: "Risk Level",
-        hosts_affected: "Hosts Affected",
-        hosts: "Affected Hosts",
-      }
-    );
-
-    const topPortsCSV = arrayToCSV(
-      displayData.topPorts.map((tp) => ({
-        port: tp.port,
-        protocol: tp.protocol,
-        service: tp.service || "unknown",
-        host_count: tp.hostsAffected,
-      })),
-      {
-        port: "Port",
-        protocol: "Protocol",
-        service: "Service",
-        host_count: "Host Count",
-      }
-    );
-
-    const csvContent = buildMultiSectionCSV([
-      { title: "# SUMMARY METRICS", data: summaryCSV },
-      { title: "# RISK PORTS (P0/P1)", data: riskPortsCSV },
-      { title: "# TOP PORTS", data: topPortsCSV },
-    ]);
-
-    downloadCSV(csvContent, `${network}_${date}_scorecard.csv`);
+    downloadCSV(scorecardToCSV(displayData), `${network}_${date}_scorecard.csv`);
   };
 
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight">Health Overview</h1>
+          <h1 className="text-3xl font-bold tracking-tight">Observation Overview</h1>
           <p className="text-muted-foreground">
             {displayData
               ? `${displayData.network} - ${formatTimestamp(displayData.timestamp)}`
@@ -184,7 +145,7 @@ export default function ScorecardPage() {
           selectedRunUid={selectedRunUid}
           showRunSelector={showRunSelector}
           setShowRunSelector={setShowRunSelector}
-          onSelectRun={setSelectedRunUid}
+          onSelectRun={handleSelectRun}
         />
       )}
 

@@ -18,7 +18,7 @@ const NAV_ITEMS = [
     title: "Dashboard",
     href: "/",
     icon: LayoutDashboard,
-    description: "Network health overview",
+    description: "Network observation overview",
   },
   {
     title: "Activity",
@@ -39,7 +39,7 @@ const NAV_ITEMS = [
     description: "Import scan files",
   },
   {
-    title: "Health Overview",
+    title: "Observation Overview",
     href: "/scorecard",
     icon: BarChart3,
     description: "Single run analysis",
