@@ -1,6 +1,6 @@
 /**
- * User Profile Types for Personalized Explanations
- * Used to tailor security summaries to the user's context and technical level
+ * User Profile Types for deterministic report presentation context.
+ * Profile data is recorded alongside a report, but never changes evidence or supported conclusions.
  */
 
 /**
@@ -44,14 +44,14 @@ export type ContextFactor =
 export type ExplanationTone = "reassuring" | "direct" | "urgent" | "educational";
 
 /**
- * Complete user profile for personalized explanations
+ * Complete user profile retained for deterministic presentation context
  */
 export interface UserProfile {
   technicalLevel: TechnicalLevel;
   profession: Profession;
   contextFactors: ContextFactor[];
   tone: ExplanationTone;
-  /** Whether to include actual IPs/hostnames in the LLM prompt (default: false) */
+  /** Legacy preference retained for stored-profile compatibility; active reports omit device locators. */
   includeNetworkDetails: boolean;
 }
 

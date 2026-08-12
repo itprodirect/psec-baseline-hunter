@@ -66,6 +66,8 @@ interface DeviceInfo {
   explicitIdentityKeys: string[];
   macKeys: string[];
   hashedMacKeys: string[];
+  weakMacKeys: string[];
+  weakHashedMacKeys: string[];
   hostnameVendorKeys: string[];
   ipKeys: string[];
 }
@@ -175,7 +177,7 @@ export function compareObservationBundlesV1(
     );
   }
 
-  if (currentCoverageSupportsAbsence(current)) {
+  if (currentCoverageSupportsAbsence(baseline, current)) {
     for (const info of baselineDevices) {
       const key = deviceKey(info);
       if (matchedBaselineIds.has(key) || uncertainBaselineIds.has(key)) continue;
@@ -290,13 +292,6 @@ function planDeviceMatches(
     summary: string;
   }> = [
     {
-      confidence: "strongest",
-      ruleId: "identity.persisted-device-id",
-      keys: (device) => device.explicitIdentityKeys,
-      evidenceKinds: [],
-      summary: "Device identity matched by an explicit persisted device identifier.",
-    },
-    {
       confidence: "strong",
       ruleId: "identity.mac",
       keys: (device) => device.macKeys,
@@ -327,9 +322,23 @@ function planDeviceMatches(
     const selected = selectUniqueCandidates(candidates);
 
     for (const match of selected.confirmed) {
-      confirmed.push(match);
-      matchedBaseline.add(deviceKey(match.baseline));
-      matchedCurrent.add(deviceKey(match.current));
+      if (candidateHasIdentityConflict(match)) {
+        ambiguousIdentity = true;
+        const uncertainMatch = {
+          ...match,
+          confidence: "low" as const,
+          identityRuleId: "identity.conflicting-identifiers",
+          summary:
+            "Shared identifier evidence conflicted with other device identity evidence, so continuity was not established.",
+        };
+        uncertain.push(uncertainMatch);
+        blockedBaseline.add(deviceKey(match.baseline));
+        blockedCurrent.add(deviceKey(match.current));
+      } else {
+        confirmed.push(match);
+        matchedBaseline.add(deviceKey(match.baseline));
+        matchedCurrent.add(deviceKey(match.current));
+      }
     }
 
     if (selected.ambiguous.length > 0) {
@@ -340,6 +349,42 @@ function planDeviceMatches(
         blockedCurrent.add(deviceKey(match.current));
       }
     }
+  }
+
+  const weakMacCandidates = [
+    ...buildCandidates(
+      baselineDevices,
+      currentDevices,
+      combinedSet(matchedBaseline, blockedBaseline),
+      combinedSet(matchedCurrent, blockedCurrent),
+      "low",
+      "identity.weak-mac",
+      (device) => device.weakMacKeys,
+      ["mac-address"],
+      "The observations share only weak or reported MAC evidence."
+    ),
+    ...buildCandidates(
+      baselineDevices,
+      currentDevices,
+      combinedSet(matchedBaseline, blockedBaseline),
+      combinedSet(matchedCurrent, blockedCurrent),
+      "low",
+      "identity.weak-hashed-mac",
+      (device) => device.weakHashedMacKeys,
+      ["mac-address"],
+      "The observations share only weak or reported hashed-MAC evidence."
+    ),
+  ];
+  const weakMacSelected = selectUniqueCandidates(weakMacCandidates);
+  const weakMacUncertain = [
+    ...weakMacSelected.confirmed,
+    ...weakMacSelected.ambiguous,
+  ];
+  if (weakMacSelected.ambiguous.length > 0) ambiguousIdentity = true;
+  uncertain.push(...weakMacUncertain);
+  for (const match of weakMacUncertain) {
+    blockedBaseline.add(deviceKey(match.baseline));
+    blockedCurrent.add(deviceKey(match.current));
   }
 
   const hostnameVendorCandidates = buildCandidates(
@@ -456,6 +501,26 @@ function selectUniqueCandidates(candidates: CandidateMatch[]): {
     confirmed: uniqueCandidates(confirmed),
     ambiguous: uniqueCandidates(ambiguous),
   };
+}
+
+function candidateHasIdentityConflict(candidate: CandidateMatch): boolean {
+  if (
+    candidate.baseline.bundle.identity?.status === "conflicting" ||
+    candidate.current.bundle.identity?.status === "conflicting"
+  ) {
+    return true;
+  }
+
+  if (candidate.identityRuleId === "identity.mac") {
+    return !sameStringSet(candidate.baseline.macKeys, candidate.current.macKeys);
+  }
+  if (candidate.identityRuleId === "identity.hashed-mac") {
+    return !sameStringSet(
+      candidate.baseline.hashedMacKeys,
+      candidate.current.hashedMacKeys
+    );
+  }
+  return false;
 }
 
 function buildPortChangeEvents(
@@ -743,15 +808,35 @@ function confidenceForNewDevice(
 }
 
 function buildDeviceInfo(bundle: ObservationBundleV1, device: ObservationDevice): DeviceInfo {
-  const macEvidenceValues = device.identityEvidence
-    .filter((evidence) => evidence.kind === "mac-address")
+  const strongMacEvidenceValues = device.identityEvidence
+    .filter(
+      (evidence) =>
+        evidence.kind === "mac-address" && evidence.confidence === "observed"
+    )
     .map((evidence) => evidence.value);
-  const macKeys = uniqueSorted([
-    ...device.macs.map(normalizeMacKey).filter((mac): mac is string => Boolean(mac)),
-    ...macEvidenceValues.map(normalizeMacKey).filter((mac): mac is string => Boolean(mac)),
-  ]);
+  const weakMacEvidenceValues = device.identityEvidence
+    .filter(
+      (evidence) =>
+        evidence.kind === "mac-address" && evidence.confidence !== "observed"
+    )
+    .map((evidence) => evidence.value);
+  const macKeys = uniqueSorted(
+    strongMacEvidenceValues
+      .map(normalizeMacKey)
+      .filter((mac): mac is string => Boolean(mac))
+  );
   const hashedMacKeys = uniqueSorted(
-    macEvidenceValues
+    strongMacEvidenceValues
+      .map(normalizeHashedMacKey)
+      .filter((mac): mac is string => Boolean(mac))
+  );
+  const weakMacKeys = uniqueSorted(
+    weakMacEvidenceValues
+      .map(normalizeMacKey)
+      .filter((mac): mac is string => Boolean(mac))
+  );
+  const weakHashedMacKeys = uniqueSorted(
+    weakMacEvidenceValues
       .map(normalizeHashedMacKey)
       .filter((mac): mac is string => Boolean(mac))
   );
@@ -760,7 +845,9 @@ function buildDeviceInfo(bundle: ObservationBundleV1, device: ObservationDevice)
   const hostnameVendorKeys = uniqueSorted(
     hostnames.flatMap((hostname) => vendors.map((vendor) => `${hostname}|${vendor}`))
   );
-  const explicitIdentityKeys = explicitDeviceIdentityKey(device);
+  // `deviceId` is a normalized record locator and can be supplied by an
+  // imported bundle. It is not, by itself, attested persistent identity.
+  const explicitIdentityKeys: string[] = [];
   const ref: ObservationComparisonDeviceRef = {
     observationId: bundle.observationId,
     deviceId: device.deviceId,
@@ -783,49 +870,11 @@ function buildDeviceInfo(bundle: ObservationBundleV1, device: ObservationDevice)
     explicitIdentityKeys,
     macKeys,
     hashedMacKeys,
+    weakMacKeys,
+    weakHashedMacKeys,
     hostnameVendorKeys,
     ipKeys: uniqueSorted(device.ips.map(normalizeIdentityValue).filter(Boolean)),
   };
-}
-
-function explicitDeviceIdentityKey(device: ObservationDevice): string[] {
-  const id = normalizeIdentityValue(device.deviceId);
-  if (!id || /^dev-(?:[a-f0-9]{12}|unknown)$/i.test(id) || looksLikeIpDerivedDeviceId(id)) {
-    return [];
-  }
-  return [id];
-}
-
-function looksLikeIpDerivedDeviceId(value: string): boolean {
-  return containsIpv4DerivedToken(value) || containsIpv6LikeToken(value);
-}
-
-function containsIpv4DerivedToken(value: string): boolean {
-  const matches = value.matchAll(
-    /(?:^|[^0-9])(\d{1,3})[._-](\d{1,3})[._-](\d{1,3})[._-](\d{1,3})(?=$|[^0-9])/g
-  );
-
-  for (const match of matches) {
-    const octets = match.slice(1, 5).map((part) => Number.parseInt(part, 10));
-    if (octets.every((octet) => octet >= 0 && octet <= 255)) {
-      return true;
-    }
-  }
-
-  return false;
-}
-
-function containsIpv6LikeToken(value: string): boolean {
-  return value.split(/[^0-9a-f:]+/i).some(isIpv6LikeToken);
-}
-
-function isIpv6LikeToken(value: string): boolean {
-  if (!value.includes(":") || !/^[0-9a-f:]+$/i.test(value)) return false;
-  const parts = value.split(":");
-  if (value.includes("::")) {
-    return parts.some(Boolean);
-  }
-  return parts.length >= 3 && parts.every((part) => part.length > 0 && part.length <= 4);
 }
 
 function observationRef(bundle: ObservationBundleV1): ObservationComparisonObservationRef {
@@ -956,8 +1005,13 @@ function hasUsablePortCoverage(snapshot: ObservationComparisonCoverageSnapshot):
   return snapshot.presentSources.includes("ports") && !snapshot.missingSources.includes("ports");
 }
 
-function currentCoverageSupportsAbsence(current: ObservationBundleV1): boolean {
+function currentCoverageSupportsAbsence(
+  baseline: ObservationBundleV1,
+  current: ObservationBundleV1
+): boolean {
   return (
+    baseline.identity?.status !== "conflicting" &&
+    current.identity?.status !== "conflicting" &&
     current.coverage.status === "complete" &&
     current.batch.partial !== true &&
     current.coverage.missingSources.length === 0

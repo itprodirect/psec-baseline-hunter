@@ -1,13 +1,18 @@
 import {
-  compareObservationBundlesV1,
-  isObservationComparisonError,
-} from "./observation-comparison";
+  evaluateEvidenceAwareComparison,
+  type EvidenceAwareComparisonEvaluation,
+} from "./evidence-aware-comparison";
 import {
   getObservationById,
   listObservations,
 } from "./observation-registry";
 import { shapeNetworkActivityComparison } from "./network-activity";
 import { isPacketHighwayObservationEntry } from "./packet-highway-observation";
+import type {
+  EvidenceAssessment,
+  EvidenceCoverageSnapshot,
+  EvidenceReasonCode,
+} from "@/lib/types";
 import type {
   ObservationComparisonGuardrail,
   ObservationComparisonResult,
@@ -44,6 +49,7 @@ interface StatementComparison {
   baseline: ObservationRegistryRecord;
   current: ObservationRegistryRecord;
   comparison: ObservationComparisonResult;
+  evaluation: EvidenceAwareComparisonEvaluation;
   events: NetworkActivityEvent[];
 }
 
@@ -51,6 +57,7 @@ interface StatementSkippedComparison {
   baselineObservationId: string;
   currentObservationId: string;
   reason: string;
+  evaluation: EvidenceAwareComparisonEvaluation | null;
 }
 
 interface StatementEvent {
@@ -108,10 +115,23 @@ export function buildNetworkStatement(
       event,
     }))
   );
-  const coverageFacts = coverageFactsFor(primaryEntries, comparisons);
-  const period = buildSelectedPeriod(from, to, primaryEntries, comparisons.length);
+  const evidence = aggregateStatementEvidence(primaryEntries, comparisons, skipped);
+  const allPairsSupported =
+    comparisons.length > 0 &&
+    skipped.length === 0 &&
+    comparisons.every((comparison) => comparison.evaluation.outcome === "supported");
+  const status =
+    allPairsSupported && evidence.status === "supported"
+      ? "ready"
+      : "insufficient-evidence";
+  const coverageFacts = coverageFactsFor(primaryEntries, comparisons, skipped);
+  const period = buildSelectedPeriod(
+    from,
+    to,
+    primaryEntries,
+    status === "ready" ? comparisons.length : 0
+  );
   const title = period.weeklyTitleSupported ? "Weekly Network Statement" : "Network Statement";
-  const status = comparisons.length > 0 ? "ready" : "insufficient-evidence";
   const responseCount = statementEvents.filter(
     ({ event }) => event.deviceResponse.statement
   ).length;
@@ -121,8 +141,8 @@ export function buildNetworkStatement(
     siteSection(site),
     coverageVantageSection(primaryEntries, supplementalEvidence, coverageFacts, period),
     freshnessSection(primaryEntries),
-    stableSection(comparisons, statementEvents, coverageFacts),
-    changedSection(statementEvents, exportPolicy),
+    stableSection(comparisons, statementEvents, coverageFacts, evidence),
+    changedSection(statementEvents, exportPolicy, evidence),
     needsReviewSection(statementEvents, exportPolicy),
     unresolvedResponsesSection(statementEvents, exportPolicy),
     packetHighwaySection(supplementalEvidence, exportPolicy),
@@ -138,6 +158,7 @@ export function buildNetworkStatement(
     generatedAt,
     site,
     selectedPeriod: period,
+    evidence,
     coverageSummary: {
       primaryObservationCount: primaryEntries.length,
       comparisonCount: comparisons.length,
@@ -145,7 +166,8 @@ export function buildNetworkStatement(
       hasPartialCoverage: coverageFacts.hasPartialCoverage,
       hasStaleEvidence: coverageFacts.hasStaleEvidence,
       hasInsufficientWeekCoverage: period.requestedWeeklyRange && !period.weeklyTitleSupported,
-      hasInsufficientComparisonEvidence: comparisons.length === 0,
+      hasInsufficientComparisonEvidence:
+        coverageFacts.hasInsufficientComparisonEvidence || status !== "ready",
     },
     privacy: {
       technicalIdentifiersMinimized: true,
@@ -164,8 +186,21 @@ export function renderNetworkStatementMarkdown(
     `# ${markdownText(statement.title)}`,
     "",
     `Generated: ${markdownText(formatDateTime(statement.generatedAt))}`,
+    `Evidence status: ${markdownText(statement.evidence.status)}`,
+    `Evidence reason codes: ${markdownText(statement.evidence.reasonCodes.join(", ") || "none")}`,
+    `Supports device absence: ${statement.evidence.supports.deviceAbsence ? "yes" : "no"}`,
+    `Supports port closure: ${statement.evidence.supports.portClosure ? "yes" : "no"}`,
+    `Supports stable baseline: ${statement.evidence.supports.stableBaseline ? "yes" : "no"}`,
     "",
   ];
+
+  if (statement.evidence.limitations.length > 0) {
+    lines.push("Evidence limitations:");
+    for (const limitation of statement.evidence.limitations) {
+      lines.push(`- ${markdownText(limitation)}`);
+    }
+    lines.push("");
+  }
 
   for (const section of statement.sections) {
     lines.push(`## ${markdownText(section.title)}`);
@@ -218,40 +253,46 @@ function buildComparisons(
         baselineObservationId: baselineEntry.observationId,
         currentObservationId: currentEntry.observationId,
         reason: "One observation record could not be reopened from the registry.",
+        evaluation: null,
       });
       continue;
     }
 
-    try {
-      const comparison = compareObservationBundlesV1(baseline.bundle, current.bundle, {
-        evaluatedAt: freshnessOptions.evaluatedAt,
-      });
-      const activity = shapeNetworkActivityComparison({
-        baseline,
-        current,
-        comparison,
-        generatedAt: String(freshnessOptions.evaluatedAt),
-        source: "registry",
-        availableObservationCount: primaryEntries.length,
-        supplementalEvidence,
-      });
-
-      comparisons.push({
-        index: comparisons.length + 1,
-        baseline,
-        current,
-        comparison,
-        events: activity.events,
-      });
-    } catch (error) {
+    const evaluation = evaluateEvidenceAwareComparison(
+      baseline.bundle,
+      current.bundle,
+      { evaluatedAt: freshnessOptions.evaluatedAt }
+    );
+    if (!evaluation.comparison) {
       skipped.push({
         baselineObservationId: baseline.observationId,
         currentObservationId: current.observationId,
-        reason: isObservationComparisonError(error)
-          ? error.message
-          : "The comparison could not be generated.",
+        reason:
+          evaluation.failure?.message ??
+          "The comparison evidence was insufficient.",
+        evaluation,
       });
+      continue;
     }
+
+    const activity = shapeNetworkActivityComparison({
+      baseline,
+      current,
+      evaluation,
+      generatedAt: String(freshnessOptions.evaluatedAt),
+      source: "registry",
+      availableObservationCount: primaryEntries.length,
+      supplementalEvidence,
+    });
+
+    comparisons.push({
+      index: comparisons.length + 1,
+      baseline,
+      current,
+      comparison: evaluation.comparison,
+      evaluation,
+      events: activity.events,
+    });
   }
 
   return { comparisons, skipped };
@@ -400,10 +441,21 @@ function freshnessSection(primaryEntries: ObservationRegistryEntry[]): NetworkSt
 function stableSection(
   comparisons: StatementComparison[],
   events: StatementEvent[],
-  facts: CoverageFacts
+  facts: CoverageFacts,
+  evidence: EvidenceAssessment
 ): NetworkStatementSection {
+  if (!evidence.supports.stableBaseline) {
+    return section("stable", "Stability support", null, [
+      item(
+        "stable-none",
+        "Stability was not evaluated because the selected evidence does not support a stable-baseline or no-change conclusion.",
+        "warning"
+      ),
+    ]);
+  }
+
   if (comparisons.length === 0) {
-    return section("stable", "What appeared stable", null, [
+    return section("stable", "Stability support", null, [
       item(
         "stable-none",
         "No stable finding is available because the selected period has fewer than two comparable primary observations.",
@@ -439,11 +491,18 @@ function stableSection(
 
 function changedSection(
   events: StatementEvent[],
-  exportPolicy: StatementExportPolicy
+  exportPolicy: StatementExportPolicy,
+  evidence: EvidenceAssessment
 ): NetworkStatementSection {
   if (events.length === 0) {
     return section("changed", "What changed", null, [
-      item("changed-none", "No deterministic change events were produced for the selected comparisons."),
+      item(
+        "changed-none",
+        evidence.status === "supported"
+          ? "No deterministic change events were produced for the selected comparisons."
+          : "No supported change events are listed; missing or incompatible evidence must not be interpreted as no change.",
+        evidence.status === "supported" ? "info" : "warning"
+      ),
     ]);
   }
 
@@ -680,8 +739,8 @@ function provenanceSection(
     items.push(
       item(
         `provenance-comparison-${comparison.index}`,
-        `Comparison ${comparison.index}: ${comparisonSource}; rule ${comparison.comparison.ruleVersion}; ${comparison.events.length} ${pluralize("event", comparison.events.length)}; guardrails ${guardrailCodes(comparison.comparison.guardrails)}.`,
-        "info",
+        `Comparison ${comparison.index}: ${comparisonSource}; evidence ${comparison.evaluation.outcome}; rule ${comparison.comparison.ruleVersion}; ${comparison.events.length} ${pluralize("event", comparison.events.length)}; guardrails ${guardrailCodes(comparison.comparison.guardrails)}.`,
+        comparison.evaluation.outcome === "supported" ? "info" : "warning",
         statementEvidenceRefs(exportPolicy, [
           {
             label: `Comparison ${comparison.index} activity evidence`,
@@ -720,16 +779,20 @@ interface CoverageFacts {
   comparisonCount: number;
   hasPartialCoverage: boolean;
   hasStaleEvidence: boolean;
+  hasInsufficientComparisonEvidence: boolean;
   missingSourceLabels: string[];
 }
 
 function coverageFactsFor(
   primaryEntries: ObservationRegistryEntry[],
-  comparisons: StatementComparison[]
+  comparisons: StatementComparison[],
+  skipped: StatementSkippedComparison[]
 ): CoverageFacts {
   return {
     primaryObservationCount: primaryEntries.length,
-    comparisonCount: comparisons.length,
+    comparisonCount: comparisons.filter(
+      (comparison) => comparison.evaluation.outcome === "supported"
+    ).length,
     hasPartialCoverage: primaryEntries.some(
       (entry) =>
         entry.batch.partial ||
@@ -739,10 +802,164 @@ function coverageFactsFor(
     hasStaleEvidence: primaryEntries.some(
       (entry) => entry.freshness.status === "stale" || entry.freshness.status === "partial"
     ),
+    hasInsufficientComparisonEvidence:
+      skipped.length > 0 ||
+      comparisons.some((comparison) => comparison.evaluation.outcome !== "supported"),
     missingSourceLabels: uniqueSorted(
       primaryEntries.flatMap((entry) => entry.coverage.missingSources.map(sourceLabel))
     ),
   };
+}
+
+function aggregateStatementEvidence(
+  primaryEntries: ObservationRegistryEntry[],
+  comparisons: StatementComparison[],
+  skipped: StatementSkippedComparison[]
+): EvidenceAssessment {
+  const evaluations = [
+    ...comparisons.map((comparison) => comparison.evaluation),
+    ...skipped
+      .map((comparison) => comparison.evaluation)
+      .filter((evaluation): evaluation is EvidenceAwareComparisonEvaluation => Boolean(evaluation)),
+  ];
+
+  if (evaluations.length === 0) {
+    const currentEntry = primaryEntries[primaryEntries.length - 1];
+    return {
+      version: "psec.evidence.v1",
+      status: "insufficient-evidence",
+      reasonCodes: uniqueReasonCodes([
+        currentEntry?.coverage.status === "complete"
+          ? "comparison-incompatible"
+          : "partial-coverage",
+        "external-reachability-not-established",
+      ]),
+      coverage: {
+        current: currentEntry
+          ? evidenceCoverageFromEntry(currentEntry)
+          : emptyEvidenceCoverage(),
+      },
+      identity: { status: "not-applicable", uncertainCount: 0 },
+      vantage: {
+        kind: "unverified-scan-vantage",
+        externalReachability: "not-established",
+      },
+      supports: {
+        deviceAbsence: false,
+        portClosure: false,
+        stableBaseline: false,
+        externalReachability: false,
+        comparisonPersistence: false,
+        llmSummary: false,
+      },
+      limitations: [
+        "At least two compatible observations are required before this statement can describe temporal change or stability.",
+        "External reachability is not established by the selected observation vantage.",
+      ],
+    };
+  }
+
+  const assessments = evaluations.map((evaluation) => evaluation.evidence);
+  const first = assessments[0];
+  const last = assessments[assessments.length - 1];
+  const allSupported = evaluations.every(
+    (evaluation) => evaluation.outcome === "supported"
+  );
+  const identityConflicting = assessments.some(
+    (assessment) => assessment.identity.status === "conflicting"
+  );
+  const identityUncertain = assessments.some(
+    (assessment) => assessment.identity.status === "uncertain"
+  );
+
+  return {
+    version: "psec.evidence.v1",
+    status: allSupported ? "supported" : "insufficient-evidence",
+    reasonCodes: uniqueReasonCodes(
+      assessments.flatMap((assessment) => assessment.reasonCodes)
+    ),
+    coverage: {
+      baseline: first.coverage.baseline ?? first.coverage.current,
+      current: last.coverage.current,
+    },
+    identity: {
+      status: identityConflicting
+        ? "conflicting"
+        : identityUncertain
+          ? "uncertain"
+          : "supported",
+      uncertainCount: assessments.reduce(
+        (count, assessment) => count + assessment.identity.uncertainCount,
+        0
+      ),
+    },
+    vantage: {
+      kind: "unverified-scan-vantage",
+      externalReachability: "not-established",
+    },
+    supports: {
+      deviceAbsence:
+        allSupported && assessments.every((assessment) => assessment.supports.deviceAbsence),
+      portClosure:
+        allSupported && assessments.every((assessment) => assessment.supports.portClosure),
+      stableBaseline: false,
+      externalReachability: false,
+      comparisonPersistence: false,
+      llmSummary: false,
+    },
+    limitations: uniqueSorted(
+      assessments.flatMap((assessment) => assessment.limitations)
+    ),
+  };
+}
+
+function evidenceCoverageFromEntry(
+  entry: ObservationRegistryEntry
+): EvidenceCoverageSnapshot {
+  // Registry-list entries intentionally omit the full bundle. Without a pair
+  // evaluation we cannot re-establish normalization completeness from the
+  // index alone, so the statement remains conservative.
+  const normalizationStatus = "truncated" as const;
+  const normalizationReasonCodes: EvidenceCoverageSnapshot["normalizationReasonCodes"] = [];
+  const coverageReasonCodes = [...(entry.coverage.reasonCodes ?? [])];
+  const targetProvenanceStatus =
+    entry.coverage.targetProvenance?.status ?? "unverified";
+  const partial = true;
+  return {
+    status: partial ? "partial" : entry.coverage.status,
+    score: entry.coverage.score,
+    partial,
+    deviceCount: entry.deviceCount,
+    scopeKnown: Boolean(entry.site.networkScope),
+    expectedSources: [...entry.coverage.expectedSources],
+    presentSources: [...entry.coverage.presentSources],
+    missingSources: [...entry.coverage.missingSources],
+    normalizationStatus,
+    normalizationReasonCodes,
+    coverageReasonCodes,
+    targetProvenanceStatus,
+  };
+}
+
+function emptyEvidenceCoverage(): EvidenceCoverageSnapshot {
+  return {
+    status: "minimal",
+    score: 0,
+    partial: true,
+    deviceCount: 0,
+    scopeKnown: false,
+    expectedSources: [],
+    presentSources: [],
+    missingSources: [],
+    normalizationStatus: "truncated",
+    normalizationReasonCodes: [],
+    coverageReasonCodes: ["target-coverage-unverified"],
+    targetProvenanceStatus: "unverified",
+  };
+}
+
+function uniqueReasonCodes(values: EvidenceReasonCode[]): EvidenceReasonCode[] {
+  return [...new Set(values)];
 }
 
 function buildSelectedPeriod(

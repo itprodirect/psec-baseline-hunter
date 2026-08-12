@@ -109,6 +109,10 @@ function coverageRows(
     { metric: `${label} expected sources`, value: coverage.expectedSources.join("; ") },
     { metric: `${label} present sources`, value: coverage.presentSources.join("; ") },
     { metric: `${label} missing sources`, value: coverage.missingSources.join("; ") },
+    { metric: `${label} normalization status`, value: coverage.normalizationStatus },
+    { metric: `${label} normalization reasons`, value: coverage.normalizationReasonCodes.join("; ") },
+    { metric: `${label} coverage reasons`, value: coverage.coverageReasonCodes.join("; ") },
+    { metric: `${label} target provenance`, value: coverage.targetProvenanceStatus },
   ];
 }
 
@@ -315,7 +319,7 @@ export function diffToCSV(diffData: DiffData): string {
  */
 export function reviewListToCSV(
   riskFindings: PortChange[],
-  evidence?: EvidenceAssessment
+  evidence: EvidenceAssessment
 ): string {
   const reviewCSV = riskFindings.length > 0
     ? arrayToCSV(
@@ -340,8 +344,6 @@ export function reviewListToCSV(
       )
     : "No review-list entries were produced by this comparison.";
 
-  if (!evidence) return reviewCSV;
-
   const evidenceCSV = arrayToCSV(evidenceRows(evidence), {
     metric: "Metric",
     value: "Value",
@@ -352,17 +354,26 @@ export function reviewListToCSV(
   ]);
 }
 
-/**
- * Backward-compatible export name. Output semantics remain review-only.
- */
-export const watchlistToCSV = reviewListToCSV;
-
 function evidenceMarkdown(evidence: EvidenceAssessment): string {
+  const formatCoverage = (value: EvidenceAssessment["coverage"]["current"]): string =>
+    value.status === "complete"
+      ? `${value.status} (${Math.round(value.score * 100)}%)`
+      : value.status;
   const coverage = [
     ...(evidence.coverage.baseline
-      ? [`- Baseline coverage: ${evidence.coverage.baseline.status} (${evidence.coverage.baseline.score})`]
+      ? [`- Baseline coverage: ${formatCoverage(evidence.coverage.baseline)}`]
       : []),
-    `- Current coverage: ${evidence.coverage.current.status} (${evidence.coverage.current.score})`,
+    `- Current coverage: ${formatCoverage(evidence.coverage.current)}`,
+  ];
+  const coverageIntegrity = [
+    ...(evidence.coverage.baseline
+      ? [
+          `- Baseline normalization: ${evidence.coverage.baseline.normalizationStatus}${evidence.coverage.baseline.normalizationReasonCodes.length > 0 ? ` (${evidence.coverage.baseline.normalizationReasonCodes.join(", ")})` : ""}`,
+          `- Baseline target provenance: ${evidence.coverage.baseline.targetProvenanceStatus}`,
+        ]
+      : []),
+    `- Current normalization: ${evidence.coverage.current.normalizationStatus}${evidence.coverage.current.normalizationReasonCodes.length > 0 ? ` (${evidence.coverage.current.normalizationReasonCodes.join(", ")})` : ""}`,
+    `- Current target provenance: ${evidence.coverage.current.targetProvenanceStatus}`,
   ];
   const limitations = evidence.limitations.length > 0
     ? evidence.limitations.map((limitation) => `- ${limitation}`).join("\n")
@@ -372,6 +383,7 @@ function evidenceMarkdown(evidence: EvidenceAssessment): string {
     `- Evidence version: ${evidence.version}`,
     `- Evidence status: ${evidence.status}`,
     ...coverage,
+    ...coverageIntegrity,
     `- Identity: ${evidence.identity.status} (${evidence.identity.uncertainCount} uncertain)`,
     `- Vantage: ${evidence.vantage.kind}`,
     `- Reachability: ${evidence.vantage.externalReachability}`,

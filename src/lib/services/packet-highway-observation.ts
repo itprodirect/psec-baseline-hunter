@@ -149,6 +149,11 @@ export function adaptPacketHighwayCaptureToObservationBundleV1(
       ],
     },
     coverage,
+    normalization: {
+      status: "complete",
+      reasonCodes: [],
+      losses: [],
+    },
     devices: capture.devices
       .filter((device) => device.role !== "broadcast")
       .map((device) => packetDeviceToObservationDevice(device, observedStart, observedEnd)),

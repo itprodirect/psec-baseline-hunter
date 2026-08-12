@@ -34,10 +34,10 @@ Increase personal security by making network risk easier to understand and simpl
 | **Phase 0** | Scaffolding, CI, UI shell | Complete | 2026-01-25 |
 | **Phase 1** | Upload, extraction, parsing | Complete | 2026-01-25 |
 | **Phase 2** | Run registry, demo mode, scorecard | Complete | 2026-01-25 |
-| **Phase 3** | Personalized summaries, persona system | Complete | 2026-01-26 |
+| **Phase 3** | Deterministic evidence summaries, presentation context | Complete | 2026-01-26 |
 | **Phase 4** | Diff with real data | Complete | 2026-01-27 |
 | **Phase 5** | Custom rules, history, CSV export | Complete | 2026-01-27 |
-| **Phase 5.5** | Port impact + executive summaries | Complete | 2026-01-27 |
+| **Phase 5.5** | Evidence-bounded executive summaries + port-impact gate | Complete | 2026-01-27 |
 | **Phase 6** | Hardening and production controls | Not started | - |
 
 ---
@@ -50,13 +50,14 @@ Increase personal security by making network risk easier to understand and simpl
 |---------|--------|-------------|
 | ZIP Upload + Ingest | Working | Drag/drop upload, extraction, run detection |
 | Demo Mode | Working | One-click sample data flow |
-| Health Overview (`/scorecard`) | Working | Single-run metrics, risk ports, summaries |
-| Changes (`/diff`) | Working | Baseline/current selection, computed diff, risk score |
+| Health Overview (`/scorecard`) | Working | Single-run observations, review priorities, and evidence limits |
+| Changes (`/diff`) | Working | Evidence-aware baseline/current comparison without a synthetic safety score |
 | Saved Comparisons | Working | Save, reopen, delete, share by ID |
 | Custom Risk Rules | Working | Network-specific/global overrides and whitelist rules |
-| CSV Export | Working | Scorecard and diff exports (full + watchlist) |
-| Personalized Summaries | Working | LLM-backed summaries with rule-based fallback |
-| Executive Summary + Port Impact | Working | Business framing and real-world port impact context |
+| CSV Export | Working | Scorecard and diff exports (full + review list) |
+| Evidence Summaries | Working | Deterministic server-rendered summaries from recomputed evidence |
+| Executive Summary | Working | Deterministic leadership report with explicit evidence limits |
+| Port Impact | Closed pending evidence | Returns a non-success response until verified external-vantage evidence exists |
 
 ### API Endpoints
 
@@ -73,10 +74,10 @@ Increase personal security by making network risk easier to understand and simpl
 | `/api/comparisons/[comparisonId]` | GET, DELETE | Read/delete one comparison | Working |
 | `/api/rules` | GET, POST | List/create custom risk rules | Working |
 | `/api/rules/[ruleId]` | GET, PUT, DELETE | Manage one custom rule | Working |
-| `/api/llm/scorecard-summary` | POST | Generate scorecard narrative | Working |
-| `/api/llm/diff-summary` | POST | Generate diff narrative | Working |
-| `/api/llm/port-impact` | POST | Generate port impact analysis | Working |
-| `/api/llm/executive-summary` | POST | Generate executive report | Working |
+| `/api/llm/scorecard-summary` | POST | Render an evidence-bounded scorecard report | Working |
+| `/api/llm/diff-summary` | POST | Render an evidence-bounded comparison report | Working |
+| `/api/llm/port-impact` | POST | Require verified external-vantage evidence | Closed (422) |
+| `/api/llm/executive-summary` | POST | Render an evidence-bounded leadership report | Working |
 | `/api/inventory` | GET, POST | List/add known devices by network | Working |
 | `/api/inventory/upload` | POST | Import inventory CSV | Working |
 

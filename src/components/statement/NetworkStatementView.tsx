@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   Download,
@@ -47,6 +47,8 @@ export function NetworkStatementView() {
   const [isLoadingSites, setIsLoadingSites] = useState(true);
   const [isGenerating, setIsGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const statementRequest = useRef(0);
+  const statementController = useRef<AbortController | null>(null);
 
   const sites = useMemo(() => buildSiteOptions(observations), [observations]);
 
@@ -81,37 +83,63 @@ export function NetworkStatementView() {
     setFromDate(offsetDateInput(latestDate, -6));
   }, [selectedSiteId, sites]);
 
+  const invalidateStatement = useCallback(() => {
+    statementRequest.current += 1;
+    statementController.current?.abort();
+    statementController.current = null;
+    setStatement(null);
+    setMarkdown("");
+    setIsGenerating(false);
+  }, []);
+
   const generateStatement = useCallback(async () => {
     if (!selectedSiteId || !fromDate || !toDate) return;
+    const requestId = ++statementRequest.current;
+    statementController.current?.abort();
+    const controller = new AbortController();
+    statementController.current = controller;
     setIsGenerating(true);
     setError(null);
+    setStatement(null);
+    setMarkdown("");
     try {
       const params = new URLSearchParams({
         siteId: selectedSiteId,
         from: fromDate,
         to: toDate,
       });
-      const response = await fetch(`/api/statement?${params.toString()}`);
+      const response = await fetch(`/api/statement?${params.toString()}`, {
+        signal: controller.signal,
+      });
       const result: NetworkStatementResponse = await response.json();
+      if (controller.signal.aborted || requestId !== statementRequest.current) return;
       if (!response.ok || !result.success || !result.statement) {
         throw new Error(result.error || "Statement could not be generated.");
       }
       setStatement(result.statement);
       setMarkdown(result.markdown ?? "");
     } catch (generateError) {
+      if (controller.signal.aborted || requestId !== statementRequest.current) return;
       setStatement(null);
       setMarkdown("");
       setError(generateError instanceof Error ? generateError.message : "Statement could not be generated.");
     } finally {
-      setIsGenerating(false);
+      if (requestId === statementRequest.current) {
+        setIsGenerating(false);
+      }
     }
   }, [fromDate, selectedSiteId, toDate]);
 
   useEffect(() => {
-    if (selectedSiteId && fromDate && toDate && !statement && !isGenerating) {
+    if (selectedSiteId && fromDate && toDate && !statement && !isGenerating && !error) {
       generateStatement();
     }
-  }, [fromDate, generateStatement, isGenerating, selectedSiteId, statement, toDate]);
+  }, [error, fromDate, generateStatement, isGenerating, selectedSiteId, statement, toDate]);
+
+  useEffect(() => () => {
+    statementRequest.current += 1;
+    statementController.current?.abort();
+  }, []);
 
   const selectedSite = sites.find((site) => site.siteId === selectedSiteId) ?? null;
   const canGenerate = Boolean(selectedSiteId && fromDate && toDate && !isGenerating);
@@ -154,6 +182,7 @@ export function NetworkStatementView() {
             <Select
               value={selectedSiteId}
               onValueChange={(value) => {
+                invalidateStatement();
                 setSelectedSiteId(value);
                 const nextSite = sites.find((site) => site.siteId === value);
                 if (nextSite) {
@@ -161,8 +190,7 @@ export function NetworkStatementView() {
                   setToDate(latestDate);
                   setFromDate(offsetDateInput(latestDate, -6));
                 }
-                setStatement(null);
-                setMarkdown("");
+                setError(null);
               }}
               disabled={isLoadingSites || sites.length === 0}
             >
@@ -187,9 +215,9 @@ export function NetworkStatementView() {
               type="date"
               value={fromDate}
               onChange={(event) => {
+                invalidateStatement();
                 setFromDate(event.target.value);
-                setStatement(null);
-                setMarkdown("");
+                setError(null);
               }}
             />
           </div>
@@ -200,9 +228,9 @@ export function NetworkStatementView() {
               type="date"
               value={toDate}
               onChange={(event) => {
+                invalidateStatement();
                 setToDate(event.target.value);
-                setStatement(null);
-                setMarkdown("");
+                setError(null);
               }}
             />
           </div>

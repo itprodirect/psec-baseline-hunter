@@ -8,6 +8,7 @@ import type {
   ObservationIdentityConfidence,
 } from "./observation-comparison";
 import type { ObservationFreshnessStatus } from "./observation-registry";
+import type { EvidenceAssessment } from "./index";
 
 export type NetworkActivitySource = "registry" | "synthetic-guided-scenario";
 
@@ -15,6 +16,7 @@ export type NetworkActivityStatus =
   | "empty"
   | "one-observation"
   | "no-comparison"
+  | "insufficient-evidence"
   | "ready";
 
 export interface NetworkActivityResponse {
@@ -33,6 +35,7 @@ export interface NetworkActivityModel {
   latestObservation: NetworkActivityLatestObservation | null;
   period: NetworkActivityPeriod | null;
   coverage: NetworkActivityCoverage | null;
+  evidence: EvidenceAssessment | null;
   limitations: NetworkActivityLimitation[];
   reviewCount: number;
   events: NetworkActivityEvent[];

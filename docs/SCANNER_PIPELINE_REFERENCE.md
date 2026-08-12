@@ -2,6 +2,8 @@
 
 > This document captures the scan-to-app workflow so AI assistants can understand the pipeline without re-learning context.
 
+> The product-direction section is a historical planning reference. Active Scorecard, Diff, and executive summaries are deterministic and evidence-bounded; they do not use free-form provider prose.
+
 ---
 
 ## Overview

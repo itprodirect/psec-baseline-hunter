@@ -3,6 +3,8 @@
 **Last Updated:** 2026-01-26
 **Purpose:** Comprehensive guide to understanding, using, and extending PSEC Baseline Hunter
 
+> Historical planning snapshot. Current product behavior is documented in `README.md` and `docs/PROJECT_STATUS.md`. Provider-generated and personalized-summary claims below are not descriptions of the active evidence-sensitive Scorecard, Diff, or executive-summary paths; those paths now use deterministic, server-recomputed evidence renderers.
+
 ---
 
 ## Table of Contents

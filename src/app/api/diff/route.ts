@@ -39,6 +39,22 @@ function comparisonErrorResponse(error: { code: string }) {
         code: "comparison_incompatible_scan",
         error: "The selected observations were not produced by compatible scan types.",
       };
+    case "incompatible-vantage":
+    case "incompatible-collector":
+    case "unknown-vantage":
+    case "unknown-collector":
+      return {
+        code: "comparison_incompatible_vantage",
+        error: "The selected observations do not contain compatible collection-vantage evidence.",
+      };
+    case "incompatible-target-provenance":
+    case "unknown-target-provenance":
+      return {
+        code: "comparison_incompatible_scope",
+        error: "The selected observations do not contain compatible target-coverage evidence.",
+      };
+    case "overlapping-collection-intervals":
+    case "unknown-collection-interval":
     case "invalid-chronology":
       return {
         code: "comparison_invalid_chronology",

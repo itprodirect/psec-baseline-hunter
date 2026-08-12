@@ -9,11 +9,13 @@
     "keyFiles": {
       "discovery": ["discovery_ping_sweep.xml"],
       "hosts_up": ["hosts_up.txt"],
-      "ports": ["ports_top200_open.xml"]
+      "ports": ["ports_top200_open.xml"],
+      "snapshots": ["arp_cache.txt"],
+      "other": ["scan_metadata.json"]
     },
     "contentHash": "demo-baseline-hash",
     "stats": {
-      "keyFileCount": 3,
+      "keyFileCount": 5,
       "hasPortsScan": true,
       "hasHostsUp": true,
       "hasDiscovery": true
@@ -31,11 +33,13 @@
     "keyFiles": {
       "discovery": ["discovery_ping_sweep.xml"],
       "hosts_up": ["hosts_up.txt"],
-      "ports": ["ports_top200_open.xml"]
+      "ports": ["ports_top200_open.xml"],
+      "snapshots": ["arp_cache.txt"],
+      "other": ["scan_metadata.json"]
     },
     "contentHash": "demo-current-hash",
     "stats": {
-      "keyFileCount": 3,
+      "keyFileCount": 5,
       "hasPortsScan": true,
       "hasHostsUp": true,
       "hasDiscovery": true
@@ -83,18 +87,22 @@
     ],
     "evidence": {
       "version": "psec.evidence.v1",
-      "status": "insufficient-evidence",
-      "reasonCodes": ["partial-coverage", "external-reachability-not-established"],
+      "status": "supported",
+      "reasonCodes": ["external-reachability-not-established"],
       "coverage": {
         "current": {
-          "status": "partial",
-          "score": 0.8,
-          "partial": true,
+          "status": "complete",
+          "score": 1,
+          "partial": false,
           "deviceCount": 47,
-          "scopeKnown": false,
+          "scopeKnown": true,
           "expectedSources": ["ports", "discovery", "hosts_up", "arp_snapshot", "scan_metadata"],
-          "presentSources": ["ports", "discovery", "hosts_up"],
-          "missingSources": ["arp_snapshot", "scan_metadata"]
+          "presentSources": ["ports", "discovery", "hosts_up", "arp_snapshot", "scan_metadata"],
+          "missingSources": [],
+          "normalizationStatus": "complete",
+          "normalizationReasonCodes": [],
+          "coverageReasonCodes": [],
+          "targetProvenanceStatus": "verified"
         }
       },
       "identity": { "status": "not-applicable", "uncertainCount": 0 },
@@ -111,11 +119,12 @@
         "llmSummary": false
       },
       "limitations": [
-        "Coverage is partial because ARP and scan metadata sources are missing.",
+        "This is a complete synthetic demonstration, not evidence about a real network.",
+        "Demo observations do not invoke generated-summary or persistence endpoints.",
         "The scan vantage was not independently verified; reachability beyond that vantage is not established."
       ]
     },
-    "summary": "Partial evidence recorded 47 hosts and 156 open ports. Two observed services requiring review were produced by the configured classification policy; completeness beyond the recorded observations is not established."
+    "summary": "This complete synthetic observation records 47 devices and 156 open services. Two P0/P1-classified service observations require review; the classifications do not establish external reachability or overall safety."
   },
   "currentScorecard": {
     "runUid": "demo-network_2025-01-22T09-00-00_baselinekit-v0_demo-current",
@@ -165,18 +174,22 @@
     ],
     "evidence": {
       "version": "psec.evidence.v1",
-      "status": "insufficient-evidence",
-      "reasonCodes": ["partial-coverage", "external-reachability-not-established"],
+      "status": "supported",
+      "reasonCodes": ["external-reachability-not-established"],
       "coverage": {
         "current": {
-          "status": "partial",
-          "score": 0.8,
-          "partial": true,
+          "status": "complete",
+          "score": 1,
+          "partial": false,
           "deviceCount": 52,
-          "scopeKnown": false,
+          "scopeKnown": true,
           "expectedSources": ["ports", "discovery", "hosts_up", "arp_snapshot", "scan_metadata"],
-          "presentSources": ["ports", "discovery", "hosts_up"],
-          "missingSources": ["arp_snapshot", "scan_metadata"]
+          "presentSources": ["ports", "discovery", "hosts_up", "arp_snapshot", "scan_metadata"],
+          "missingSources": [],
+          "normalizationStatus": "complete",
+          "normalizationReasonCodes": [],
+          "coverageReasonCodes": [],
+          "targetProvenanceStatus": "verified"
         }
       },
       "identity": { "status": "not-applicable", "uncertainCount": 0 },
@@ -193,11 +206,12 @@
         "llmSummary": false
       },
       "limitations": [
-        "Coverage is partial because ARP and scan metadata sources are missing.",
+        "This is a complete synthetic demonstration, not evidence about a real network.",
+        "Demo observations do not invoke generated-summary or persistence endpoints.",
         "The scan vantage was not independently verified; reachability beyond that vantage is not established."
       ]
     },
-    "summary": "Partial evidence recorded 52 hosts and 189 open ports. Three observed services requiring review were produced by the configured classification policy; completeness beyond the recorded observations is not established."
+    "summary": "This complete synthetic observation records 52 devices and 189 open services. Three P0/P1-classified service observations require review; the classifications do not establish external reachability or overall safety."
   },
   "diff": {
     "baselineRunUid": "demo-network_2025-01-15T09-00-00_baselinekit-v0_demo-baseline",
@@ -205,62 +219,91 @@
     "baselineTimestamp": "2025-01-15T09:00:00.000Z",
     "currentTimestamp": "2025-01-22T09:00:00.000Z",
     "network": "demo-network",
-    "newHosts": [],
-    "removedHosts": [],
-    "identityUncertain": [
+    "newHosts": [
       {
-        "confidence": "low",
-        "summary": "The available locator-only evidence cannot establish device continuity across these observations."
+        "ip": "192.168.1.104",
+        "hostname": "visitor-tablet.demo",
+        "changeType": "added"
       }
     ],
-    "portsOpened": [],
+    "removedHosts": [],
+    "identityUncertain": [],
+    "portsOpened": [
+      {
+        "ip": "192.168.1.50",
+        "hostname": "fileserver.demo",
+        "port": 3389,
+        "protocol": "tcp",
+        "service": "ms-wbt-server",
+        "changeType": "opened",
+        "risk": "P0"
+      }
+    ],
     "portsClosed": [],
-    "riskFindings": [],
+    "riskFindings": [
+      {
+        "ip": "192.168.1.50",
+        "hostname": "fileserver.demo",
+        "port": 3389,
+        "protocol": "tcp",
+        "service": "ms-wbt-server",
+        "changeType": "opened",
+        "risk": "P0"
+      }
+    ],
     "evidence": {
       "version": "psec.evidence.v1",
-      "status": "insufficient-evidence",
-      "reasonCodes": ["partial-coverage", "identity-uncertain", "external-reachability-not-established"],
+      "status": "supported",
+      "reasonCodes": ["external-reachability-not-established"],
       "coverage": {
         "baseline": {
-          "status": "partial",
-          "score": 0.8,
-          "partial": true,
+          "status": "complete",
+          "score": 1,
+          "partial": false,
           "deviceCount": 47,
-          "scopeKnown": false,
+          "scopeKnown": true,
           "expectedSources": ["ports", "discovery", "hosts_up", "arp_snapshot", "scan_metadata"],
-          "presentSources": ["ports", "discovery", "hosts_up"],
-          "missingSources": ["arp_snapshot", "scan_metadata"]
+          "presentSources": ["ports", "discovery", "hosts_up", "arp_snapshot", "scan_metadata"],
+          "missingSources": [],
+          "normalizationStatus": "complete",
+          "normalizationReasonCodes": [],
+          "coverageReasonCodes": [],
+          "targetProvenanceStatus": "verified"
         },
         "current": {
-          "status": "partial",
-          "score": 0.8,
-          "partial": true,
+          "status": "complete",
+          "score": 1,
+          "partial": false,
           "deviceCount": 52,
-          "scopeKnown": false,
+          "scopeKnown": true,
           "expectedSources": ["ports", "discovery", "hosts_up", "arp_snapshot", "scan_metadata"],
-          "presentSources": ["ports", "discovery", "hosts_up"],
-          "missingSources": ["arp_snapshot", "scan_metadata"]
+          "presentSources": ["ports", "discovery", "hosts_up", "arp_snapshot", "scan_metadata"],
+          "missingSources": [],
+          "normalizationStatus": "complete",
+          "normalizationReasonCodes": [],
+          "coverageReasonCodes": [],
+          "targetProvenanceStatus": "verified"
         }
       },
-      "identity": { "status": "uncertain", "uncertainCount": 1 },
+      "identity": { "status": "supported", "uncertainCount": 0 },
       "vantage": {
         "kind": "unverified-scan-vantage",
         "externalReachability": "not-established"
       },
       "supports": {
-        "deviceAbsence": false,
-        "portClosure": false,
+        "deviceAbsence": true,
+        "portClosure": true,
         "stableBaseline": false,
         "externalReachability": false,
         "comparisonPersistence": false,
         "llmSummary": false
       },
       "limitations": [
-        "Both observations have partial coverage because ARP and scan metadata sources are missing.",
-        "Network locators alone do not establish device continuity across observations.",
+        "This is a complete synthetic demonstration, not evidence about a real network.",
+        "Demo comparisons do not invoke generated-summary or persistence endpoints.",
         "The scan vantage was not independently verified; reachability beyond that vantage is not established."
       ]
     },
-    "summary": "This comparison has insufficient evidence because both observations have partial coverage and device continuity is uncertain. Device-absence, service-addition, service-closure, and comparison review-list conclusions were not evaluated; use the current Scorecard for bounded current-run service observations."
+    "summary": "This complete synthetic comparison supports one device-addition and one service-addition finding. The P0 classification marks the observed service for review; it does not establish external reachability, compromise, or overall safety."
   }
 }

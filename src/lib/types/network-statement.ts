@@ -1,4 +1,5 @@
 import type { DeviceResponseState } from "./device-response";
+import type { EvidenceAssessment } from "./index";
 
 export type NetworkStatementSchemaVersion = "psec.network-statement.v1";
 
@@ -80,6 +81,7 @@ export interface NetworkStatementModel {
   generatedAt: string;
   site: NetworkStatementSite;
   selectedPeriod: NetworkStatementSelectedPeriod;
+  evidence: EvidenceAssessment;
   coverageSummary: NetworkStatementCoverageSummary;
   privacy: NetworkStatementPrivacySummary;
   sections: NetworkStatementSection[];

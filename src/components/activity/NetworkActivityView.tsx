@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { ElementType, ReactNode } from "react";
 import {
   Activity,
@@ -56,15 +56,26 @@ export function NetworkActivityView() {
   const [mode, setMode] = useState<ActivityMode>("latest");
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const activityRequest = useRef(0);
+  const activityController = useRef<AbortController | null>(null);
+  const desiredMode = useRef<ActivityMode>("latest");
 
   const loadActivity = useCallback(async (nextMode: ActivityMode) => {
+    desiredMode.current = nextMode;
+    const requestId = ++activityRequest.current;
+    activityController.current?.abort();
+    const controller = new AbortController();
+    activityController.current = controller;
     setIsLoading(true);
     setError(null);
+    setActivity(null);
     try {
       const response = await fetch(
-        nextMode === "guided" ? "/api/activity?scenario=guided" : "/api/activity"
+        nextMode === "guided" ? "/api/activity?scenario=guided" : "/api/activity",
+        { signal: controller.signal }
       );
       const result: NetworkActivityResponse = await response.json();
+      if (controller.signal.aborted || requestId !== activityRequest.current) return;
       if (result.success && result.activity) {
         setActivity(result.activity);
         setMode(nextMode);
@@ -73,35 +84,48 @@ export function NetworkActivityView() {
         setError(result.error || "Network activity could not be loaded.");
       }
     } catch {
+      if (controller.signal.aborted || requestId !== activityRequest.current) return;
       setActivity(null);
       setError("Network activity could not be loaded. Try again from this page.");
     } finally {
-      setIsLoading(false);
+      if (requestId === activityRequest.current) {
+        setIsLoading(false);
+      }
     }
   }, []);
 
   const saveDeviceResponse = useCallback(
     async (
+      eventId: string,
       target: DeviceResponseTarget,
       state: DeviceResponseState,
       friendlyName: string
     ) => {
+      const requestAtMutationStart = activityRequest.current;
+      const modeAtMutationStart = desiredMode.current;
       const response = await fetch("/api/activity/device-response", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ target, state, friendlyName }),
+        body: JSON.stringify({ eventId, target, state, friendlyName }),
       });
       const result: DeviceResponseApiResponse = await response.json();
       if (!response.ok || !result.success) {
         throw new Error(result.error || "Device response could not be saved.");
       }
-      await loadActivity(mode);
+      if (
+        requestAtMutationStart === activityRequest.current &&
+        modeAtMutationStart === desiredMode.current
+      ) {
+        await loadActivity(modeAtMutationStart);
+      }
     },
-    [loadActivity, mode]
+    [loadActivity]
   );
 
   const clearDeviceResponse = useCallback(
     async (target: DeviceResponseTarget) => {
+      const requestAtMutationStart = activityRequest.current;
+      const modeAtMutationStart = desiredMode.current;
       const response = await fetch("/api/activity/device-response", {
         method: "DELETE",
         headers: { "content-type": "application/json" },
@@ -111,13 +135,22 @@ export function NetworkActivityView() {
       if (!response.ok || !result.success) {
         throw new Error(result.error || "Device response could not be cleared.");
       }
-      await loadActivity(mode);
+      if (
+        requestAtMutationStart === activityRequest.current &&
+        modeAtMutationStart === desiredMode.current
+      ) {
+        await loadActivity(modeAtMutationStart);
+      }
     },
-    [loadActivity, mode]
+    [loadActivity]
   );
 
   useEffect(() => {
     loadActivity("latest");
+    return () => {
+      activityRequest.current += 1;
+      activityController.current?.abort();
+    };
   }, [loadActivity]);
 
   return (
@@ -433,6 +466,7 @@ function EventTimeline({
 }: {
   activity: NetworkActivityModel;
   onSaveResponse: (
+    eventId: string,
     target: DeviceResponseTarget,
     state: DeviceResponseState,
     friendlyName: string
@@ -453,13 +487,24 @@ function EventTimeline({
   }
 
   if (activity.events.length === 0) {
+    const stabilitySupported = Boolean(activity.evidence?.supports.stableBaseline);
     return (
       <Card>
         <CardContent className="py-10 text-center">
-          <CheckCircle2 className="mx-auto h-8 w-8 text-green-600" />
-          <p className="mt-3 font-medium">No meaningful changes found</p>
+          {stabilitySupported ? (
+            <CheckCircle2 className="mx-auto h-8 w-8 text-green-600" />
+          ) : (
+            <AlertTriangle className="mx-auto h-8 w-8 text-amber-600" />
+          )}
+          <p className="mt-3 font-medium">
+            {stabilitySupported
+              ? "No meaningful changes found"
+              : "No supported change events listed"}
+          </p>
           <p className="mx-auto mt-2 max-w-xl text-sm text-muted-foreground">
-            The comparison did not produce change events. This is limited to the coverage, freshness, and sources shown above.
+            {stabilitySupported
+              ? "The comparison did not produce change events. This is limited to the coverage, freshness, and sources shown above."
+              : "The available evidence does not support treating an empty event list as a stable or no-change conclusion."}
           </p>
         </CardContent>
       </Card>
@@ -498,6 +543,7 @@ function EventCard({
   event: NetworkActivityEvent;
   responsesEnabled: boolean;
   onSaveResponse: (
+    eventId: string,
     target: DeviceResponseTarget,
     state: DeviceResponseState,
     friendlyName: string
@@ -607,6 +653,7 @@ function DeviceResponseControls({
   event: NetworkActivityEvent;
   enabled: boolean;
   onSaveResponse: (
+    eventId: string,
     target: DeviceResponseTarget,
     state: DeviceResponseState,
     friendlyName: string
@@ -631,7 +678,7 @@ function DeviceResponseControls({
     setPendingState(state);
     setError(null);
     try {
-      await onSaveResponse(target, state, friendlyName);
+      await onSaveResponse(event.eventId, target, state, friendlyName);
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : "Device response could not be saved.");
     } finally {
@@ -769,6 +816,7 @@ function stateTitle(status: NetworkActivityModel["status"]): string {
     empty: "No observations yet",
     "one-observation": "One observation available",
     "no-comparison": "No useful comparison yet",
+    "insufficient-evidence": "Insufficient comparison evidence",
     ready: "Latest useful comparison",
   };
   return titles[status];

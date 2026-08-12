@@ -5,6 +5,10 @@
 
 // Import and re-export UserProfile for use in API types
 import type { UserProfile } from "./userProfile";
+import type {
+  ObservationCoverageReasonCode,
+  ObservationNormalizationReasonCode,
+} from "./observation-bundle";
 export type { UserProfile };
 export type * from "./observation-bundle";
 export type * from "./observation-registry";
@@ -183,6 +187,13 @@ export type EvidenceReasonCode =
   | "partial-coverage"
   | "empty-observation"
   | "identity-uncertain"
+  | "identity-conflict"
+  | "normalization-truncated"
+  | "coverage-provenance-unknown"
+  | "coverage-provenance-conflicting"
+  | "collection-interval-incompatible"
+  | "vantage-incompatible"
+  | "comparison-incompatible"
   | "external-reachability-not-established";
 
 export interface EvidenceCoverageSnapshot {
@@ -194,6 +205,10 @@ export interface EvidenceCoverageSnapshot {
   expectedSources: string[];
   presentSources: string[];
   missingSources: string[];
+  normalizationStatus: "complete" | "truncated";
+  normalizationReasonCodes: ObservationNormalizationReasonCode[];
+  coverageReasonCodes: ObservationCoverageReasonCode[];
+  targetProvenanceStatus: "verified" | "unverified" | "conflicting";
 }
 
 export interface EvidenceAssessment {
@@ -205,7 +220,7 @@ export interface EvidenceAssessment {
     current: EvidenceCoverageSnapshot;
   };
   identity: {
-    status: "not-applicable" | "supported" | "uncertain";
+    status: "not-applicable" | "supported" | "uncertain" | "conflicting";
     uncertainCount: number;
   };
   vantage: {
@@ -412,69 +427,6 @@ export interface ComparisonResponse {
   success: boolean;
   comparison?: SavedComparison;
   comparisons?: SavedComparison[];
-  error?: string;
-}
-
-// ============================================================================
-// Real-World Impact Cards (Phase 5.5)
-// ============================================================================
-
-/**
- * A real-world breach example for a port
- */
-export interface BreachExample {
-  headline: string;          // Brief incident description
-  company?: string;          // Company name (if public)
-  year: number;              // Year of breach
-  cost?: string;             // Financial impact (e.g., "$5M fine")
-}
-
-/**
- * Real-world impact data for a port
- */
-export interface PortImpactData {
-  port: number;
-  protocol: string;
-  service: string;
-  severity: "Critical" | "High";          // Simplified for UI
-  attackScenario: string;                 // 2-3 sentences on how attacks happen
-  breachExamples: BreachExample[];        // 1-2 real incidents
-  financialImpact: {
-    avgBreachCost: string;                // e.g., "$4.5M average"
-    recoveryTime: string;                 // e.g., "200-280 days"
-    potentialFines?: string;              // e.g., "$50K-$1.5M" (if HIPAA/PCI)
-  };
-  quickFix: string;                       // 1-2 sentence action
-}
-
-/**
- * Cached port impact with TTL
- */
-export interface PortImpactCacheEntry {
-  data: PortImpactData;
-  cachedAt: string;         // ISO timestamp
-  expiresAt: string;        // ISO timestamp (cachedAt + 30 days)
-}
-
-/**
- * API request for port impact
- */
-export interface PortImpactRequest {
-  port: number;
-  protocol: string;
-  service: string;
-  userProfile?: UserProfile;        // Optional UserProfile for context-aware content
-}
-
-/**
- * API response for port impact
- */
-export interface PortImpactResponse {
-  success: boolean;
-  impact?: PortImpactData;
-  provider?: string;
-  isRuleBased?: boolean;
-  isCached?: boolean;
   error?: string;
 }
 

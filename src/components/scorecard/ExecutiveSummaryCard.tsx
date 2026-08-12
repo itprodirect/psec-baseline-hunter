@@ -163,7 +163,7 @@ export function ExecutiveSummaryCard({ scorecardData }: ExecutiveSummaryCardProp
             {/* Info Text */}
             {!profile && (
               <p className="text-xs text-muted-foreground">
-                Requires your profile to tailor the report to your industry and role.
+                Requires a profile so the deterministic report can record its intended audience and presentation context.
               </p>
             )}
           </div>

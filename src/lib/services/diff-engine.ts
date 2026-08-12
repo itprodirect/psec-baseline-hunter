@@ -17,14 +17,11 @@ import type {
 import { getEffectivePortRisk, getPortRisk } from "@/lib/constants/risk-ports";
 import { getRunByUid } from "./run-registry";
 import { adaptRunManifestToObservationBundleV1 } from "./observation-bundle";
+import { observationDeviceCoversPort } from "./evidence-policy";
 import {
-  compareObservationBundlesV1,
-  isObservationComparisonError,
-} from "./observation-comparison";
-import {
-  buildDiffEvidenceAssessment,
-  observationDeviceCoversPort,
-} from "./evidence-policy";
+  evaluateEvidenceAwareComparison,
+  type EvidenceAwareComparisonFailureCode,
+} from "./evidence-aware-comparison";
 
 export const AMBIGUOUS_RUN_COMPARISON_ERROR =
   "baselineRunUid and currentRunUid are ambiguous because both runs are from the same network and minute";
@@ -35,6 +32,14 @@ export type DiffComparisonErrorCode =
   | "different-networks"
   | "conflicting-network-scope"
   | "incompatible-run-type"
+  | "incompatible-vantage"
+  | "incompatible-collector"
+  | "incompatible-target-provenance"
+  | "unknown-vantage"
+  | "unknown-collector"
+  | "unknown-target-provenance"
+  | "unknown-collection-interval"
+  | "overlapping-collection-intervals"
   | "invalid-chronology"
   | "ambiguous-comparison";
 
@@ -78,36 +83,22 @@ export function buildDiffFromObservationBundles(
   current: ObservationBundleV1,
   options: BuildDiffOptions = {}
 ): DiffData {
-  validateComparisonCompatibility(baseline, current);
-
-  let comparison;
-  try {
-    comparison = compareObservationBundlesV1(baseline, current);
-  } catch (error) {
-    if (!isObservationComparisonError(error)) throw error;
-
-    if (error.code === "different_sites") {
-      throw new DiffComparisonError(
-        "different-sites",
-        "Comparison requires observations from the same registered site."
-      );
-    }
-    if (error.code === "ambiguous_comparison" || error.code === "identical_observations") {
-      throw new DiffComparisonError("ambiguous-comparison", AMBIGUOUS_RUN_COMPARISON_ERROR);
-    }
+  const evaluation = evaluateEvidenceAwareComparison(baseline, current);
+  if (evaluation.outcome === "rejected" || !evaluation.comparison) {
+    const failure = evaluation.failure;
+    const code = mapEvidenceAwareErrorCode(failure?.code ?? "ambiguous-comparison");
     throw new DiffComparisonError(
-      "invalid-chronology",
-      "Comparison requires an earlier baseline and a later current observation."
+      code,
+      code === "ambiguous-comparison"
+        ? AMBIGUOUS_RUN_COMPARISON_ERROR
+        : failure?.message ?? "Comparison evidence is incompatible."
     );
   }
+  const comparison = evaluation.comparison;
 
   const uncertainEvents = comparison.events.filter(isIdentityUncertainEvent);
   const identityUncertain = uncertainEvents.map(toIdentityUncertainChange);
-  const evidence = buildDiffEvidenceAssessment(
-    baseline,
-    current,
-    identityUncertain.length
-  );
+  const evidence = evaluation.evidence;
   const riskResolver = options.riskResolver ?? staticRiskResolver;
 
   const baselineSupportsNewness =
@@ -254,76 +245,26 @@ export function getDiffComparisonGuardrailError(
   }
 }
 
-function validateComparisonCompatibility(
-  baseline: ObservationBundleV1,
-  current: ObservationBundleV1
-): void {
-  const baselineNetwork = normalizeValue(baseline.site.networkName);
-  const currentNetwork = normalizeValue(current.site.networkName);
-  const baselineSite = normalizeValue(baseline.site.siteId);
-  const currentSite = normalizeValue(current.site.siteId);
-
-  if (
-    isUnknownIdentifier(baselineNetwork) ||
-    isUnknownIdentifier(currentNetwork) ||
-    isUnknownIdentifier(baselineSite) ||
-    isUnknownIdentifier(currentSite)
-  ) {
-    throw new DiffComparisonError(
-      "unknown-site",
-      "Comparison requires known network and site identifiers."
-    );
-  }
-  if (baselineNetwork !== currentNetwork) {
-    throw new DiffComparisonError(
-      "different-networks",
-      "Comparison requires observations from the same registered network."
-    );
-  }
-  if (baselineSite !== currentSite) {
-    throw new DiffComparisonError(
-      "different-sites",
-      "Comparison requires observations from the same registered site."
-    );
-  }
-
-  const baselineRunType = normalizeOptionalValue(baseline.vantage.runType);
-  const currentRunType = normalizeOptionalValue(current.vantage.runType);
-  if (
-    !baselineRunType ||
-    !currentRunType ||
-    isUnknownIdentifier(baselineRunType) ||
-    isUnknownIdentifier(currentRunType) ||
-    baselineRunType !== currentRunType
-  ) {
-    throw new DiffComparisonError(
-      "incompatible-run-type",
-      "Comparison requires observations produced by compatible scan run types."
-    );
-  }
-
-  const baselineScope = normalizeOptionalValue(baseline.site.networkScope);
-  const currentScope = normalizeOptionalValue(current.site.networkScope);
-  if (baselineScope && currentScope && baselineScope !== currentScope) {
-    throw new DiffComparisonError(
-      "conflicting-network-scope",
-      "Comparison requires compatible registered network scope evidence."
-    );
-  }
-
-  const baselineTime = observationTimeMs(baseline);
-  const currentTime = observationTimeMs(current);
-  if (baselineTime === null || currentTime === null || baselineTime > currentTime) {
-    throw new DiffComparisonError(
-      "invalid-chronology",
-      "Comparison requires an earlier baseline and a later current observation."
-    );
-  }
-  if (
-    baseline.observationId === current.observationId ||
-    Math.floor(baselineTime / 60_000) === Math.floor(currentTime / 60_000)
-  ) {
-    throw new DiffComparisonError("ambiguous-comparison", AMBIGUOUS_RUN_COMPARISON_ERROR);
+function mapEvidenceAwareErrorCode(
+  code: EvidenceAwareComparisonFailureCode
+): DiffComparisonErrorCode {
+  switch (code) {
+    case "unknown-site":
+    case "different-sites":
+    case "different-networks":
+    case "conflicting-network-scope":
+    case "incompatible-run-type":
+    case "incompatible-vantage":
+    case "incompatible-collector":
+    case "incompatible-target-provenance":
+    case "unknown-vantage":
+    case "unknown-collector":
+    case "unknown-target-provenance":
+    case "unknown-collection-interval":
+    case "overlapping-collection-intervals":
+    case "invalid-chronology":
+    case "ambiguous-comparison":
+      return code;
   }
 }
 
@@ -404,30 +345,10 @@ function observedAt(bundle: ObservationBundleV1): string {
     bundle.batch.generatedAt;
 }
 
-function observationTimeMs(bundle: ObservationBundleV1): number | null {
-  const iso = firstValidIso(bundle.batch.endedAt) ??
-    firstValidIso(bundle.batch.startedAt) ??
-    firstValidIso(bundle.batch.generatedAt);
-  return iso ? Date.parse(iso) : null;
-}
-
 function firstValidIso(value: string | null): string | null {
   if (!value) return null;
   const time = Date.parse(value);
   return Number.isNaN(time) ? null : new Date(time).toISOString();
-}
-
-function normalizeValue(value: string): string {
-  return value.trim().toLowerCase();
-}
-
-function normalizeOptionalValue(value: string | null): string | null {
-  const normalized = value?.trim().toLowerCase() ?? "";
-  return normalized || null;
-}
-
-function isUnknownIdentifier(value: string): boolean {
-  return !value || value === "unknown" || value.endsWith("-unknown");
 }
 
 function generateDiffSummary(counts: {

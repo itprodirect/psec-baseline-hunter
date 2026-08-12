@@ -16,14 +16,19 @@ const VANTAGE_LIMITATION =
 export function buildEvidenceCoverageSnapshot(
   bundle: ObservationBundleV1
 ): EvidenceCoverageSnapshot {
-  const scopeKnown = Boolean(bundle.site.networkScope?.trim());
+  const normalizationStatus = bundle.normalization?.status ?? "truncated";
+  const targetProvenanceStatus = bundle.coverage.targetProvenance?.status ?? "unverified";
+  const scopeKnown =
+    Boolean(bundle.site.networkScope?.trim()) && targetProvenanceStatus === "verified";
   const devicePortCoverageComplete = hasPerDevicePortCoverage(bundle);
   const partial =
     bundle.batch.partial === true ||
     bundle.coverage.status !== "complete" ||
     bundle.coverage.missingSources.length > 0 ||
     !scopeKnown ||
-    !devicePortCoverageComplete;
+    !devicePortCoverageComplete ||
+    normalizationStatus !== "complete" ||
+    (bundle.coverage.reasonCodes?.length ?? 0) > 0;
 
   return {
     status:
@@ -37,6 +42,10 @@ export function buildEvidenceCoverageSnapshot(
     expectedSources: [...bundle.coverage.expectedSources],
     presentSources: [...bundle.coverage.presentSources],
     missingSources: [...bundle.coverage.missingSources],
+    normalizationStatus,
+    normalizationReasonCodes: [...(bundle.normalization?.reasonCodes ?? [])],
+    coverageReasonCodes: [...(bundle.coverage.reasonCodes ?? [])],
+    targetProvenanceStatus,
   };
 }
 
@@ -135,6 +144,8 @@ export function buildScorecardEvidenceAssessment(
 ): EvidenceAssessment {
   const currentCoverage = buildEvidenceCoverageSnapshot(current);
   const empty = currentCoverage.deviceCount === 0;
+  const identityStatus = bundleIdentityStatus(current);
+  const identityUnsupported = identityStatus !== "supported";
   const insufficient = currentCoverage.partial || empty;
   const reasonCodes: EvidenceReasonCode[] = [];
   const limitations: string[] = [];
@@ -151,17 +162,28 @@ export function buildScorecardEvidenceAssessment(
       "The observation contains no devices; it cannot establish device absence or overall network security."
     );
   }
+  appendIntegrityReasonCodes(currentCoverage, reasonCodes, limitations, "The observation");
+  if (identityUnsupported) {
+    reasonCodes.push(
+      identityStatus === "conflicting" ? "identity-conflict" : "identity-uncertain"
+    );
+    limitations.push(
+      identityStatus === "conflicting"
+        ? "Conflicting device identifiers were preserved without merging; device continuity and absence conclusions are unsupported."
+        : "Device identity evidence is weak or locator-only; persistent device identity was not established."
+    );
+  }
   reasonCodes.push("external-reachability-not-established");
   limitations.push(VANTAGE_LIMITATION);
 
   return {
     version: EVIDENCE_VERSION,
-    status: insufficient ? "insufficient-evidence" : "supported",
+    status: insufficient ? "insufficient-evidence" : identityUnsupported ? "uncertain" : "supported",
     reasonCodes,
     coverage: { current: currentCoverage },
     identity: {
-      status: "not-applicable",
-      uncertainCount: 0,
+      status: identityUnsupported ? identityStatus : "not-applicable",
+      uncertainCount: identityUnsupported ? 1 : 0,
     },
     vantage: {
       kind: "unverified-scan-vantage",
@@ -173,7 +195,7 @@ export function buildScorecardEvidenceAssessment(
       stableBaseline: false,
       externalReachability: false,
       comparisonPersistence: false,
-      llmSummary: !insufficient,
+      llmSummary: !insufficient && !identityUnsupported,
     },
     limitations,
   };
@@ -195,9 +217,15 @@ export function buildDiffEvidenceAssessment(
   }
   const coverageInsufficient = baselineCoverage.partial || currentCoverage.partial || empty;
   const identityUncertain = identityUncertainCount > 0;
+  const baselineIdentity = bundleIdentityStatus(baseline);
+  const currentIdentity = bundleIdentityStatus(current);
+  const identityConflict =
+    baselineIdentity === "conflicting" || currentIdentity === "conflicting";
+  const bundleIdentityUncertain =
+    baselineIdentity !== "supported" || currentIdentity !== "supported";
   const status = coverageInsufficient
     ? "insufficient-evidence"
-    : identityUncertain
+    : identityUncertain || bundleIdentityUncertain
       ? "uncertain"
       : "supported";
   const reasonCodes: EvidenceReasonCode[] = [];
@@ -221,6 +249,29 @@ export function buildDiffEvidenceAssessment(
       `${identityUncertainCount} device identity relationship${identityUncertainCount === 1 ? " remains" : "s remain"} uncertain.`
     );
   }
+  appendIntegrityReasonCodes(
+    baselineCoverage,
+    reasonCodes,
+    limitations,
+    "The baseline observation"
+  );
+  appendIntegrityReasonCodes(
+    currentCoverage,
+    reasonCodes,
+    limitations,
+    "The current observation"
+  );
+  if (identityConflict) {
+    reasonCodes.push("identity-conflict");
+    limitations.push(
+      "At least one observation contains conflicting identifiers; continuity, absence, and closure conclusions are unsupported."
+    );
+  } else if (bundleIdentityUncertain && !identityUncertain) {
+    reasonCodes.push("identity-uncertain");
+    limitations.push(
+      "At least one observation contains weak or locator-only identity evidence; persistent continuity was not established."
+    );
+  }
   reasonCodes.push("external-reachability-not-established");
   limitations.push(VANTAGE_LIMITATION);
 
@@ -235,8 +286,12 @@ export function buildDiffEvidenceAssessment(
       current: currentCoverage,
     },
     identity: {
-      status: identityUncertain ? "uncertain" : "supported",
-      uncertainCount: identityUncertainCount,
+      status: identityConflict
+        ? "conflicting"
+        : identityUncertain || bundleIdentityUncertain
+          ? "uncertain"
+          : "supported",
+      uncertainCount: Math.max(identityUncertainCount, bundleIdentityUncertain ? 1 : 0),
     },
     vantage: {
       kind: "unverified-scan-vantage",
@@ -252,4 +307,33 @@ export function buildDiffEvidenceAssessment(
     },
     limitations,
   };
+}
+
+function bundleIdentityStatus(
+  bundle: ObservationBundleV1
+): "supported" | "uncertain" | "conflicting" {
+  return bundle.identity?.status ?? "uncertain";
+}
+
+function appendIntegrityReasonCodes(
+  coverage: EvidenceCoverageSnapshot,
+  reasonCodes: EvidenceReasonCode[],
+  limitations: string[],
+  subject: string
+): void {
+  if (coverage.normalizationStatus === "truncated") {
+    reasonCodes.push("normalization-truncated");
+    limitations.push(
+      `${subject} lost evidence at a normalization boundary (${coverage.normalizationReasonCodes.join(", ") || "unspecified truncation"}); negative, stability, persistence, and summary conclusions are disabled.`
+    );
+  }
+  if (coverage.targetProvenanceStatus === "conflicting") {
+    reasonCodes.push("coverage-provenance-conflicting");
+    limitations.push(
+      `${subject} has conflicting declared and observed collection targets.`
+    );
+  } else if (coverage.targetProvenanceStatus !== "verified") {
+    reasonCodes.push("coverage-provenance-unknown");
+    limitations.push(`${subject} does not have verified target-scope provenance.`);
+  }
 }

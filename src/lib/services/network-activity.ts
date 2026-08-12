@@ -1,7 +1,7 @@
 import {
-  compareObservationBundlesV1,
-  isObservationComparisonError,
-} from "./observation-comparison";
+  evaluateEvidenceAwareComparison,
+  type EvidenceAwareComparisonEvaluation,
+} from "./evidence-aware-comparison";
 import {
   buildDeviceResponseTarget,
   getDeviceResponseForTarget,
@@ -52,6 +52,7 @@ import type {
   NetworkActivityTechnicalDevice,
   NetworkActivityTechnicalPort,
 } from "@/lib/types/network-activity";
+import { hashString } from "@/lib/utils/hash";
 
 const ACTIVITY_PERIOD_ANCHOR = "#comparison-period" as const;
 const DEFAULT_ACTIVITY_TITLE = "Network Activity";
@@ -63,7 +64,7 @@ interface BuildNetworkActivityOptions extends ObservationFreshnessOptions {
 interface ShapeComparisonInput {
   baseline: ObservationRegistryRecord;
   current: ObservationRegistryRecord;
-  comparison: ObservationComparisonResult;
+  evaluation: EvidenceAwareComparisonEvaluation;
   generatedAt: string;
   source: NetworkActivitySource;
   scenario?: NetworkActivityScenario | null;
@@ -116,7 +117,7 @@ export function buildNetworkActivity(
     );
   }
 
-  const pair = findLatestValidObservationPair(latestSiteEntries, freshnessOptions);
+  const pair = evaluateLatestObservationPair(latestSiteEntries, freshnessOptions);
   if (!pair) {
     return noComparisonActivity(
       latestEntry,
@@ -139,34 +140,53 @@ export function buildNetworkActivity(
 export function shapeNetworkActivityComparison(
   input: ShapeComparisonInput
 ): NetworkActivityModel {
+  const comparison = input.evaluation.comparison;
+  if (!comparison) {
+    return insufficientComparisonActivity(input);
+  }
   const supplementalEvidence = input.supplementalEvidence ?? [];
-  const events = input.comparison.events
-    .map((event) => shapeActivityEvent(event, input.comparison.site.siteId, supplementalEvidence))
+  const responsesSupported = input.evaluation.outcome === "supported";
+  const events = comparison.events
+    .map((event) =>
+      shapeActivityEvent(
+        event,
+        comparison.site.siteId,
+        supplementalEvidence,
+        responsesSupported
+      )
+    )
     .sort(compareActivityEvents);
-  const limitations = buildLimitations(input.comparison, input.current, supplementalEvidence);
+  const limitations = buildLimitations(
+    comparison,
+    input.current,
+    supplementalEvidence,
+    input.evaluation
+  );
   const period = {
-    label: `${formatShortDate(input.comparison.observations.baseline.observedAt)} to ${formatShortDate(input.comparison.observations.current.observedAt)}`,
-    baselineObservedAt: input.comparison.observations.baseline.observedAt,
-    currentObservedAt: input.comparison.observations.current.observedAt,
-    baselineObservationId: input.comparison.observations.baseline.observationId,
-    currentObservationId: input.comparison.observations.current.observationId,
-    baselineRunUid: input.comparison.observations.baseline.sourceRunUid,
-    currentRunUid: input.comparison.observations.current.sourceRunUid,
+    label: `${formatShortDate(comparison.observations.baseline.observedAt)} to ${formatShortDate(comparison.observations.current.observedAt)}`,
+    baselineObservedAt: comparison.observations.baseline.observedAt,
+    currentObservedAt: comparison.observations.current.observedAt,
+    baselineObservationId: comparison.observations.baseline.observationId,
+    currentObservationId: comparison.observations.current.observationId,
+    baselineRunUid: comparison.observations.baseline.sourceRunUid,
+    currentRunUid: comparison.observations.current.sourceRunUid,
   };
+  const status = input.evaluation.outcome === "supported" ? "ready" : "insufficient-evidence";
 
   return {
-    status: "ready",
+    status,
     source: input.source,
     generatedAt: input.generatedAt,
     title: DEFAULT_ACTIVITY_TITLE,
-    summary: buildActivitySummary(events.length, limitations.length),
+    summary: buildActivitySummary(events.length, input.evaluation),
     site: {
       networkName: input.current.networkName,
       networkScope: input.current.site.networkScope,
     },
     latestObservation: latestObservationFromRecord(input.current),
     period,
-    coverage: coverageFromComparison(input.comparison.coverageContext.current, input.current.vantage),
+    coverage: coverageFromComparison(comparison.coverageContext.current, input.current.vantage),
+    evidence: input.evaluation.evidence,
     limitations,
     reviewCount: events.length,
     events,
@@ -209,6 +229,7 @@ export function buildSyntheticNetworkActivityScenario(
         syntheticDevice({
           deviceId: "guest-speaker-baseline",
           ips: ["192.0.2.50"],
+          macs: ["02:00:00:00:00:50"],
           hostnames: ["guest-speaker.local"],
           vendors: ["Example Audio"],
           ports: [],
@@ -246,6 +267,7 @@ export function buildSyntheticNetworkActivityScenario(
         syntheticDevice({
           deviceId: "guest-speaker-current",
           ips: ["192.0.2.50"],
+          macs: ["02:00:00:00:00:50"],
           hostnames: ["guest-speaker.local"],
           vendors: ["Example Audio"],
           ports: [],
@@ -254,14 +276,14 @@ export function buildSyntheticNetworkActivityScenario(
     }),
     generatedAt
   );
-  const comparison = compareObservationBundlesV1(baseline.bundle, current.bundle, {
+  const evaluation = evaluateEvidenceAwareComparison(baseline.bundle, current.bundle, {
     evaluatedAt: generatedAt,
   });
 
   return shapeNetworkActivityComparison({
     baseline,
     current,
-    comparison,
+    evaluation,
     generatedAt,
     source: "synthetic-guided-scenario",
     scenario: {
@@ -276,40 +298,25 @@ export function buildSyntheticNetworkActivityScenario(
   });
 }
 
-function findLatestValidObservationPair(
+function evaluateLatestObservationPair(
   entries: ObservationRegistryEntry[],
   freshnessOptions: ObservationFreshnessOptions
-): Pick<ShapeComparisonInput, "baseline" | "current" | "comparison"> | null {
-  for (let currentIndex = 0; currentIndex < entries.length; currentIndex += 1) {
-    const currentEntry = entries[currentIndex];
-    const currentObservedAt = observationTime(currentEntry);
-    if (!currentObservedAt) continue;
+): Pick<ShapeComparisonInput, "baseline" | "current" | "evaluation"> | null {
+  const currentEntry = entries[0];
+  const baselineEntry = entries[1];
+  if (!currentEntry || !baselineEntry) return null;
 
-    for (let baselineIndex = currentIndex + 1; baselineIndex < entries.length; baselineIndex += 1) {
-      const baselineEntry = entries[baselineIndex];
-      const baselineObservedAt = observationTime(baselineEntry);
-      if (!baselineObservedAt || baselineObservedAt >= currentObservedAt) continue;
+  const baseline = getObservationById(baselineEntry.registryId, freshnessOptions);
+  const current = getObservationById(currentEntry.registryId, freshnessOptions);
+  if (!baseline || !current) return null;
 
-      const baseline = getObservationById(baselineEntry.registryId, freshnessOptions);
-      const current = getObservationById(currentEntry.registryId, freshnessOptions);
-      if (!baseline || !current) continue;
-
-      try {
-        return {
-          baseline,
-          current,
-          comparison: compareObservationBundlesV1(baseline.bundle, current.bundle, {
-            evaluatedAt: freshnessOptions.evaluatedAt,
-          }),
-        };
-      } catch (error) {
-        if (isObservationComparisonError(error)) continue;
-        throw error;
-      }
-    }
-  }
-
-  return null;
+  return {
+    baseline,
+    current,
+    evaluation: evaluateEvidenceAwareComparison(baseline.bundle, current.bundle, {
+      evaluatedAt: freshnessOptions.evaluatedAt,
+    }),
+  };
 }
 
 function entriesForLatestSite(entries: ObservationRegistryEntry[]): ObservationRegistryEntry[] {
@@ -395,6 +402,7 @@ function emptyActivity(
     latestObservation: null,
     period: null,
     coverage: null,
+    evidence: null,
     limitations: [
       {
         code: "no-observations",
@@ -430,6 +438,7 @@ function oneObservationActivity(
     latestObservation: latestObservationFromEntry(entry),
     period: null,
     coverage: coverageFromEntry(entry),
+    evidence: null,
     limitations: [
       {
         code: "one-observation",
@@ -467,6 +476,7 @@ function noComparisonActivity(
     latestObservation: latestObservationFromEntry(entry),
     period: null,
     coverage: coverageFromEntry(entry),
+    evidence: null,
     limitations: [
       {
         code: "no-valid-comparison",
@@ -484,13 +494,69 @@ function noComparisonActivity(
   };
 }
 
-function buildActivitySummary(eventCount: number, limitationCount: number): string {
+function insufficientComparisonActivity(
+  input: ShapeComparisonInput
+): NetworkActivityModel {
+  const supplementalEvidence = input.supplementalEvidence ?? [];
+  const failure = input.evaluation.failure;
+  const limitations: NetworkActivityLimitation[] = [
+    ...(failure
+      ? [{ code: failure.code, severity: "warning" as const, message: failure.message }]
+      : []),
+    ...input.evaluation.evidence.limitations.map((limitation, index) => ({
+      code: `evidence-${input.evaluation.evidence.reasonCodes[index] ?? hashCode(limitation)}`,
+      severity: "warning" as const,
+      message: limitation,
+    })),
+    ...limitationsFromFreshness(input.current),
+  ];
+
+  return {
+    status: "insufficient-evidence",
+    source: input.source,
+    generatedAt: input.generatedAt,
+    title: DEFAULT_ACTIVITY_TITLE,
+    summary:
+      failure?.message ??
+      "Evidence is insufficient for device absence, service closure, or no-change conclusions.",
+    site: {
+      networkName: input.current.networkName,
+      networkScope: input.current.site.networkScope,
+    },
+    latestObservation: latestObservationFromRecord(input.current),
+    period: {
+      label: `${formatShortDate(observationTime(input.baseline))} to ${formatShortDate(observationTime(input.current))}`,
+      baselineObservedAt: observationTime(input.baseline),
+      currentObservedAt: observationTime(input.current),
+      baselineObservationId: input.baseline.observationId,
+      currentObservationId: input.current.observationId,
+      baselineRunUid: input.baseline.batch.sourceRunUid,
+      currentRunUid: input.current.batch.sourceRunUid,
+    },
+    coverage: coverageFromEntry(input.current),
+    evidence: input.evaluation.evidence,
+    limitations: uniqueLimitations(limitations),
+    reviewCount: 0,
+    events: [],
+    availableObservationCount: input.availableObservationCount ?? 2,
+    scenario: input.scenario ?? null,
+    supplementalEvidence,
+  };
+}
+
+function buildActivitySummary(
+  eventCount: number,
+  evaluation: EvidenceAwareComparisonEvaluation
+): string {
   if (eventCount > 0) {
     return `${eventCount} evidence-bounded ${pluralize("change", eventCount)} need review since the prior useful observation.`;
   }
 
-  if (limitationCount > 0) {
-    return "No meaningful changes were found in this comparison. Read the coverage and freshness limitations before treating that as complete.";
+  if (
+    evaluation.outcome !== "supported" ||
+    !evaluation.evidence.supports.stableBaseline
+  ) {
+    return "No supported change events are listed. The evidence does not support a no-change or stable-baseline conclusion.";
   }
 
   return "No meaningful changes were found in this comparison. This is not an all-clear; it only reflects the available observation evidence.";
@@ -499,7 +565,8 @@ function buildActivitySummary(eventCount: number, limitationCount: number): stri
 function buildLimitations(
   comparison: ObservationComparisonResult,
   current: ObservationRegistryRecord,
-  supplementalEvidence: NetworkActivitySupplementalEvidence[] = []
+  supplementalEvidence: NetworkActivitySupplementalEvidence[] = [],
+  evaluation?: EvidenceAwareComparisonEvaluation
 ): NetworkActivityLimitation[] {
   const limitations: NetworkActivityLimitation[] = comparison.guardrails.map((guardrail) => ({
     code: guardrail.code,
@@ -528,6 +595,16 @@ function buildLimitations(
       severity: "info",
       message: note,
     });
+  }
+
+  if (evaluation) {
+    for (const [index, limitation] of evaluation.evidence.limitations.entries()) {
+      limitations.push({
+        code: `evidence-${evaluation.evidence.reasonCodes[index] ?? hashCode(limitation)}`,
+        severity: evaluation.outcome === "supported" ? "info" : "warning",
+        message: limitation,
+      });
+    }
   }
 
   return uniqueLimitations(limitations);
@@ -574,10 +651,13 @@ function coverageLimitations(
 function shapeActivityEvent(
   event: ObservationChangeEvent,
   siteId: string,
-  supplementalEvidence: NetworkActivitySupplementalEvidence[]
+  supplementalEvidence: NetworkActivitySupplementalEvidence[],
+  responsesSupported = true
 ): NetworkActivityEvent {
   const copy = eventCopy(event.eventType);
-  const deviceResponse = shapeActivityDeviceResponse(event, siteId);
+  const deviceResponse = responsesSupported
+    ? shapeActivityDeviceResponse(event, siteId)
+    : unsupportedActivityDeviceResponse();
   const technicalEvidence = {
     ruleId: event.rule.ruleId,
     ruleVersion: event.rule.version,
@@ -612,6 +692,16 @@ function shapeActivityEvent(
       "Evidence includes deterministic comparison rules, identity confidence, observation references, and source-backed details.",
     technicalEvidence,
     supplementalEvidence,
+  };
+}
+
+function unsupportedActivityDeviceResponse(): ActivityDeviceResponse {
+  return {
+    target: null,
+    statement: null,
+    carriedForward: null,
+    unavailableReason:
+      "The comparison evidence is insufficient, so no persisted user response can attach to this event.",
   };
 }
 
@@ -723,7 +813,34 @@ function isStrongConfirmedIdentityEvent(
     "hashed-mac": "identity.hashed-mac",
   };
 
-  return event.identityEvidence.ruleId === expectedRule[target.identity.kind];
+  if (event.identityEvidence.ruleId !== expectedRule[target.identity.kind]) {
+    return false;
+  }
+
+  return event.identityEvidence.values.some((value) => {
+    const normalized = normalizeResponseIdentityValue(target.identity.kind, value);
+    return Boolean(
+      normalized &&
+        hashString(`${target.identity.kind}|${normalized}`) === target.identity.hash
+    );
+  });
+}
+
+function normalizeResponseIdentityValue(
+  kind: DeviceResponseTarget["identity"]["kind"],
+  value: string
+): string | null {
+  if (kind === "mac-address") {
+    const cleaned = value.replace(/[^a-fA-F0-9]/g, "").toLowerCase();
+    if (cleaned.length !== 12) return null;
+    return cleaned.match(/.{2}/g)?.join(":") ?? null;
+  }
+  if (kind === "hashed-mac") {
+    const match = /^(?:sha256:|hash:)?([a-f0-9]{32,128})$/i.exec(value.trim());
+    return match ? `hash:${match[1].toLowerCase()}` : null;
+  }
+  const normalized = value.trim().toLowerCase().replace(/\s+/g, " ");
+  return normalized || null;
 }
 
 function workflowPriorityFor(
@@ -965,6 +1082,21 @@ function createSyntheticObservationBundle(input: {
       presentSources: ["ports", "discovery", "hosts_up", "arp_snapshot", "scan_metadata"],
       missingSources: [],
       notes: [],
+      reasonCodes: [],
+      targetProvenance: {
+        status: "verified",
+        declaredScope: "192.0.2.0/24",
+        observedScopes: ["192.0.2.0/24"],
+      },
+    },
+    normalization: {
+      status: "complete",
+      reasonCodes: [],
+      losses: [],
+    },
+    identity: {
+      status: "supported",
+      reasonCodes: [],
     },
     devices: input.devices,
     notes: ["Synthetic guided scenario."],
@@ -1039,6 +1171,13 @@ function syntheticDevice(input: {
     vendors: input.vendors ?? [],
     identityEvidence,
     openPorts: input.ports ?? [],
+    portCoverage: [
+      {
+        sourceId,
+        protocol: "tcp",
+        ranges: [{ start: 1, end: 65535 }],
+      },
+    ],
     notes: [],
   };
 }

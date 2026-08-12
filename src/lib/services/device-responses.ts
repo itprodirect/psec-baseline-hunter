@@ -300,18 +300,48 @@ function bestStableIdentity(input: BuildDeviceResponseTargetInput): {
   confidence: Extract<ObservationIdentityConfidence, "strongest" | "strong">;
   reason: string;
 } | null {
-  const explicitDeviceId = explicitDeviceIdentityValue(input.deviceId);
-  if (explicitDeviceId) {
+  const ruleId = input.identityRuleId?.trim() || null;
+  const identityValues = input.identityValues ?? [];
+  const macs = uniqueSorted(
+    input.macs
+      .map(normalizeMacKey)
+      .filter((value): value is string => Boolean(value))
+  );
+  const evidenceMacs = uniqueSorted(
+    identityValues
+      .map(normalizeMacKey)
+      .filter((value): value is string => Boolean(value))
+  );
+  const hashedMacs = uniqueSorted(
+    identityValues
+      .map(normalizeHashedMacKey)
+      .filter((value): value is string => Boolean(value))
+  );
+
+  if (ruleId === "identity.persisted-device-id") {
+    const explicitDeviceId = explicitDeviceIdentityValue(input.deviceId);
+    const attestedIds = new Set(
+      identityValues
+        .map(explicitDeviceIdentityValue)
+        .filter((value): value is string => Boolean(value))
+    );
+    if (!explicitDeviceId || !attestedIds.has(explicitDeviceId)) return null;
     return {
       kind: "persisted-device-id",
       value: explicitDeviceId,
       label: "persisted device ID",
       confidence: "strongest",
-      reason: "Response target uses an explicit persisted device identifier.",
+      reason: "Response target uses comparator-attested persisted device identity.",
     };
   }
 
-  const mac = uniqueSorted(input.macs.map(normalizeMacKey).filter((value): value is string => Boolean(value)))[0];
+  if (ruleId && !responseTargetRuleCanUseStableDeviceEvidence(ruleId)) {
+    return null;
+  }
+
+  const mac = ruleId === "identity.hashed-mac"
+    ? undefined
+    : macs.find((value) => evidenceMacs.includes(value));
   if (mac) {
     return {
       kind: "mac-address",
@@ -322,11 +352,9 @@ function bestStableIdentity(input: BuildDeviceResponseTargetInput): {
     };
   }
 
-  const hashedMac = uniqueSorted(
-    (input.identityValues ?? [])
-      .map(normalizeHashedMacKey)
-      .filter((value): value is string => Boolean(value))
-  )[0];
+  if (ruleId === "identity.mac") return null;
+
+  const hashedMac = hashedMacs[0];
   if (hashedMac) {
     return {
       kind: "hashed-mac",
@@ -338,6 +366,15 @@ function bestStableIdentity(input: BuildDeviceResponseTargetInput): {
   }
 
   return null;
+}
+
+function responseTargetRuleCanUseStableDeviceEvidence(ruleId: string): boolean {
+  return (
+    ruleId === "identity.mac" ||
+    ruleId === "identity.hashed-mac" ||
+    ruleId === "identity.no-baseline-match" ||
+    ruleId === "identity.no-current-match"
+  );
 }
 
 function explicitDeviceIdentityValue(value: string): string | null {

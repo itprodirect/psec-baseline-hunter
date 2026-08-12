@@ -8,7 +8,7 @@ interface DiffLike {
 }
 
 /**
- * Build top review actions from newly observed P0 services.
+ * Build top review actions from newly observed P0/P1-classified services.
  * Groups by port/protocol and prioritizes by affected host count.
  */
 export function buildTopActions(diffData: DiffLike): string[] {

@@ -14,6 +14,10 @@ import type {
   ObservationDevice,
   ObservationEvidenceConfidence,
   ObservationEvidenceKind,
+  ObservationIdentityReasonCode,
+  ObservationIdentityRecord,
+  ObservationNormalizationLoss,
+  ObservationNormalizationReasonCode,
   ObservationOpenPort,
   ObservationPortCoverage,
   ObservationPortRange,
@@ -33,9 +37,12 @@ const MAX_SOURCES = 50;
 const MAX_DEVICES = 1000;
 const MAX_EVIDENCE_PER_DEVICE = 40;
 const MAX_OPEN_PORTS_PER_DEVICE = 256;
+const MAX_PORT_COVERAGE_PER_DEVICE = 50;
+const MAX_PORT_RANGES_PER_COVERAGE = 512;
 const MAX_NOTES = 50;
 const MAX_SUPPLEMENTAL_EVIDENCE = 5;
 const MAX_SCAN_METADATA_BYTES = 128 * 1024;
+const OPEN_PORT_PROTOCOL_SET = new Set(["tcp", "udp", "sctp", "ip"]);
 
 const CORE_NMAP_LABELS = ["ports", "discovery"] as const;
 const EXTRA_NMAP_LABELS = ["http_titles", "infra_services", "gateway_smoke"] as const;
@@ -107,6 +114,7 @@ interface ParsedNmapArtifact {
     ranges: ObservationPortRange[];
   }>;
   completionStatus: "success" | "failed" | "unknown";
+  targetScopes: string[];
 }
 
 interface ParsedScanMetadata {
@@ -120,6 +128,8 @@ interface ParsedScanMetadata {
 
 interface DeviceAccumulator {
   key: string;
+  /** Once identifiers conflict, later records cannot safely enrich this aggregate. */
+  identityConflicted: boolean;
   ips: Set<string>;
   macs: Set<string>;
   hostnames: Set<string>;
@@ -130,6 +140,11 @@ interface DeviceAccumulator {
   firstSeen: string | null;
   lastSeen: string | null;
   notes: Set<string>;
+}
+
+interface NormalizationCollector {
+  losses: ObservationNormalizationLoss[];
+  inheritedReasonCodes: Set<ObservationNormalizationReasonCode>;
 }
 
 type XmlRecord = Record<string, unknown>;
@@ -162,8 +177,11 @@ export function adaptRunManifestToObservationBundleV1(
   const sourceLabelsPresent = new Set<string>();
   const unusableCoverageLabels = new Set<string>();
   const coverageNotes: string[] = [];
+  const coverageReasonCodes = new Set<NonNullable<CoverageRecord["reasonCodes"]>[number]>();
   const bundleNotes: string[] = [];
   const deviceIndex = createDeviceIndex(runStartedAt);
+  const nmapTargetScopes = new Set<string>();
+  const verifiedDiscoveryScopes = new Set<string>();
   let sourceSeq = 0;
 
   const addSource = (
@@ -221,20 +239,41 @@ export function adaptRunManifestToObservationBundleV1(
       try {
         const parsedArtifact = parseNmapHosts(xmlPath, source.sourceId);
         const hosts = parsedArtifact.hosts;
+        for (const scope of parsedArtifact.targetScopes) {
+          nmapTargetScopes.add(scope);
+        }
         source.parsed = true;
         source.recordCount = hosts.length;
+        source.targetScopes = parsedArtifact.targetScopes;
+        source.completionStatus = parsedArtifact.completionStatus;
         const completed = parsedArtifact.completionStatus === "success";
+        const targetRelationship = compareTargetScopes(
+          metadata.target,
+          parsedArtifact.targetScopes
+        );
+        if (targetRelationship === "conflicting") {
+          coverageReasonCodes.add("target-provenance-conflict");
+        }
+        if (label === "discovery" && targetRelationship === "verified") {
+          for (const scope of parsedArtifact.targetScopes) {
+            verifiedDiscoveryScopes.add(scope);
+          }
+        }
         const supportsDeclaredCapability =
           completed &&
-          (label !== "ports" ||
-            (parsedArtifact.portScanRanges.length > 0 &&
-              hosts.some((host) => host.hasPortStateEvidence === true)));
+          (label === "discovery"
+            ? targetRelationship === "verified"
+            : label !== "ports" ||
+              (parsedArtifact.portScanRanges.length > 0 &&
+                hosts.some((host) => host.hasPortStateEvidence === true)));
         if (supportsDeclaredCapability) {
           sourceLabelsPresent.add(coverageLabelForSource(label));
         } else {
           unusableCoverageLabels.add(coverageLabelForSource(label));
           const note = !completed
             ? "The Nmap artifact did not record successful completion and cannot support absence, closure, or no-change conclusions."
+            : label === "discovery"
+              ? "The discovery artifact did not verify collection across the declared target scope."
             : "The ports artifact did not account for its complete declared scan range and cannot support port absence or closure conclusions.";
           source.notes.push(note);
           coverageNotes.push(note);
@@ -283,7 +322,14 @@ export function adaptRunManifestToObservationBundleV1(
       const ips = parseHostsUp(hostsUpPath);
       source.parsed = true;
       source.recordCount = ips.length;
-      sourceLabelsPresent.add("hosts_up");
+      if (ips.length > 0) {
+        sourceLabelsPresent.add("hosts_up");
+      } else {
+        coverageReasonCodes.add("empty-hosts-up");
+        const note = "hosts_up.txt was empty and cannot establish discovery coverage.";
+        source.notes.push(note);
+        coverageNotes.push(note);
+      }
       for (const ip of ips) {
         const host: ParsedNmapHost = {
           ips: [ip],
@@ -311,7 +357,14 @@ export function adaptRunManifestToObservationBundleV1(
       const pairs = parseArpSnapshot(arpPath);
       source.parsed = true;
       source.recordCount = pairs.length;
-      sourceLabelsPresent.add("arp_snapshot");
+      if (pairs.length > 0) {
+        sourceLabelsPresent.add("arp_snapshot");
+      } else {
+        coverageReasonCodes.add("empty-arp-snapshot");
+        const note = "The ARP snapshot was empty and cannot establish device identity coverage.";
+        source.notes.push(note);
+        coverageNotes.push(note);
+      }
       for (const pair of pairs) {
         const host: ParsedNmapHost = {
           ips: [pair.ip],
@@ -343,9 +396,29 @@ export function adaptRunManifestToObservationBundleV1(
     }
   }
 
+  const targetProvenance = buildTargetProvenance(
+    metadata.target,
+    [...nmapTargetScopes],
+    [...verifiedDiscoveryScopes],
+    coverageReasonCodes
+  );
+  if (targetProvenance.status !== "verified") {
+    sourceLabelsPresent.delete("discovery");
+    coverageReasonCodes.add(
+      targetProvenance.status === "conflicting"
+        ? "target-provenance-conflict"
+        : "target-coverage-unverified"
+    );
+  }
+
   const observedStart = metadata.startedAt ?? runStartedAt;
   const observedEnd = metadata.endedAt ?? metadata.startedAt ?? runStartedAt;
-  const coverage = buildCoverage(sourceLabelsPresent, coverageNotes);
+  const coverage = buildCoverage(
+    sourceLabelsPresent,
+    coverageNotes,
+    [...coverageReasonCodes],
+    targetProvenance
+  );
   const partial = coverage.status !== "complete" || coverage.missingSources.length > 0;
   if (partial) {
     bundleNotes.push("Observation is partial because one or more expected optional artifacts were unavailable or unparsed.");
@@ -369,6 +442,12 @@ export function adaptRunManifestToObservationBundleV1(
     sources,
     vantage: buildVantage(manifest, metadata),
     coverage,
+    normalization: {
+      status: "complete",
+      reasonCodes: [],
+      losses: [],
+    },
+    identity: identityRecordFromDeviceIndex(deviceIndex),
     devices: deviceIndexToDevices(deviceIndex),
     notes: bundleNotes,
   };
@@ -412,18 +491,98 @@ export function sanitizeObservationBundleV1(raw: unknown): ObservationBundleV1 {
   }
 
   const observationId = safeId(raw.observationId, "obs-unknown");
-  const sources = raw.sources.slice(0, MAX_SOURCES).filter(isRecord).map(sanitizeSource);
+  const normalizationCollector = createNormalizationCollector(raw.normalization);
+  recordLimitLoss(
+    normalizationCollector,
+    "source-limit-exceeded",
+    "sources",
+    raw.sources.length,
+    MAX_SOURCES
+  );
+  const boundedRawSources = raw.sources.slice(0, MAX_SOURCES);
+  const sourceRecords = boundedRawSources.filter(isRecord);
+  recordInvalidLoss(
+    normalizationCollector,
+    "invalid-source-record-dropped",
+    "sources",
+    boundedRawSources.length,
+    sourceRecords.length
+  );
+  const sources = sourceRecords.map(sanitizeSource);
   if (sources.length === 0) {
     throw new ObservationBundleValidationError("Observation bundle has no source records.");
   }
   const sourceIds = new Set(sources.map((source) => source.sourceId));
-  const sanitizedCoverage = sanitizeCoverage(coverage);
+  const completedPortSourceIds = new Set(
+    sources
+      .filter(
+        (source) =>
+          source.kind === "nmap-xml" &&
+          source.artifactLabel === "ports" &&
+          source.parsed &&
+          source.completionStatus === "success"
+      )
+      .map((source) => source.sourceId)
+  );
 
-  const devices = raw.devices
-    .slice(0, MAX_DEVICES)
-    .filter(isRecord)
-    .map((device) => sanitizeDevice(device, sourceIds));
-  const supplementalEvidence = sanitizeSupplementalEvidence(raw.supplementalEvidence);
+  recordLimitLoss(
+    normalizationCollector,
+    "device-limit-exceeded",
+    "devices",
+    raw.devices.length,
+    MAX_DEVICES
+  );
+  const boundedRawDevices = raw.devices.slice(0, MAX_DEVICES);
+  const deviceRecords = boundedRawDevices.filter(isRecord);
+  recordInvalidLoss(
+    normalizationCollector,
+    "invalid-device-record-dropped",
+    "devices",
+    boundedRawDevices.length,
+    deviceRecords.length
+  );
+  const devices = deviceRecords
+    .map((device, index) =>
+      sanitizeDevice(
+        device,
+        sourceIds,
+        completedPortSourceIds,
+        normalizationCollector,
+        `devices[${index}]`
+      )
+    );
+  const supplementalEvidence = sanitizeSupplementalEvidence(
+    raw.supplementalEvidence,
+    normalizationCollector
+  );
+  const collectorKind = sanitizeCollectorKind(collector.kind);
+  if (!COLLECTOR_KIND_SET.has(collector.kind as CollectorRefKind)) {
+    recordInvalidLoss(
+      normalizationCollector,
+      "invalid-collector-kind",
+      "collector.kind",
+      1,
+      0
+    );
+  }
+  const vantageType = sanitizeVantageType(vantage.type);
+  if (!VANTAGE_TYPE_SET.has(vantage.type as CollectionVantage["type"])) {
+    recordInvalidLoss(
+      normalizationCollector,
+      "invalid-vantage-type",
+      "vantage.type",
+      1,
+      0
+    );
+  }
+  const normalization = finalizeNormalization(normalizationCollector);
+  const sanitizedCoverage = sanitizeCoverage(
+    coverage,
+    normalization.status === "truncated",
+    sources,
+    safeTextOrNull(site.networkScope, 120) ?? safeTextOrNull(vantage.target, 120)
+  );
+  const identity = evaluateBundleIdentity(devices, raw.identity);
 
   const sanitized: ObservationBundleV1 = {
     schemaVersion: SCHEMA_VERSION,
@@ -435,7 +594,7 @@ export function sanitizeObservationBundleV1(raw: unknown): ObservationBundleV1 {
     },
     collector: {
       collectorId: safeId(collector.collectorId, "collector-unknown"),
-      kind: sanitizeCollectorKind(collector.kind),
+      kind: collectorKind,
       name: safeText(collector.name, 120) || "PSEC Baseline Hunter",
       version: safeTextOrNull(collector.version, 80),
     },
@@ -447,13 +606,14 @@ export function sanitizeObservationBundleV1(raw: unknown): ObservationBundleV1 {
       generatedAt: isoOrNull(batch.generatedAt) ?? new Date().toISOString(),
       partial:
         batch.partial === true ||
+        normalization.status === "truncated" ||
         sanitizedCoverage.status !== "complete" ||
         sanitizedCoverage.missingSources.length > 0,
       notes: sanitizeNotes(batch.notes),
     },
     sources,
     vantage: {
-      type: sanitizeVantageType(vantage.type),
+      type: vantageType,
       runType: safeTextOrNull(vantage.runType, 80),
       networkName: safeText(vantage.networkName, 120) || "unknown",
       collectorHost: safeTextOrNull(vantage.collectorHost, 120),
@@ -461,6 +621,8 @@ export function sanitizeObservationBundleV1(raw: unknown): ObservationBundleV1 {
       notes: sanitizeNotes(vantage.notes),
     },
     coverage: sanitizedCoverage,
+    normalization,
+    identity,
     devices,
     notes: sanitizeNotes(raw.notes),
   };
@@ -505,7 +667,12 @@ function buildVantage(manifest: RunManifest, metadata: ParsedScanMetadata): Coll
   };
 }
 
-function buildCoverage(presentSources: Set<string>, notes: string[]): CoverageRecord {
+function buildCoverage(
+  presentSources: Set<string>,
+  notes: string[],
+  reasonCodes: NonNullable<CoverageRecord["reasonCodes"]> = [],
+  targetProvenance?: CoverageRecord["targetProvenance"]
+): CoverageRecord {
   const uniqueNotes = uniqueStrings(notes).slice(0, MAX_NOTES);
   const score = EXPECTED_SOURCE_LABELS.reduce(
     (sum, label) => sum + (presentSources.has(label) ? COVERAGE_WEIGHTS[label] : 0),
@@ -515,14 +682,17 @@ function buildCoverage(presentSources: Set<string>, notes: string[]): CoverageRe
   const missingSources = EXPECTED_SOURCE_LABELS.filter((label) => !presentSources.has(label));
   const status = coverageStatusFor(roundedScore, missingSources);
 
-  return {
+  const coverage: CoverageRecord = {
     status,
     score: roundedScore,
     expectedSources: EXPECTED_SOURCE_LABELS,
     presentSources: EXPECTED_SOURCE_LABELS.filter((label) => presentSources.has(label)),
     missingSources,
     notes: uniqueNotes,
+    reasonCodes: uniqueStrings(reasonCodes),
   };
+  if (targetProvenance) coverage.targetProvenance = targetProvenance;
+  return coverage;
 }
 
 function coverageStatusFor(score: number, missingSources: string[]): ObservationCoverageStatus {
@@ -553,12 +723,13 @@ function parseNmapHosts(xmlPath: string, sourceId: string): ParsedNmapArtifact {
   const root = asRecord(parser.parse(xmlContent));
   const nmaprun = asRecord(root?.nmaprun);
   if (!nmaprun) {
-    return { hosts: [], portScanRanges: [], completionStatus: "unknown" };
+    return { hosts: [], portScanRanges: [], completionStatus: "unknown", targetScopes: [] };
   }
 
   const hosts: ParsedNmapHost[] = [];
   const portScanRanges = parseNmapPortScanRanges(nmaprun);
   const completionStatus = parseNmapCompletionStatus(nmaprun);
+  const targetScopes = parseNmapTargetScopes(attr(nmaprun, "@_args"));
   for (const host of asRecordArray(nmaprun.host)) {
     const status = attr(asRecord(host.status), "@_state");
     if (status && status !== "up") continue;
@@ -625,7 +796,7 @@ function parseNmapHosts(xmlPath: string, sourceId: string): ParsedNmapArtifact {
     }
   }
 
-  return { hosts, portScanRanges, completionStatus };
+  return { hosts, portScanRanges, completionStatus, targetScopes };
 }
 
 const USABLE_EXPLICIT_NMAP_PORT_STATES = new Set(["open", "closed"]);
@@ -690,6 +861,116 @@ function parseNmapCompletionStatus(
   return "unknown";
 }
 
+function parseNmapTargetScopes(args: string): string[] {
+  if (!args) return [];
+  const matches = args.match(/\b(?:\d{1,3}\.){3}\d{1,3}(?:\/\d{1,2})?\b/g) ?? [];
+  return uniqueStrings(
+    matches
+      .map(canonicalIpv4Scope)
+      .filter((scope): scope is string => scope !== null)
+  );
+}
+
+function buildTargetProvenance(
+  declaredTarget: string | null,
+  observedScopes: string[],
+  verifiedDiscoveryScopes: string[],
+  reasonCodes: Set<NonNullable<CoverageRecord["reasonCodes"]>[number]>
+): NonNullable<CoverageRecord["targetProvenance"]> {
+  const declaredScopes = parseTargetClaim(declaredTarget);
+  const normalizedObserved = uniqueStrings(
+    observedScopes
+      .map(canonicalIpv4Scope)
+      .filter((scope): scope is string => scope !== null)
+  );
+  const normalizedDiscovery = uniqueStrings(
+    verifiedDiscoveryScopes
+      .map(canonicalIpv4Scope)
+      .filter((scope): scope is string => scope !== null)
+  );
+
+  let status: "verified" | "unverified" | "conflicting" = "unverified";
+  if (reasonCodes.has("target-provenance-conflict")) {
+    status = "conflicting";
+  } else if (
+    declaredScopes.length === 1 &&
+    normalizedDiscovery.some((scope) => scope === declaredScopes[0])
+  ) {
+    status = "verified";
+  }
+
+  return {
+    status,
+    declaredScope: declaredScopes.length === 1 ? declaredScopes[0] : null,
+    observedScopes: normalizedObserved,
+  };
+}
+
+function compareTargetScopes(
+  declaredTarget: string | null,
+  observedScopes: string[]
+): "verified" | "unverified" | "conflicting" {
+  const declaredScopes = parseTargetClaim(declaredTarget);
+  const normalizedObserved = observedScopes
+    .map(canonicalIpv4Scope)
+    .filter((scope): scope is string => scope !== null);
+  if (declaredScopes.length !== 1 || normalizedObserved.length === 0) return "unverified";
+
+  const declared = ipv4ScopeRange(declaredScopes[0]);
+  if (!declared) return "unverified";
+  let exact = false;
+  for (const scope of normalizedObserved) {
+    const observed = ipv4ScopeRange(scope);
+    if (!observed) continue;
+    if (observed.start > declared.end || observed.end < declared.start) {
+      return "conflicting";
+    }
+    if (scope === declaredScopes[0]) exact = true;
+  }
+  return exact ? "verified" : "unverified";
+}
+
+function parseTargetClaim(value: string | null): string[] {
+  if (!value) return [];
+  const matches = value.match(/\b(?:\d{1,3}\.){3}\d{1,3}(?:\/\d{1,2})?\b/g) ?? [];
+  return uniqueStrings(
+    matches
+      .map(canonicalIpv4Scope)
+      .filter((scope): scope is string => scope !== null)
+  );
+}
+
+function canonicalIpv4Scope(value: string): string | null {
+  const match = /^((?:\d{1,3}\.){3}\d{1,3})(?:\/(\d{1,2}))?$/.exec(value.trim());
+  if (!match || !isIpv4(match[1])) return null;
+  const prefix = match[2] === undefined ? 32 : Number.parseInt(match[2], 10);
+  if (!Number.isInteger(prefix) || prefix < 0 || prefix > 32) return null;
+  const address = ipv4ToUint(match[1]);
+  if (address === null) return null;
+  const mask = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;
+  return `${uintToIpv4((address & mask) >>> 0)}/${prefix}`;
+}
+
+function ipv4ScopeRange(scope: string): { start: number; end: number } | null {
+  const match = /^((?:\d{1,3}\.){3}\d{1,3})\/(\d{1,2})$/.exec(scope);
+  if (!match) return null;
+  const address = ipv4ToUint(match[1]);
+  const prefix = Number.parseInt(match[2], 10);
+  if (address === null || prefix < 0 || prefix > 32) return null;
+  const hostMask = prefix === 32 ? 0 : (2 ** (32 - prefix) - 1) >>> 0;
+  const start = (address & (~hostMask >>> 0)) >>> 0;
+  return { start, end: (start | hostMask) >>> 0 };
+}
+
+function ipv4ToUint(value: string): number | null {
+  if (!isIpv4(value)) return null;
+  return value.split(".").reduce((total, octet) => ((total << 8) | Number(octet)) >>> 0, 0);
+}
+
+function uintToIpv4(value: number): string {
+  return [24, 16, 8, 0].map((shift) => (value >>> shift) & 255).join(".");
+}
+
 function parseNmapPortScanRanges(
   nmaprun: XmlRecord
 ): Array<{ protocol: string; ranges: ObservationPortRange[] }> {
@@ -744,7 +1025,7 @@ function mergePortRanges(ranges: ObservationPortRange[]): ObservationPortRange[]
       merged.push({ ...range });
     }
   }
-  return merged.slice(0, 512);
+  return merged;
 }
 
 function parseHostsUp(filePath: string): string[] {
@@ -827,13 +1108,20 @@ function readScanMetadata(filePath: string): ParsedScanMetadata {
 
 function createDeviceIndex(defaultSeenAt: string | null) {
   const devices = new Map<string, DeviceAccumulator>();
-  const ipIndex = new Map<string, string>();
-  const macIndex = new Map<string, string>();
+  const ipIndex = new Map<string, Set<string>>();
+  const macIndex = new Map<string, Set<string>>();
+  const identityReasonCodes = new Set<ObservationIdentityReasonCode>();
 
   const create = (seed: string): DeviceAccumulator => {
-    const key = `dev-${hashString(seed).slice(0, 12)}`;
+    const baseKey = `dev-${hashString(seed).slice(0, 12)}`;
+    let key = baseKey;
+    let suffix = 1;
+    while (devices.has(key)) {
+      key = `${baseKey}-${suffix++}`;
+    }
     const device: DeviceAccumulator = {
       key,
+      identityConflicted: false,
       ips: new Set(),
       macs: new Set(),
       hostnames: new Set(),
@@ -853,6 +1141,7 @@ function createDeviceIndex(defaultSeenAt: string | null) {
     devices,
     ipIndex,
     macIndex,
+    identityReasonCodes,
     create,
   };
 }
@@ -870,35 +1159,78 @@ function mergeHostObservation(
   }> = [],
   portCoverage: ObservationPortCoverage[] = []
 ): void {
-  const existingKeys = [
-    ...host.macs.map((mac) => index.macIndex.get(mac)).filter((key): key is string => Boolean(key)),
-    ...host.ips.map((ip) => index.ipIndex.get(ip)).filter((key): key is string => Boolean(key)),
-  ];
-  const primaryKey = existingKeys[0];
-  let device = primaryKey ? index.devices.get(primaryKey) : null;
+  const macCandidates = indexCandidates(index.macIndex, host.macs);
+  const ipCandidates = indexCandidates(index.ipIndex, host.ips);
+  const allCandidates = new Set([...macCandidates, ...ipCandidates]);
+  const incomingMacs = new Set(host.macs);
+  const candidatesDisagreeWithIncomingMac = [...allCandidates].some((key) => {
+    const candidate = index.devices.get(key);
+    return Boolean(
+      candidate &&
+        incomingMacs.size > 0 &&
+        candidate.macs.size > 0 &&
+        ![...incomingMacs].some((mac) => candidate.macs.has(mac))
+    );
+  });
+  let conflict =
+    allCandidates.size > 1 ||
+    candidatesDisagreeWithIncomingMac ||
+    [...allCandidates].some((key) => index.devices.get(key)?.identityConflicted === true);
+  let candidateKey: string | null = null;
+
+  if (!conflict && macCandidates.size === 1) {
+    candidateKey = [...macCandidates][0];
+  } else if (!conflict && macCandidates.size === 0 && ipCandidates.size === 1) {
+    const ipCandidateKey = [...ipCandidates][0];
+    const ipCandidate = index.devices.get(ipCandidateKey);
+    const candidateHasDifferentMac = Boolean(
+      ipCandidate &&
+        incomingMacs.size > 0 &&
+        ipCandidate.macs.size > 0 &&
+        ![...incomingMacs].some((mac) => ipCandidate.macs.has(mac))
+    );
+    if (candidateHasDifferentMac) {
+      conflict = true;
+    } else {
+      candidateKey = ipCandidateKey;
+    }
+  }
+
+  let device = candidateKey ? index.devices.get(candidateKey) : null;
   if (!device) {
-    const seed = host.macs[0] ?? host.ips[0] ?? `${sourceId}-${index.devices.size}`;
+    const seed = `${host.macs[0] ?? host.ips[0] ?? sourceId}|${sourceId}|${index.devices.size}`;
     device = index.create(seed);
   }
 
-  for (const key of uniqueStrings(existingKeys).filter((key) => key !== device.key)) {
-    const other = index.devices.get(key);
-    if (other) {
-      mergeDeviceAccumulators(device, other);
-      repointDeviceIndexes(index, other, device.key);
-      index.devices.delete(key);
+  if (conflict) {
+    index.identityReasonCodes.add("conflicting-identifiers");
+    device.identityConflicted = true;
+    device.notes.add(
+      "Conflicting identifier evidence was preserved without merging device records."
+    );
+    for (const key of allCandidates) {
+      const candidate = index.devices.get(key);
+      if (candidate) {
+        candidate.identityConflicted = true;
+        candidate.notes.add(
+          "Conflicting identifier evidence was preserved without merging device records."
+        );
+      }
     }
+  }
+  if (confidence === "weak") {
+    index.identityReasonCodes.add("weak-identity-evidence");
   }
 
   touchSeen(device, seenAt);
   for (const ip of host.ips) {
     device.ips.add(ip);
-    index.ipIndex.set(ip, device.key);
+    addDeviceIndexValue(index.ipIndex, ip, device.key);
     addEvidence(device, "ip-address", ip, sourceId, confidence);
   }
   for (const mac of host.macs) {
     device.macs.add(mac);
-    index.macIndex.set(mac, device.key);
+    addDeviceIndexValue(index.macIndex, mac, device.key);
     addEvidence(device, "mac-address", mac, sourceId, confidence);
   }
   for (const hostname of host.hostnames) {
@@ -922,33 +1254,18 @@ function mergeHostObservation(
   }
 }
 
-function repointDeviceIndexes(
-  index: ReturnType<typeof createDeviceIndex>,
-  source: DeviceAccumulator,
-  targetKey: string
-): void {
-  for (const ip of source.ips) {
-    index.ipIndex.set(ip, targetKey);
+function indexCandidates(index: Map<string, Set<string>>, values: string[]): Set<string> {
+  const candidates = new Set<string>();
+  for (const value of values) {
+    for (const key of index.get(value) ?? []) candidates.add(key);
   }
-  for (const mac of source.macs) {
-    index.macIndex.set(mac, targetKey);
-  }
+  return candidates;
 }
-function mergeDeviceAccumulators(target: DeviceAccumulator, source: DeviceAccumulator): void {
-  for (const value of source.ips) target.ips.add(value);
-  for (const value of source.macs) target.macs.add(value);
-  for (const value of source.hostnames) target.hostnames.add(value);
-  for (const value of source.vendors) target.vendors.add(value);
-  for (const [key, value] of source.evidence) target.evidence.set(key, value);
-  for (const [key, value] of source.openPorts) target.openPorts.set(key, value);
-  for (const [key, value] of source.portCoverage) target.portCoverage.set(key, value);
-  for (const value of source.notes) target.notes.add(value);
-  if (source.firstSeen && (!target.firstSeen || source.firstSeen < target.firstSeen)) {
-    target.firstSeen = source.firstSeen;
-  }
-  if (source.lastSeen && (!target.lastSeen || source.lastSeen > target.lastSeen)) {
-    target.lastSeen = source.lastSeen;
-  }
+
+function addDeviceIndexValue(index: Map<string, Set<string>>, value: string, key: string): void {
+  const keys = index.get(value) ?? new Set<string>();
+  keys.add(key);
+  index.set(value, keys);
 }
 
 function deviceIndexToDevices(index: ReturnType<typeof createDeviceIndex>): ObservationDevice[] {
@@ -962,14 +1279,27 @@ function deviceIndexToDevices(index: ReturnType<typeof createDeviceIndex>): Obse
       macs: [...device.macs].sort(),
       hostnames: [...device.hostnames].sort(),
       vendors: [...device.vendors].sort(),
-      identityEvidence: [...device.evidence.values()].slice(0, MAX_EVIDENCE_PER_DEVICE),
+      identityEvidence: [...device.evidence.values()],
       openPorts: [...device.openPorts.values()]
-        .sort((a, b) => a.port - b.port || a.protocol.localeCompare(b.protocol))
-        .slice(0, MAX_OPEN_PORTS_PER_DEVICE),
+        .sort((a, b) => a.port - b.port || a.protocol.localeCompare(b.protocol)),
       portCoverage: [...device.portCoverage.values()]
         .sort((a, b) => a.protocol.localeCompare(b.protocol) || a.sourceId.localeCompare(b.sourceId)),
       notes: [...device.notes].slice(0, 10),
     }));
+}
+
+function identityRecordFromDeviceIndex(
+  index: ReturnType<typeof createDeviceIndex>
+): ObservationIdentityRecord {
+  const reasonCodes = [...index.identityReasonCodes].sort();
+  return {
+    status: reasonCodes.includes("conflicting-identifiers")
+      ? "conflicting"
+      : reasonCodes.length > 0
+        ? "uncertain"
+        : "supported",
+    reasonCodes,
+  };
 }
 
 function firstSortValue(device: DeviceAccumulator): string {
@@ -1006,7 +1336,7 @@ function sanitizeSource(raw: Record<string, unknown>): ObservationSourceRef {
   const kind = SOURCE_KIND_SET.has(raw.kind as ObservationSourceKind)
     ? (raw.kind as ObservationSourceKind)
     : "run-manifest";
-  return {
+  const source: ObservationSourceRef = {
     sourceId: safeId(raw.sourceId, "src-unknown"),
     kind,
     artifactLabel: safeText(raw.artifactLabel, 80) || "unknown",
@@ -1015,32 +1345,106 @@ function sanitizeSource(raw: Record<string, unknown>): ObservationSourceRef {
     recordCount: nonNegativeInteger(raw.recordCount),
     notes: sanitizeNotes(raw.notes),
   };
+  if (Array.isArray(raw.targetScopes)) {
+    source.targetScopes = uniqueStrings(
+      raw.targetScopes
+        .filter((scope): scope is string => typeof scope === "string")
+        .map(canonicalIpv4Scope)
+        .filter((scope): scope is string => scope !== null)
+    );
+  }
+  if (
+    raw.completionStatus === "success" ||
+    raw.completionStatus === "failed" ||
+    raw.completionStatus === "unknown"
+  ) {
+    source.completionStatus = raw.completionStatus;
+  }
+  return source;
 }
 
-function sanitizeDevice(raw: Record<string, unknown>, sourceIds: Set<string>): ObservationDevice {
+function sanitizeDevice(
+  raw: Record<string, unknown>,
+  sourceIds: Set<string>,
+  completedPortSourceIds: Set<string>,
+  normalization: NormalizationCollector,
+  pathPrefix: string
+): ObservationDevice {
+  const rawIdentityEvidence = Array.isArray(raw.identityEvidence) ? raw.identityEvidence : [];
+  recordLimitLoss(
+    normalization,
+    "identity-evidence-limit-exceeded",
+    `${pathPrefix}.identityEvidence`,
+    rawIdentityEvidence.length,
+    MAX_EVIDENCE_PER_DEVICE
+  );
+  const boundedRawIdentityEvidence = rawIdentityEvidence.slice(0, MAX_EVIDENCE_PER_DEVICE);
   const identityEvidence = Array.isArray(raw.identityEvidence)
-    ? raw.identityEvidence
+    ? boundedRawIdentityEvidence
         .filter(isRecord)
         .map((evidence) => sanitizeEvidence(evidence, sourceIds))
         .filter((evidence): evidence is DeviceIdentityEvidence => evidence !== null)
-        .slice(0, MAX_EVIDENCE_PER_DEVICE)
     : [];
+  recordInvalidLoss(
+    normalization,
+    "invalid-identity-evidence-dropped",
+    `${pathPrefix}.identityEvidence`,
+    boundedRawIdentityEvidence.length,
+    identityEvidence.length
+  );
 
+  const rawOpenPorts = Array.isArray(raw.openPorts) ? raw.openPorts : [];
+  recordLimitLoss(
+    normalization,
+    "open-port-limit-exceeded",
+    `${pathPrefix}.openPorts`,
+    rawOpenPorts.length,
+    MAX_OPEN_PORTS_PER_DEVICE
+  );
+  const boundedRawOpenPorts = rawOpenPorts.slice(0, MAX_OPEN_PORTS_PER_DEVICE);
   const openPorts = Array.isArray(raw.openPorts)
-    ? raw.openPorts
+    ? boundedRawOpenPorts
         .filter(isRecord)
-        .map((port) => sanitizeOpenPort(port, sourceIds))
+        .map((port) => sanitizeOpenPort(port, completedPortSourceIds))
         .filter((port): port is ObservationOpenPort => port !== null)
-        .slice(0, MAX_OPEN_PORTS_PER_DEVICE)
     : [];
+  recordInvalidLoss(
+    normalization,
+    "invalid-open-port-dropped",
+    `${pathPrefix}.openPorts`,
+    boundedRawOpenPorts.length,
+    openPorts.length
+  );
 
+  const rawPortCoverage = Array.isArray(raw.portCoverage) ? raw.portCoverage : [];
+  recordLimitLoss(
+    normalization,
+    "port-coverage-limit-exceeded",
+    `${pathPrefix}.portCoverage`,
+    rawPortCoverage.length,
+    MAX_PORT_COVERAGE_PER_DEVICE
+  );
+  const boundedRawPortCoverage = rawPortCoverage.slice(0, MAX_PORT_COVERAGE_PER_DEVICE);
   const portCoverage = Array.isArray(raw.portCoverage)
-    ? raw.portCoverage
+    ? boundedRawPortCoverage
         .filter(isRecord)
-        .map((coverage) => sanitizePortCoverage(coverage, sourceIds))
+        .map((coverage, index) =>
+          sanitizePortCoverage(
+            coverage,
+            completedPortSourceIds,
+            normalization,
+            `${pathPrefix}.portCoverage[${index}]`
+          )
+        )
         .filter((coverage): coverage is ObservationPortCoverage => coverage !== null)
-        .slice(0, 50)
     : [];
+  recordInvalidLoss(
+    normalization,
+    "invalid-port-coverage-dropped",
+    `${pathPrefix}.portCoverage`,
+    boundedRawPortCoverage.length,
+    portCoverage.length
+  );
 
   return {
     deviceId: safeId(raw.deviceId, "dev-unknown"),
@@ -1059,28 +1463,239 @@ function sanitizeDevice(raw: Record<string, unknown>, sourceIds: Set<string>): O
 
 function sanitizePortCoverage(
   raw: Record<string, unknown>,
-  sourceIds: Set<string>
+  completedPortSourceIds: Set<string>,
+  normalization: NormalizationCollector,
+  pathPrefix: string
 ): ObservationPortCoverage | null {
   const sourceId = safeId(raw.sourceId, "");
   const protocol = safeText(raw.protocol, 16).toLowerCase();
-  if (!sourceId || !sourceIds.has(sourceId) || !protocol || !Array.isArray(raw.ranges)) {
+  if (
+    !sourceId ||
+    !completedPortSourceIds.has(sourceId) ||
+    !protocol ||
+    !Array.isArray(raw.ranges)
+  ) {
     return null;
   }
 
-  const ranges = mergePortRanges(
-    raw.ranges
-      .filter(isRecord)
-      .map((range) => ({ start: Number(range.start), end: Number(range.end) }))
-      .filter(
-        (range) =>
-          Number.isInteger(range.start) &&
-          Number.isInteger(range.end) &&
-          range.start >= 0 &&
-          range.end <= 65535 &&
-          range.start <= range.end
-      )
+  const validRanges = raw.ranges
+    .filter(isRecord)
+    .map((range) => ({ start: Number(range.start), end: Number(range.end) }))
+    .filter(
+      (range) =>
+        Number.isInteger(range.start) &&
+        Number.isInteger(range.end) &&
+        range.start >= 0 &&
+        range.end <= 65535 &&
+        range.start <= range.end
+    );
+  recordInvalidLoss(
+    normalization,
+    "invalid-port-range-dropped",
+    `${pathPrefix}.ranges`,
+    raw.ranges.length,
+    validRanges.length
   );
+  const mergedRanges = mergePortRanges(validRanges);
+  recordLimitLoss(
+    normalization,
+    "port-range-limit-exceeded",
+    `${pathPrefix}.ranges`,
+    mergedRanges.length,
+    MAX_PORT_RANGES_PER_COVERAGE
+  );
+  const ranges = mergedRanges.slice(0, MAX_PORT_RANGES_PER_COVERAGE);
   return ranges.length > 0 ? { sourceId, protocol, ranges } : null;
+}
+
+function createNormalizationCollector(value: unknown): NormalizationCollector {
+  const collector: NormalizationCollector = {
+    losses: [],
+    inheritedReasonCodes: new Set(),
+  };
+  if (!isRecord(value)) {
+    collector.inheritedReasonCodes.add("normalization-record-missing");
+    return collector;
+  }
+
+  const declaredStatus = value.status;
+  if (
+    (declaredStatus !== "complete" && declaredStatus !== "truncated") ||
+    !Array.isArray(value.reasonCodes) ||
+    !Array.isArray(value.losses)
+  ) {
+    collector.inheritedReasonCodes.add("normalization-record-inconsistent");
+  }
+
+  if (Array.isArray(value.reasonCodes)) {
+    for (const reason of value.reasonCodes) {
+      if (NORMALIZATION_REASON_CODE_SET.has(reason as ObservationNormalizationReasonCode)) {
+        collector.inheritedReasonCodes.add(reason as ObservationNormalizationReasonCode);
+      }
+    }
+  }
+  if (Array.isArray(value.losses)) {
+    for (const rawLoss of value.losses) {
+      if (!isRecord(rawLoss)) continue;
+      const reasonCode = rawLoss.reasonCode as ObservationNormalizationReasonCode;
+      if (!NORMALIZATION_REASON_CODE_SET.has(reasonCode)) continue;
+      const inputCount = nonNegativeInteger(rawLoss.inputCount);
+      const retainedCount = nonNegativeInteger(rawLoss.retainedCount);
+      const limit = nonNegativeInteger(rawLoss.limit);
+      collector.losses.push({
+        reasonCode,
+        path: safeText(rawLoss.path, 160) || "observation",
+        inputCount,
+        retainedCount,
+        limit,
+      });
+      collector.inheritedReasonCodes.add(reasonCode);
+    }
+  }
+  if (
+    declaredStatus === "truncated" &&
+    collector.inheritedReasonCodes.size === 0 &&
+    collector.losses.length === 0
+  ) {
+    collector.inheritedReasonCodes.add("normalization-record-inconsistent");
+  }
+  return collector;
+}
+
+function recordLimitLoss(
+  collector: NormalizationCollector,
+  reasonCode: ObservationNormalizationReasonCode,
+  path: string,
+  inputCount: number,
+  limit: number
+): void {
+  if (inputCount <= limit) return;
+  collector.losses.push({
+    reasonCode,
+    path,
+    inputCount,
+    retainedCount: limit,
+    limit,
+  });
+}
+
+function recordInvalidLoss(
+  collector: NormalizationCollector,
+  reasonCode: ObservationNormalizationReasonCode,
+  path: string,
+  inputCount: number,
+  retainedCount: number
+): void {
+  if (retainedCount >= inputCount) return;
+  collector.losses.push({
+    reasonCode,
+    path,
+    inputCount,
+    retainedCount,
+    // Invalid-record loss is validation-bounded rather than count-bounded;
+    // the stable reason code distinguishes it from a configured limit.
+    limit: inputCount,
+  });
+}
+
+function finalizeNormalization(
+  collector: NormalizationCollector
+): NonNullable<ObservationBundleV1["normalization"]> {
+  const reasonCodes = new Set(collector.inheritedReasonCodes);
+  for (const loss of collector.losses) reasonCodes.add(loss.reasonCode);
+  const losses = [...new Map(
+    collector.losses.map((loss) => [
+      `${loss.reasonCode}|${loss.path}|${loss.inputCount}|${loss.retainedCount}|${loss.limit}`,
+      loss,
+    ])
+  ).values()];
+  return {
+    status: reasonCodes.size > 0 ? "truncated" : "complete",
+    reasonCodes: [...reasonCodes].sort(),
+    losses,
+  };
+}
+
+function evaluateBundleIdentity(
+  devices: ObservationDevice[],
+  declaredIdentity: unknown
+): ObservationIdentityRecord {
+  const reasonCodes = new Set<ObservationIdentityReasonCode>();
+  if (isRecord(declaredIdentity)) {
+    if (declaredIdentity.status === "conflicting") {
+      reasonCodes.add("conflicting-identifiers");
+    }
+    if (declaredIdentity.status === "uncertain") {
+      reasonCodes.add("weak-identity-evidence");
+    }
+    if (Array.isArray(declaredIdentity.reasonCodes)) {
+      for (const reason of declaredIdentity.reasonCodes) {
+        if (IDENTITY_REASON_CODE_SET.has(reason as ObservationIdentityReasonCode)) {
+          reasonCodes.add(reason as ObservationIdentityReasonCode);
+        }
+      }
+    }
+  }
+
+  const devicesByStrongIdentity = new Map<string, Set<string>>();
+  const strongIdentitySignaturesByIp = new Map<string, Set<string>>();
+  for (const [deviceIndex, device] of devices.entries()) {
+    const observedStableIdentities = uniqueStrings(
+      device.identityEvidence
+        .filter(
+          (evidence) =>
+            evidence.kind === "mac-address" && evidence.confidence === "observed"
+        )
+        .map((evidence) => {
+          const mac = normalizeMac(evidence.value);
+          if (mac) return `mac:${mac}`;
+          const hashedMac = normalizeHashedMacIdentity(evidence.value);
+          return hashedMac ? `hashed-mac:${hashedMac}` : null;
+        })
+        .filter((identity): identity is string => identity !== null)
+    );
+    const weakMacs = device.identityEvidence.filter(
+      (evidence) =>
+        evidence.kind === "mac-address" && evidence.confidence !== "observed"
+    );
+    if (weakMacs.length > 0) reasonCodes.add("weak-identity-evidence");
+    if (observedStableIdentities.length === 0) {
+      reasonCodes.add(
+        device.ips.length > 0
+          ? "locator-only-identity"
+          : "weak-identity-evidence"
+      );
+    }
+
+    for (const identity of observedStableIdentities) {
+      addDeviceIndexValue(devicesByStrongIdentity, identity, String(deviceIndex));
+    }
+    const signature = observedStableIdentities.slice().sort().join("|");
+    if (signature) {
+      for (const ip of device.ips) {
+        const signatures = strongIdentitySignaturesByIp.get(ip) ?? new Set<string>();
+        signatures.add(signature);
+        strongIdentitySignaturesByIp.set(ip, signatures);
+      }
+    }
+  }
+
+  if (
+    [...devicesByStrongIdentity.values()].some((deviceIds) => deviceIds.size > 1) ||
+    [...strongIdentitySignaturesByIp.values()].some((signatures) => signatures.size > 1)
+  ) {
+    reasonCodes.add("conflicting-identifiers");
+  }
+
+  const sortedReasonCodes = [...reasonCodes].sort();
+  return {
+    status: reasonCodes.has("conflicting-identifiers")
+      ? "conflicting"
+      : reasonCodes.size > 0
+        ? "uncertain"
+        : "supported",
+    reasonCodes: sortedReasonCodes,
+  };
 }
 
 function sanitizeEvidence(
@@ -1107,13 +1722,22 @@ function sanitizeEvidence(
 
 function sanitizeOpenPort(
   raw: Record<string, unknown>,
-  sourceIds: Set<string>
+  completedPortSourceIds: Set<string>
 ): ObservationOpenPort | null {
   const port = portInteger(raw.port);
   const sourceId = safeId(raw.sourceId, "");
-  if (port === null || !sourceId || !sourceIds.has(sourceId)) return null;
+  const protocol = safeText(raw.protocol, 16).toLowerCase();
+  if (
+    port === null ||
+    !sourceId ||
+    !completedPortSourceIds.has(sourceId) ||
+    !OPEN_PORT_PROTOCOL_SET.has(protocol) ||
+    raw.state !== "open"
+  ) {
+    return null;
+  }
   return {
-    protocol: safeText(raw.protocol, 16) || "tcp",
+    protocol,
     port,
     state: "open",
     service: safeTextOrNull(raw.service, 80),
@@ -1123,19 +1747,84 @@ function sanitizeOpenPort(
   };
 }
 
-function sanitizeCoverage(raw: Record<string, unknown>): CoverageRecord {
-  const score =
-    typeof raw.score === "number" && Number.isFinite(raw.score)
-      ? Math.min(1, Math.max(0, Math.round(raw.score * 100) / 100))
-      : 0;
-  const expectedSources = sanitizeStringArray(raw.expectedSources, 80);
-  const presentSources = sanitizeStringArray(raw.presentSources, 80);
-  const declaredMissingSources = sanitizeStringArray(raw.missingSources, 80);
-  const missingSources = uniqueStrings([
-    ...declaredMissingSources,
-    ...expectedSources.filter((label) => !presentSources.includes(label)),
-  ]);
-  const status = coverageStatusFor(score, missingSources);
+function sanitizeCoverage(
+  raw: Record<string, unknown>,
+  normalizationTruncated: boolean,
+  sources: ObservationSourceRef[],
+  declaredTarget: string | null
+): CoverageRecord {
+  const expectedSources = [...EXPECTED_SOURCE_LABELS];
+  const declaredMissingSources = new Set(
+    sanitizeStringArray(raw.missingSources, 80).filter((label) =>
+      EXPECTED_SOURCE_LABEL_SET.has(label)
+    )
+  );
+  const reasonCodes = new Set<NonNullable<CoverageRecord["reasonCodes"]>[number]>();
+  if (Array.isArray(raw.reasonCodes)) {
+    for (const reason of raw.reasonCodes) {
+      if (COVERAGE_REASON_CODE_SET.has(reason as NonNullable<CoverageRecord["reasonCodes"]>[number])) {
+        reasonCodes.add(reason as NonNullable<CoverageRecord["reasonCodes"]>[number]);
+      }
+    }
+  }
+
+  const emptyHostsUp = sources.some(
+    (source) =>
+      source.artifactLabel === "hosts_up" &&
+      source.kind === "hosts-up" &&
+      source.parsed &&
+      source.recordCount === 0
+  );
+  const emptyArp = sources.some(
+    (source) =>
+      source.artifactLabel === "arp_snapshot" &&
+      source.kind === "arp-snapshot" &&
+      source.parsed &&
+      source.recordCount === 0
+  );
+  if (emptyHostsUp) {
+    reasonCodes.add("empty-hosts-up");
+  }
+  if (emptyArp) {
+    reasonCodes.add("empty-arp-snapshot");
+  }
+
+  const targetProvenance = deriveTargetProvenance(sources, declaredTarget);
+  if (targetProvenance.status === "conflicting") {
+    reasonCodes.add("target-provenance-conflict");
+  } else if (targetProvenance.status !== "verified") {
+    reasonCodes.add("target-coverage-unverified");
+  }
+  if (normalizationTruncated) reasonCodes.add("normalization-truncated");
+
+  const derivedPresentSources = new Set(
+    expectedSources.filter((label) =>
+      sourceRecordsSupportCoverageCapability(label, sources, targetProvenance)
+    )
+  );
+  for (const declaredMissing of declaredMissingSources) {
+    derivedPresentSources.delete(declaredMissing);
+  }
+  const presentSources = expectedSources.filter((label) =>
+    derivedPresentSources.has(label)
+  );
+  const missingSources = expectedSources.filter(
+    (label) => !derivedPresentSources.has(label)
+  );
+  let score = Math.round(
+    presentSources.reduce(
+      (sum, label) => sum + (COVERAGE_WEIGHTS[label] ?? 0),
+      0
+    ) * 100
+  ) / 100;
+  const computedStatus = coverageStatusFor(score, missingSources);
+  const status =
+    computedStatus === "minimal"
+      ? "minimal"
+      : reasonCodes.size > 0
+        ? "partial"
+        : computedStatus;
+  if (status !== "complete" && score === 1) score = 0.99;
 
   return {
     status,
@@ -1144,29 +1833,129 @@ function sanitizeCoverage(raw: Record<string, unknown>): CoverageRecord {
     presentSources,
     missingSources,
     notes: sanitizeNotes(raw.notes),
+    reasonCodes: [...reasonCodes].sort(),
+    targetProvenance,
   };
 }
 
-function sanitizeCollectorKind(value: unknown): "registered-scan-run" | "packet-highway-analysis" {
-  return value === "packet-highway-analysis" ? "packet-highway-analysis" : "registered-scan-run";
+function sourceRecordsSupportCoverageCapability(
+  label: string,
+  sources: ObservationSourceRef[],
+  targetProvenance: NonNullable<CoverageRecord["targetProvenance"]>
+): boolean {
+  const candidates = sources.filter((source) => source.artifactLabel === label);
+  if (candidates.length === 0) return false;
+
+  return candidates.every((source) => {
+    switch (label) {
+      case "ports":
+        return (
+          source.kind === "nmap-xml" &&
+          source.parsed &&
+          source.completionStatus === "success"
+        );
+      case "discovery":
+        return (
+          source.kind === "nmap-xml" &&
+          source.parsed &&
+          source.completionStatus === "success" &&
+          targetProvenance.status === "verified"
+        );
+      case "hosts_up":
+        return source.kind === "hosts-up" && source.parsed && source.recordCount > 0;
+      case "arp_snapshot":
+        return source.kind === "arp-snapshot" && source.parsed && source.recordCount > 0;
+      case "scan_metadata":
+        return source.kind === "scan-metadata" && source.parsed && source.recordCount > 0;
+      default:
+        return false;
+    }
+  });
+}
+
+function deriveTargetProvenance(
+  sources: ObservationSourceRef[],
+  declaredTarget: string | null
+): NonNullable<CoverageRecord["targetProvenance"]> {
+  const declaredScopes = parseTargetClaim(declaredTarget);
+  const observedScopes = uniqueStrings(
+    sources.flatMap((source) => source.targetScopes ?? [])
+  );
+  if (declaredScopes.length !== 1) {
+    return { status: "unverified", declaredScope: null, observedScopes };
+  }
+
+  let conflicting = false;
+  for (const source of sources) {
+    if ((source.targetScopes?.length ?? 0) === 0) continue;
+    if (compareTargetScopes(declaredScopes[0], source.targetScopes ?? []) === "conflicting") {
+      conflicting = true;
+      break;
+    }
+  }
+  if (conflicting) {
+    return {
+      status: "conflicting",
+      declaredScope: declaredScopes[0],
+      observedScopes,
+    };
+  }
+
+  const verified = sources.some(
+    (source) =>
+      source.kind === "nmap-xml" &&
+      source.artifactLabel === "discovery" &&
+      source.parsed &&
+      source.completionStatus === "success" &&
+      compareTargetScopes(declaredScopes[0], source.targetScopes ?? []) === "verified"
+  );
+  return {
+    status: verified ? "verified" : "unverified",
+    declaredScope: declaredScopes[0],
+    observedScopes,
+  };
+}
+
+type CollectorRefKind = ObservationBundleV1["collector"]["kind"];
+
+function sanitizeCollectorKind(value: unknown): CollectorRefKind {
+  return COLLECTOR_KIND_SET.has(value as CollectorRefKind)
+    ? (value as CollectorRefKind)
+    : "unknown";
 }
 
 function sanitizeVantageType(value: unknown): CollectionVantage["type"] {
   return VANTAGE_TYPE_SET.has(value as CollectionVantage["type"])
     ? (value as CollectionVantage["type"])
-    : "active-scan-upload";
+    : "unknown";
 }
 
 function sanitizeSupplementalEvidence(
-  value: unknown
+  value: unknown,
+  normalization: NormalizationCollector
 ): ObservationSupplementalEvidence[] | undefined {
   if (!Array.isArray(value)) return undefined;
 
-  const evidence = value
-    .slice(0, MAX_SUPPLEMENTAL_EVIDENCE)
+  recordLimitLoss(
+    normalization,
+    "supplemental-evidence-limit-exceeded",
+    "supplementalEvidence",
+    value.length,
+    MAX_SUPPLEMENTAL_EVIDENCE
+  );
+
+  const boundedRawEvidence = value.slice(0, MAX_SUPPLEMENTAL_EVIDENCE);
+  const evidence = boundedRawEvidence
     .filter(isRecord)
     .map(sanitizeSupplementalEvidenceItem)
     .filter((item): item is ObservationSupplementalEvidence => item !== null);
+  recordInvalidLoss(
+    normalization,
+    "invalid-supplemental-evidence-dropped",
+    "supplementalEvidence",
+    boundedRawEvidence.length,
+    evidence.length
+  );
 
   return evidence.length > 0 ? evidence : undefined;
 }
@@ -1396,7 +2185,12 @@ function normalizeMac(value: string): string | null {
   return cleaned.match(/.{2}/g)?.join(":") ?? null;
 }
 
-function uniqueStrings(values: string[]): string[] {
+function normalizeHashedMacIdentity(value: string): string | null {
+  const match = /^(?:sha256:|hash:)?([a-f0-9]{32,128})$/i.exec(value.trim());
+  return match ? `hash:${match[1].toLowerCase()}` : null;
+}
+
+function uniqueStrings<T extends string>(values: T[]): T[] {
   return [...new Set(values.filter(Boolean))];
 }
 
@@ -1513,12 +2307,18 @@ const SOURCE_KIND_SET = new Set<ObservationSourceKind>([
   "scan-metadata",
   "packet-highway-analysis",
 ]);
+const COLLECTOR_KIND_SET = new Set<CollectorRefKind>([
+  "registered-scan-run",
+  "packet-highway-analysis",
+  "unknown",
+]);
 const VANTAGE_TYPE_SET = new Set<CollectionVantage["type"]>([
   "active-scan-upload",
   "packet-highway-this-computer",
   "packet-highway-gateway-router",
   "packet-highway-mirror-tap",
   "packet-highway-unknown",
+  "unknown",
 ]);
 const EVIDENCE_KIND_SET = new Set<ObservationEvidenceKind>([
   "ip-address",
@@ -1532,4 +2332,39 @@ const EVIDENCE_CONFIDENCE_SET = new Set<ObservationEvidenceConfidence>([
   "observed",
   "reported",
   "weak",
+]);
+const NORMALIZATION_REASON_CODE_SET = new Set<ObservationNormalizationReasonCode>([
+  "normalization-record-missing",
+  "normalization-record-inconsistent",
+  "source-limit-exceeded",
+  "device-limit-exceeded",
+  "identity-evidence-limit-exceeded",
+  "open-port-limit-exceeded",
+  "port-coverage-limit-exceeded",
+  "port-range-limit-exceeded",
+  "supplemental-evidence-limit-exceeded",
+  "invalid-source-record-dropped",
+  "invalid-device-record-dropped",
+  "invalid-identity-evidence-dropped",
+  "invalid-open-port-dropped",
+  "invalid-port-coverage-dropped",
+  "invalid-port-range-dropped",
+  "invalid-supplemental-evidence-dropped",
+  "invalid-collector-kind",
+  "invalid-vantage-type",
+]);
+const EXPECTED_SOURCE_LABEL_SET = new Set(EXPECTED_SOURCE_LABELS);
+const IDENTITY_REASON_CODE_SET = new Set<ObservationIdentityReasonCode>([
+  "conflicting-identifiers",
+  "weak-identity-evidence",
+  "locator-only-identity",
+]);
+const COVERAGE_REASON_CODE_SET = new Set<
+  NonNullable<CoverageRecord["reasonCodes"]>[number]
+>([
+  "empty-hosts-up",
+  "empty-arp-snapshot",
+  "target-coverage-unverified",
+  "target-provenance-conflict",
+  "normalization-truncated",
 ]);

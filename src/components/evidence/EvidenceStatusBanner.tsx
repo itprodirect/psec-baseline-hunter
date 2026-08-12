@@ -8,8 +8,9 @@ interface EvidenceStatusBannerProps {
   summary: string;
 }
 
-function formatCoverage(score: number): string {
-  return `${Math.round(score * 100)}%`;
+function formatCoverage(value: EvidenceAssessment["coverage"]["current"]): string {
+  if (value.status !== "complete") return value.status;
+  return `${value.status} (${Math.round(value.score * 100)}%)`;
 }
 
 export function EvidenceStatusBanner({ evidence, summary }: EvidenceStatusBannerProps) {
@@ -66,7 +67,7 @@ export function EvidenceStatusBanner({ evidence, summary }: EvidenceStatusBanner
                 <div key={label}>
                   <dt className="text-muted-foreground">{label}</dt>
                   <dd className="font-medium">
-                    {value.status} ({formatCoverage(value.score)})
+                    {formatCoverage(value)}
                   </dd>
                 </div>
               ))}

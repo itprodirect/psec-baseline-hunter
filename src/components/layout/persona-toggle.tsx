@@ -39,9 +39,9 @@ export function PersonaToggle() {
         <Sparkles className="h-3 w-3 mt-0.5 shrink-0" />
         <span>
           {hasProfile ? (
-            <>Summaries are tailored to your profile. Click <strong>&quot;Explain This&quot;</strong> on any page to adjust.</>
+            <>Profile settings are recorded as report context, never evidence or conclusions.</>
           ) : (
-            <>Use the evidence-summary controls on Observation Overview or Changes to generate bounded reports.</>
+            <>Use the evidence-summary controls on Health Overview or Changes to generate bounded reports.</>
           )}
         </span>
       </div>

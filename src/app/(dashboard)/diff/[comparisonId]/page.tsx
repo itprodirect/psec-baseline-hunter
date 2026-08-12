@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, use } from "react";
+import { useState, useEffect, use, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -26,32 +26,49 @@ export default function SavedComparisonPage({
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const comparisonRequest = useRef(0);
 
   useEffect(() => {
+    const requestId = ++comparisonRequest.current;
+    const controller = new AbortController();
     async function loadComparison() {
       setIsLoading(true);
       setError(null);
       setComparison(null);
 
       try {
-        const response = await fetch(`/api/comparisons/${comparisonId}`);
+        const response = await fetch(`/api/comparisons/${comparisonId}`, {
+          signal: controller.signal,
+        });
         const data: ComparisonResponse = await response.json();
+        if (controller.signal.aborted || requestId !== comparisonRequest.current) return;
 
-        if (data.success && data.comparison) {
+        if (
+          data.success &&
+          data.comparison &&
+          data.comparison.comparisonId === comparisonId
+        ) {
           setComparison(data.comparison);
         } else {
           setComparison(null);
           setError(data.error || "Comparison not found");
         }
       } catch (err) {
+        if (controller.signal.aborted || requestId !== comparisonRequest.current) return;
         setComparison(null);
         setError(err instanceof Error ? err.message : "Failed to load comparison");
       } finally {
-        setIsLoading(false);
+        if (requestId === comparisonRequest.current) {
+          setIsLoading(false);
+        }
       }
     }
 
     loadComparison();
+    return () => {
+      comparisonRequest.current += 1;
+      controller.abort();
+    };
   }, [comparisonId]);
 
   function copyShareableUrl() {

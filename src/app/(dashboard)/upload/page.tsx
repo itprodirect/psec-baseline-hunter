@@ -129,7 +129,7 @@ export default function UploadPage() {
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Start Scan Review</h1>
           <p className="text-muted-foreground">
-            Upload your network scan ZIP to see what changed and what to fix first
+            Upload your network scan ZIP to review supported changes and prioritized findings
           </p>
         </div>
         {!isDemoMode ? (
@@ -252,7 +252,7 @@ export default function UploadPage() {
                 <div className="mt-3 flex flex-wrap gap-2">
                   <Button asChild size="sm" variant="outline">
                     <Link href="/scorecard">
-                      Review Observation Overview
+                      Review Health Overview
                       <ArrowRight className="h-4 w-4 ml-1" />
                     </Link>
                   </Button>

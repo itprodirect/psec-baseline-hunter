@@ -32,6 +32,7 @@ let getLLMRequestTimeoutMs;
 let adaptRunManifestToObservationBundleV1;
 let buildObservationBundleV1FromRun;
 let parseObservationBundleV1Json;
+let sanitizeObservationBundleV1;
 let isObservationBundleValidationError;
 let MAX_OBSERVATION_BUNDLE_JSON_BYTES;
 let MAX_OBSERVATION_NMAP_XML_BYTES;
@@ -47,6 +48,7 @@ let computeObservationBundleContentHash;
 let ObservationRegistryTimestampError;
 let compareObservationBundlesV1;
 let isObservationComparisonError;
+let evaluateEvidenceAwareComparison;
 let buildNetworkActivity;
 let buildSyntheticNetworkActivityScenario;
 let shapeNetworkActivityComparison;
@@ -61,11 +63,8 @@ let buildDiffFromObservationBundles;
 let DiffComparisonError;
 let buildScorecardData;
 let buildScorecardDataFromObservationBundle;
-let buildDiffUserPrompt;
 let generateRuleBasedDiffSummary;
-let buildUserPrompt;
 let generateRuleBasedSummary;
-let buildExecutiveUserPrompt;
 let generateRuleBasedExecutiveSummary;
 let diffToCSV;
 let diffToMarkdown;
@@ -83,6 +82,7 @@ async function loadModules() {
     observationBundle,
     observationRegistry,
     observationComparison,
+    evidenceAwareComparison,
     networkActivity,
     networkStatement,
     deviceResponses,
@@ -104,6 +104,7 @@ async function loadModules() {
     import("../src/lib/services/observation-bundle.ts"),
     import("../src/lib/services/observation-registry.ts"),
     import("../src/lib/services/observation-comparison.ts"),
+    import("../src/lib/services/evidence-aware-comparison.ts"),
     import("../src/lib/services/network-activity.ts"),
     import("../src/lib/services/network-statement.ts"),
     import("../src/lib/services/device-responses.ts"),
@@ -152,6 +153,7 @@ async function loadModules() {
     adaptRunManifestToObservationBundleV1,
     buildObservationBundleV1FromRun,
     parseObservationBundleV1Json,
+    sanitizeObservationBundleV1,
     isObservationBundleValidationError,
     MAX_OBSERVATION_BUNDLE_JSON_BYTES,
     MAX_OBSERVATION_NMAP_XML_BYTES,
@@ -172,6 +174,7 @@ async function loadModules() {
     compareObservationBundlesV1,
     isObservationComparisonError,
   } = observationComparison);
+  ({ evaluateEvidenceAwareComparison } = evidenceAwareComparison);
   ({
     buildNetworkActivity,
     buildSyntheticNetworkActivityScenario,
@@ -191,9 +194,9 @@ async function loadModules() {
   } = packetHighwayObservation);
   ({ computeDiff, buildDiffFromObservationBundles, DiffComparisonError } = diffEngine);
   ({ buildScorecardData, buildScorecardDataFromObservationBundle } = riskClassifier);
-  ({ buildDiffUserPrompt, generateRuleBasedDiffSummary } = diffPrompt);
-  ({ buildUserPrompt, generateRuleBasedSummary } = scorecardPrompt);
-  ({ buildExecutiveUserPrompt, generateRuleBasedExecutiveSummary } = executivePrompt);
+  ({ generateRuleBasedDiffSummary } = diffPrompt);
+  ({ generateRuleBasedSummary } = scorecardPrompt);
+  ({ generateRuleBasedExecutiveSummary } = executivePrompt);
   ({ diffToCSV, diffToMarkdown, scorecardToCSV } = csvExport);
 }
 
@@ -274,6 +277,10 @@ function createTestEvidence(status, { comparison = false } = {}) {
       ? ["ports", "discovery", "hosts_up", "arp_snapshot", "scan_metadata"]
       : ["ports"],
     missingSources: supported ? [] : ["discovery"],
+    normalizationStatus: supported ? "complete" : "truncated",
+    normalizationReasonCodes: supported ? [] : ["open-port-limit-exceeded"],
+    coverageReasonCodes: [],
+    targetProvenanceStatus: "verified",
   };
 
   return {
@@ -786,13 +793,17 @@ function createRunManifest(runUid, timestamp, portsXmlPath, network = "home-lab"
 }
 
 function createObservationNmapXml(hosts) {
+  const firstIp = hosts.flatMap((host) => host.ips ?? (host.ip ? [host.ip] : []))[0];
+  const target = firstIp
+    ? `${firstIp.split(".").slice(0, 3).join(".")}.0/24`
+    : "192.0.2.0/24";
   const scannedProtocols = [
     ...new Set(
       hosts.flatMap((host) => (host.ports ?? []).map((port) => port.protocol || "tcp"))
     ),
   ];
   return [
-    "<nmaprun>",
+    `<nmaprun args="nmap ${target}">`,
     ...scannedProtocols.map(
       (protocol) =>
         `<scaninfo type="synthetic" protocol="${protocol}" numservices="65535" services="1-65535" />`
@@ -979,6 +990,64 @@ function setObservationBundleTimes(bundle, times) {
     device.firstSeen = times.startedAt;
     device.lastSeen = times.endedAt;
   }
+}
+
+function cloneJson(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function observationTestPort(sourceId, port) {
+  return {
+    protocol: "tcp",
+    port,
+    state: "open",
+    service: "synthetic",
+    product: null,
+    version: null,
+    sourceId,
+  };
+}
+
+function observationTestDevice(template, index, sourceId) {
+  const second = Math.floor(index / 254) % 254;
+  const third = index % 254 + 1;
+  const ip = `198.18.${second}.${third}`;
+  return {
+    ...cloneJson(template),
+    deviceId: `synthetic-device-${index}`,
+    ips: [ip],
+    macs: [],
+    hostnames: [`device-${index}.example`],
+    vendors: ["Synthetic"],
+    identityEvidence: [
+      {
+        evidenceId: `ev-device-${index}`,
+        kind: "ip-address",
+        value: ip,
+        sourceId,
+        confidence: "observed",
+      },
+    ],
+    openPorts: [],
+    portCoverage: [],
+    notes: [],
+  };
+}
+
+function makePartialCurrentBundleWithClosedPort(bundle) {
+  const partial = cloneJson(bundle);
+  partial.coverage.status = "partial";
+  partial.coverage.score = 0.8;
+  partial.coverage.presentSources = partial.coverage.presentSources.filter(
+    (label) => label !== "hosts_up"
+  );
+  partial.coverage.missingSources = ["hosts_up"];
+  partial.coverage.notes = ["Synthetic partial current evidence."];
+  partial.batch.partial = true;
+  const stable = partial.devices.find((device) => device.macs.includes("02:00:00:00:00:10"));
+  assert.ok(stable);
+  stable.openPorts = [];
+  return partial;
 }
 
 function observationRegistryRecordPath(registryId) {
@@ -1236,6 +1305,7 @@ function createComparisonBundle(options = {}) {
     (source) => !missingSources.includes(source)
   );
   const coverageStatus = options.coverageStatus ?? (missingSources.length > 0 ? "partial" : "complete");
+  const networkScope = options.networkScope ?? "192.0.2.0/24";
 
   return {
     schemaVersion: "psec.observation-bundle.v1",
@@ -1243,7 +1313,7 @@ function createComparisonBundle(options = {}) {
     site: {
       siteId: options.siteId ?? "site-comparison-lab",
       networkName: options.networkName ?? "comparison-lab",
-      networkScope: options.networkScope ?? "192.0.2.0/24",
+      networkScope,
     },
     collector: {
       collectorId: "synthetic-comparison",
@@ -1260,23 +1330,30 @@ function createComparisonBundle(options = {}) {
       partial: options.partial ?? coverageStatus !== "complete",
       notes: [],
     },
-    sources: [
-      {
-        sourceId,
-        kind: "nmap-xml",
-        artifactLabel: "ports",
-        fileName: "synthetic.xml",
-        parsed: true,
-        recordCount: options.devices?.length ?? 0,
-        notes: [],
-      },
-    ],
+    sources: presentSources.map((label) => ({
+      sourceId: label === "ports" ? sourceId : `src-${label}`,
+      kind: label === "ports" || label === "discovery"
+        ? "nmap-xml"
+        : label === "hosts_up"
+          ? "hosts-up"
+          : label === "arp_snapshot"
+            ? "arp-snapshot"
+            : "scan-metadata",
+      artifactLabel: label,
+      fileName: label === "ports" || label === "discovery" ? `${label}.xml` : `${label}.txt`,
+      parsed: true,
+      recordCount: options.devices?.length ?? 1,
+      notes: [],
+      ...(label === "ports" || label === "discovery"
+        ? { targetScopes: [networkScope], completionStatus: "success" }
+        : {}),
+    })),
     vantage: {
       type: "active-scan-upload",
       runType: "synthetic",
       networkName: options.networkName ?? "comparison-lab",
       collectorHost: "synthetic-collector",
-      target: options.networkScope ?? "192.0.2.0/24",
+      target: networkScope,
       notes: [],
     },
     coverage: {
@@ -1286,6 +1363,21 @@ function createComparisonBundle(options = {}) {
       presentSources,
       missingSources,
       notes: options.coverageNotes ?? [],
+      reasonCodes: options.coverageReasonCodes ?? [],
+      targetProvenance: options.targetProvenance ?? {
+        status: "verified",
+        declaredScope: networkScope,
+        observedScopes: [networkScope],
+      },
+    },
+    normalization: options.normalization ?? {
+      status: "complete",
+      reasonCodes: [],
+      losses: [],
+    },
+    identity: options.identity ?? {
+      status: "supported",
+      reasonCodes: [],
     },
     devices: (options.devices ?? []).map((device) =>
       createComparisonDevice({ ...device, sourceId })
@@ -1333,6 +1425,13 @@ function createComparisonDevice(options = {}) {
       version: port.version ?? null,
       sourceId,
     })),
+    portCoverage: options.portCoverage ?? [
+      {
+        sourceId,
+        protocol: "tcp",
+        ranges: [{ start: 1, end: 65535 }],
+      },
+    ],
     notes: [],
   };
 }
@@ -1834,7 +1933,7 @@ run("observation bundle adapter treats missing optional artifacts as partial cov
   });
 });
 
-run("observation bundle adapter marks runs partial when only ARP or metadata is missing", async () => {
+run("observation bundle adapter marks missing ARP and unverified discovery provenance partial", async () => {
   await withTempCwd(async () => {
     const cases = [
       {
@@ -1857,7 +1956,13 @@ run("observation bundle adapter marks runs partial when only ARP or metadata is 
         generatedAt: "2026-04-01T12:06:00.000Z",
       });
 
-      assert.deepEqual(bundle.coverage.missingSources, [testCase.name], testCase.name);
+      const expectedMissing = testCase.name === "scan_metadata"
+        ? ["discovery", "scan_metadata"]
+        : ["arp_snapshot"];
+      assert.deepEqual(bundle.coverage.missingSources, expectedMissing, testCase.name);
+      if (testCase.name === "scan_metadata") {
+        assert.ok(bundle.coverage.reasonCodes.includes("target-coverage-unverified"));
+      }
       assert.ok(bundle.batch.partial, testCase.name);
     }
   });
@@ -1897,7 +2002,7 @@ run("observation bundle identity keeps same-hostname devices separate without IP
   });
 });
 
-run("observation bundle merge repoints secondary indexes after accumulator merges", async () => {
+run("observation bundle preserves conflicting transitive identifiers without accumulator merging", async () => {
   await withTempCwd(async () => {
     const manifest = writeObservationRunFixture({ includeOptional: false });
     fs.writeFileSync(
@@ -1935,12 +2040,18 @@ run("observation bundle merge repoints secondary indexes after accumulator merge
       generatedAt: "2026-04-01T12:06:00.000Z",
     });
     const ip31Devices = bundle.devices.filter((device) => device.ips.includes("192.0.2.31"));
-    const allMacs = bundle.devices.flatMap((device) => device.macs);
 
-    assert.equal(ip31Devices.length, 1);
-    assert.ok(ip31Devices[0].macs.includes("02:00:00:00:00:40"));
-    assert.ok(ip31Devices[0].macs.includes("02:00:00:00:00:31"));
-    assert.equal(allMacs.length, new Set(allMacs).size);
+    assert.equal(bundle.identity.status, "conflicting");
+    assert.ok(bundle.identity.reasonCodes.includes("conflicting-identifiers"));
+    assert.ok(ip31Devices.length >= 2);
+    assert.equal(
+      ip31Devices.some(
+        (device) =>
+          device.macs.includes("02:00:00:00:00:40") &&
+          device.macs.includes("02:00:00:00:00:31")
+      ),
+      false
+    );
   });
 });
 
@@ -2140,6 +2251,57 @@ run("observation bundle import drops invalid open ports but preserves boundary p
       restored.devices[0].openPorts.map((port) => port.service).sort(),
       ["valid-high", "valid-low"]
     );
+  });
+});
+
+run("DB-01 import requires explicit open-port protocol and open state", async () => {
+  await withTempCwd(async () => {
+    const baselineRaw = createObservationRegistryBundle({
+      runUid: "open-port-schema-baseline",
+      network: "open-port-schema-lab",
+      startedAt: "2026-07-01T08:00:00.000Z",
+      endedAt: "2026-07-01T08:01:00.000Z",
+      generatedAt: "2026-07-01T08:01:00.000Z",
+    });
+    const currentRaw = createObservationRegistryBundle({
+      runUid: "open-port-schema-current",
+      network: "open-port-schema-lab",
+      startedAt: "2026-07-01T09:00:00.000Z",
+      endedAt: "2026-07-01T09:01:00.000Z",
+      generatedAt: "2026-07-01T09:01:00.000Z",
+    });
+    baselineRaw.devices = baselineRaw.devices.filter((device) =>
+      device.macs.includes("02:00:00:00:00:10")
+    );
+    currentRaw.devices = currentRaw.devices.filter((device) =>
+      device.macs.includes("02:00:00:00:00:10")
+    );
+    const baselineSource = baselineRaw.sources.find(
+      (source) => source.artifactLabel === "ports"
+    ).sourceId;
+    const currentSource = currentRaw.sources.find(
+      (source) => source.artifactLabel === "ports"
+    ).sourceId;
+    baselineRaw.devices[0].openPorts = [observationTestPort(baselineSource, 443)];
+    currentRaw.devices[0].openPorts = [
+      { ...observationTestPort(currentSource, 443), protocol: undefined },
+      { ...observationTestPort(currentSource, 8443), state: undefined },
+      { ...observationTestPort(currentSource, 9443), state: "closed" },
+    ];
+
+    const baseline = sanitizeObservationBundleV1(baselineRaw);
+    const current = sanitizeObservationBundleV1(currentRaw);
+    const diff = buildDiffFromObservationBundles(baseline, current);
+
+    assert.deepEqual(
+      current.devices[0].openPorts,
+      [],
+      "missing protocol/state and explicitly closed records must not be promoted to open"
+    );
+    assert.equal(current.normalization.status, "truncated");
+    assert.ok(current.normalization.reasonCodes.includes("invalid-open-port-dropped"));
+    assert.equal(diff.evidence.status, "insufficient-evidence");
+    assert.deepEqual(diff.portsClosed, []);
   });
 });
 
@@ -2801,7 +2963,7 @@ run("observation comparison matches stable hashed MAC evidence as strong identit
   assert.equal(findComparisonEvent(result, "new-device-observed"), undefined);
 });
 
-run("observation comparison matches persisted device ID as strongest identity across changed IP and MAC", () => {
+run("observation comparison does not promote an unattested device ID to persistent identity", () => {
   const baseline = createComparisonBundle({
     observationId: "obs-device-id-baseline",
     observedAt: "2026-05-01T10:00:00.000Z",
@@ -2835,16 +2997,13 @@ run("observation comparison matches persisted device ID as strongest identity ac
   });
 
   const result = compareObservationBundlesV1(baseline, current);
-  const opened = findComparisonEvent(result, "service-or-port-opened");
-  const metadata = findComparisonEvent(result, "important-device-metadata-changed");
+  const uncertain = findComparisonEvent(result, "identity-uncertain-possibly-same-device");
 
-  assert.ok(opened);
-  assert.equal(opened.confidence, "strongest");
-  assert.equal(opened.identityEvidence.ruleId, "identity.persisted-device-id");
-  assert.deepEqual(opened.identityEvidence.values, ["device-kitchen-printer"]);
-  assert.ok(metadata);
-  assert.equal(metadata.identityEvidence.ruleId, "identity.persisted-device-id");
-  assert.deepEqual(metadata.details.changedFields, ["ips", "macs"]);
+  assert.ok(uncertain);
+  assert.equal(uncertain.confidence, "medium");
+  assert.equal(uncertain.identityEvidence.ruleId, "identity.hostname-vendor");
+  assert.equal(findComparisonEvent(result, "service-or-port-opened"), undefined);
+  assert.equal(findComparisonEvent(result, "important-device-metadata-changed"), undefined);
   assert.equal(findComparisonEvent(result, "new-device-observed"), undefined);
   assert.equal(findComparisonEvent(result, "previously-observed-device-not-observed"), undefined);
 });
@@ -3748,7 +3907,6 @@ run("network activity guided scenario is synthetic, evidence-linked, and redacte
   const eventTypes = new Set(activity.events.map((event) => event.type));
   assert.ok(eventTypes.has("new-device-observed"));
   assert.ok(eventTypes.has("previously-observed-device-not-observed"));
-  assert.ok(eventTypes.has("identity-uncertain-possibly-same-device"));
   assert.ok(eventTypes.has("service-or-port-opened"));
   assert.ok(eventTypes.has("service-or-port-closed"));
   assert.ok(eventTypes.has("important-device-metadata-changed"));
@@ -3891,17 +4049,23 @@ run("network activity preserves comparison order for same-priority events", asyn
     const comparison = compareObservationBundlesV1(baselineRecord.bundle, currentRecord.bundle, {
       evaluatedAt: "2026-05-03T00:00:00.000Z",
     });
+    const evaluation = evaluateEvidenceAwareComparison(
+      baselineRecord.bundle,
+      currentRecord.bundle,
+      { evaluatedAt: "2026-05-03T00:00:00.000Z" }
+    );
+    assert.ok(evaluation.comparison);
 
     assert.deepEqual(comparisonEventTypes(comparison), [
       "service-or-port-opened",
       "important-device-metadata-changed",
     ]);
 
-    comparison.events = comparison.events.map((event, index) => ({
+    evaluation.comparison.events = comparison.events.map((event, index) => ({
       ...event,
       eventId: index === 0 ? "chg-z-preserve-first" : "chg-a-preserve-second",
     }));
-    const incomingEventIds = comparison.events.map((event) => event.eventId);
+    const incomingEventIds = evaluation.comparison.events.map((event) => event.eventId);
     assert.ok(
       incomingEventIds[0].localeCompare(incomingEventIds[1]) > 0,
       "fixture must fail if same-priority events fall back to eventId sorting"
@@ -3910,7 +4074,7 @@ run("network activity preserves comparison order for same-priority events", asyn
     const activity = shapeNetworkActivityComparison({
       baseline: baselineRecord,
       current: currentRecord,
-      comparison,
+      evaluation,
       generatedAt: "2026-05-03T00:00:00.000Z",
       source: "registry",
       availableObservationCount: 2,
@@ -3919,7 +4083,7 @@ run("network activity preserves comparison order for same-priority events", asyn
     assert.deepEqual(activity.events.map((event) => event.eventId), incomingEventIds);
     assert.deepEqual(
       activity.events.map((event) => event.type),
-      comparison.events.map((event) => event.eventType)
+      evaluation.comparison.events.map((event) => event.eventType)
     );
     assert.equal(
       activity.events.every((event) => event.workflowPriority.level === "normal"),
@@ -3996,10 +4160,16 @@ run("network activity states cover empty, one-observation, and no-change cases t
     });
 
     assert.equal(activity.status, "ready");
-    assert.equal(activity.events.length, 0);
+    assert.equal(
+      activity.events.some((event) =>
+        event.type === "previously-observed-device-not-observed" ||
+        event.type === "service-or-port-closed"
+      ),
+      false
+    );
     assert.equal(activity.reviewCount, 0);
-    assert.match(activity.summary, /No meaningful changes/);
-    assert.match(activity.summary, /not an all-clear/);
+    assert.match(activity.summary, /No supported change events/);
+    assert.match(activity.summary, /does not support a no-change or stable-baseline conclusion/);
   });
 });
 
@@ -4046,8 +4216,14 @@ run("network activity surfaces partial and stale limitations near no-change resu
     const limitationCodes = new Set(activity.limitations.map((limitation) => limitation.code));
     const limitationText = activity.limitations.map((limitation) => limitation.message).join("\n");
 
-    assert.equal(activity.status, "ready");
-    assert.equal(activity.events.length, 0);
+    assert.equal(activity.status, "insufficient-evidence");
+    assert.equal(
+      activity.events.some((event) =>
+        event.type === "previously-observed-device-not-observed" ||
+        event.type === "service-or-port-closed"
+      ),
+      false
+    );
     assert.ok(limitationCodes.has("partial-coverage"));
     assert.ok(limitationCodes.has("port-coverage-incomplete"));
     assert.ok(limitationCodes.has("stale-data"));
@@ -4276,16 +4452,13 @@ run("network statement reports change categories and unresolved user responses",
     const reviewText = statementSection(statement, "needs-review").items.map((item) => item.text).join("\n");
     const unresolvedText = statementSection(statement, "unresolved-responses").items.map((item) => item.text).join("\n");
 
-    assert.match(changedText, /New device observed/);
-    assert.match(changedText, /Previously observed device not seen/);
+    assert.doesNotMatch(changedText, /New device observed/);
     assert.match(changedText, /Device identity uncertain/);
-    assert.match(changedText, /Service appeared on a matched device/);
-    assert.match(changedText, /Service no longer observed/);
+    assert.doesNotMatch(changedText, /Previously observed device not seen/);
+    assert.doesNotMatch(changedText, /Service no longer observed/);
     assert.match(changedText, /Device metadata changed/);
-    assert.match(reviewText, /user statement only/i);
-    assert.match(unresolvedText, /Investigate/);
-    assert.match(unresolvedText, /Not sure/);
-    assert.match(unresolvedText, /does not change the technical finding/);
+    assert.doesNotMatch(reviewText, /user statement only/i);
+    assert.match(unresolvedText, /No unresolved/);
     assertStatementExportSafe(renderNetworkStatementMarkdown(statement));
   });
 });
@@ -4759,7 +4932,7 @@ run("device responses do not inherit across low-confidence IP continuity", async
     assert.equal(uncertain.confidence, "low");
     assert.equal(uncertain.deviceResponse.target, null);
     assert.equal(uncertain.deviceResponse.statement, null);
-    assert.match(uncertain.deviceResponse.unavailableReason, /uncertain/);
+    assert.match(uncertain.deviceResponse.unavailableReason, /insufficient|uncertain/);
     assert.equal(
       activity.events.some((event) => event.deviceResponse.statement?.state === "guest"),
       false
@@ -4884,13 +5057,16 @@ run("activity device response API edits and clears without deleting observations
     const firstActivity = buildNetworkActivity({
       evaluatedAt: "2026-05-03T00:00:00.000Z",
     });
-    const target = firstActivity.events.find(
+    const responseEvent = firstActivity.events.find(
       (event) => event.type === "service-or-port-opened"
-    )?.deviceResponse.target;
+    );
+    const target = responseEvent?.deviceResponse.target;
+    assert.ok(responseEvent);
     assert.ok(target);
 
     const firstResponse = await deviceResponseRoute.POST(
       createJsonRequest("/api/activity/device-response", "POST", {
+        eventId: responseEvent.eventId,
         target,
         state: "mine",
         friendlyName: "Lab laptop",
@@ -4910,6 +5086,7 @@ run("activity device response API edits and clears without deleting observations
 
     const editResponse = await deviceResponseRoute.POST(
       createJsonRequest("/api/activity/device-response", "POST", {
+        eventId: responseEvent.eventId,
         target,
         state: "investigate",
         friendlyName: "Lab laptop renamed",
@@ -5535,7 +5712,7 @@ run("DB-01 locator-only continuity remains uncertain", async () => {
 
     const result = computeDiff(baselineRunUid, currentRunUid);
     assert.ok(result);
-    assert.equal(result.evidence.status, "uncertain");
+    assert.equal(result.evidence.status, "insufficient-evidence");
     assert.ok(result.identityUncertain.length > 0);
     assert.deepEqual(result.portsOpened, []);
     assert.deepEqual(result.portsClosed, []);
@@ -6037,13 +6214,11 @@ run("DB-01 internal-only P0 observation stays a bounded service review finding",
     assert.equal(scorecard.evidence.vantage.externalReachability, "not-established");
     assert.equal(scorecard.riskPorts, 1);
 
-    const prompt = buildUserPrompt(scorecard, testUserProfile);
     const fallback = generateRuleBasedSummary(scorecard, testUserProfile);
-    const executivePrompt = buildExecutiveUserPrompt(scorecard, testUserProfile);
     const executiveFallback = generateRuleBasedExecutiveSummary(scorecard, testUserProfile);
-    const combined = [scorecard.summary, prompt, fallback, executivePrompt, executiveFallback].join("\n");
+    const combined = [scorecard.summary, fallback, executiveFallback].join("\n");
 
-    assert.match(combined, /external reachability (?:is )?not established|does not establish (?:internet|external)/i);
+    assert.match(combined, /external reachability (?:is )?not established|does not establish (?:internet|external|reachability beyond)|reachability beyond .* was not established/i);
     assert.doesNotMatch(
       combined,
       /is exposed to (?:the )?internet|accessible from outside|perimeter (?:is )?(?:secure|failed)|breach probability|\$[0-9]|no critical security issues|no urgent actions/i
@@ -6138,8 +6313,17 @@ run("DB-01 insufficient comparison cannot be persisted", async () => {
     const { baselineRunUid, currentRunUid } = writeDb01RunPairFixtures({
       currentCoverage: "partial",
     });
+    const forgedDiffData = createDiffData([]);
+    forgedDiffData.baselineRunUid = baselineRunUid;
+    forgedDiffData.currentRunUid = currentRunUid;
+    forgedDiffData.evidence.status = "supported";
+    forgedDiffData.evidence.supports.comparisonPersistence = true;
     const response = await comparisonsRoute.POST(
-      createJsonRequest("/api/comparisons", "POST", { baselineRunUid, currentRunUid })
+      createJsonRequest("/api/comparisons", "POST", {
+        baselineRunUid,
+        currentRunUid,
+        diffData: forgedDiffData,
+      })
     );
     const body = await response.json();
 
@@ -6147,6 +6331,60 @@ run("DB-01 insufficient comparison cannot be persisted", async () => {
     assert.equal(body.success, false);
     assert.equal(body.code, "comparison_insufficient_evidence");
     assert.equal(fs.existsSync(path.join(process.cwd(), "data", "comparisons", "index.json")), false);
+  });
+});
+
+run("DB-01 comparison persistence ignores a forged request Diff and recomputes valid evidence", async () => {
+  const comparisonsRoute = await import("../src/app/api/comparisons/route.ts");
+
+  await withTempCwd(async () => {
+    const { baselineRunUid, currentRunUid } = writeDb01RunPairFixtures();
+    const authoritative = computeDiff(baselineRunUid, currentRunUid);
+    assert.ok(authoritative);
+
+    const forgedDiffData = createDiffData([]);
+    forgedDiffData.baselineRunUid = baselineRunUid;
+    forgedDiffData.currentRunUid = currentRunUid;
+    forgedDiffData.network = "forged-network";
+    forgedDiffData.removedHosts = [
+      { ip: "192.0.2.250", hostname: "forged", changeType: "removed" },
+    ];
+    forgedDiffData.portsClosed = [
+      {
+        ip: "192.0.2.250",
+        port: 443,
+        protocol: "tcp",
+        service: "https",
+        changeType: "closed",
+      },
+    ];
+
+    const response = await comparisonsRoute.POST(
+      createJsonRequest("/api/comparisons", "POST", {
+        baselineRunUid,
+        currentRunUid,
+        title: "server recomputed",
+        diffData: forgedDiffData,
+      })
+    );
+    const body = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(body.success, true);
+    assert.equal(body.comparison.network, authoritative.network);
+    assert.deepEqual(body.comparison.diffData, authoritative);
+    assert.equal(
+      body.comparison.diffData.removedHosts.some(
+        (host) => host.ip === "192.0.2.250"
+      ),
+      false
+    );
+    assert.equal(
+      body.comparison.diffData.portsClosed.some(
+        (port) => port.ip === "192.0.2.250" && port.port === 443
+      ),
+      false
+    );
   });
 });
 
@@ -6186,6 +6424,268 @@ run("DB-01 legacy saved comparisons without evidence do not render as supported"
     assert.equal(response.status, 200);
     assert.equal(body.success, true);
     assert.deepEqual(body.comparisons, []);
+  });
+});
+
+run("DB-01 persistence boundary recomputes instead of trusting a forged supported Diff", async () => {
+  const comparisonsRegistry = await import("../src/lib/services/comparisons-registry.ts");
+
+  await withTempCwd(async () => {
+    const { baselineRunUid, currentRunUid } = writeDb01RunPairFixtures({
+      currentCoverage: "partial",
+    });
+    const forged = JSON.parse(JSON.stringify(createDiffData([])));
+    forged.baselineRunUid = baselineRunUid;
+    forged.currentRunUid = currentRunUid;
+    forged.evidence.status = "supported";
+    forged.evidence.reasonCodes = [
+      "partial-coverage",
+      "external-reachability-not-established",
+    ];
+    forged.evidence.coverage.current.status = "partial";
+    forged.evidence.coverage.current.partial = true;
+    forged.evidence.coverage.current.missingSources = ["discovery"];
+    forged.evidence.supports.comparisonPersistence = true;
+
+    assert.throws(
+      // The extra argument demonstrates the reviewed boundary bypass. The
+      // corrected implementation ignores caller-supplied conclusions and
+      // recomputes from the registered run IDs.
+      () => comparisonsRegistry.saveComparison(
+        { baselineRunUid, currentRunUid },
+        forged
+      ),
+      (error) => error?.name === "UnsupportedComparisonPersistenceError"
+    );
+    assert.equal(
+      fs.existsSync(path.join(process.cwd(), "data", "comparisons", "index.json")),
+      false
+    );
+  });
+});
+
+run("DB-01 forged registry evidence and unsupported findings stay non-authoritative", async () => {
+  const comparisonsRegistry = await import("../src/lib/services/comparisons-registry.ts");
+
+  await withTempCwd(async () => {
+    const comparisonsDir = path.join(process.cwd(), "data", "comparisons");
+    const indexPath = path.join(comparisonsDir, "index.json");
+    fs.mkdirSync(comparisonsDir, { recursive: true });
+
+    const partialDiff = JSON.parse(JSON.stringify(createDiffData([])));
+    partialDiff.evidence.reasonCodes = [
+      "partial-coverage",
+      "external-reachability-not-established",
+    ];
+    partialDiff.evidence.coverage.current.status = "partial";
+    partialDiff.evidence.coverage.current.partial = true;
+    partialDiff.evidence.coverage.current.missingSources = ["discovery"];
+
+    const uncertainDiff = JSON.parse(JSON.stringify(createDiffData([])));
+    uncertainDiff.evidence.identity = { status: "uncertain", uncertainCount: 1 };
+
+    const unsupportedFindingsDiff = JSON.parse(JSON.stringify(createDiffData([])));
+    unsupportedFindingsDiff.evidence.supports.deviceAbsence = false;
+    unsupportedFindingsDiff.evidence.supports.portClosure = false;
+    unsupportedFindingsDiff.removedHosts = [
+      { ip: "192.0.2.90", changeType: "removed" },
+    ];
+    unsupportedFindingsDiff.portsClosed = [
+      {
+        ip: "192.0.2.90",
+        port: 443,
+        protocol: "tcp",
+        service: "https",
+        changeType: "closed",
+      },
+    ];
+
+    const truncatedCoverageDiff = JSON.parse(JSON.stringify(createDiffData([])));
+    truncatedCoverageDiff.evidence.coverage.current.normalizationStatus = "truncated";
+    truncatedCoverageDiff.evidence.coverage.current.normalizationReasonCodes = [
+      "open-port-limit-exceeded",
+    ];
+    truncatedCoverageDiff.evidence.coverage.baseline.normalizationStatus = "truncated";
+    truncatedCoverageDiff.evidence.coverage.baseline.normalizationReasonCodes = [
+      "open-port-limit-exceeded",
+    ];
+    truncatedCoverageDiff.portsClosed = [
+      {
+        ip: "192.0.2.91",
+        port: 443,
+        protocol: "tcp",
+        service: "https",
+        changeType: "closed",
+      },
+    ];
+
+    const conflictingProvenanceDiff = JSON.parse(JSON.stringify(createDiffData([])));
+    conflictingProvenanceDiff.evidence.coverage.current.targetProvenanceStatus = "conflicting";
+    conflictingProvenanceDiff.evidence.coverage.current.coverageReasonCodes = [
+      "target-provenance-conflict",
+    ];
+    conflictingProvenanceDiff.evidence.coverage.baseline.targetProvenanceStatus = "conflicting";
+    conflictingProvenanceDiff.evidence.coverage.baseline.coverageReasonCodes = [
+      "target-provenance-conflict",
+    ];
+    conflictingProvenanceDiff.removedHosts = [
+      { ip: "192.0.2.92", changeType: "removed" },
+    ];
+
+    const record = (comparisonId, diffData) => ({
+      comparisonId,
+      baselineRunUid: diffData.baselineRunUid,
+      currentRunUid: diffData.currentRunUid,
+      network: diffData.network,
+      createdAt: "2026-02-09T00:00:00.000Z",
+      diffData,
+    });
+    fs.writeFileSync(
+      indexPath,
+      JSON.stringify(
+        {
+          version: 2,
+          comparisons: {
+            FORGEPAR: record("FORGEPAR", partialDiff),
+            FORGEIDN: record("FORGEIDN", uncertainDiff),
+            FORGEOUT: record("FORGEOUT", unsupportedFindingsDiff),
+            FORGETRN: record("FORGETRN", truncatedCoverageDiff),
+            FORGEPRV: record("FORGEPRV", conflictingProvenanceDiff),
+          },
+          lastUpdated: "2026-02-09T00:00:00.000Z",
+        },
+        null,
+        2
+      )
+    );
+    const before = fs.readFileSync(indexPath);
+
+    assert.deepEqual(comparisonsRegistry.listComparisons(), []);
+    assert.equal(comparisonsRegistry.getComparisonById("FORGEPAR"), null);
+    assert.equal(comparisonsRegistry.getComparisonById("FORGEIDN"), null);
+    assert.equal(comparisonsRegistry.getComparisonById("FORGEOUT"), null);
+    assert.equal(comparisonsRegistry.getComparisonById("FORGETRN"), null);
+    assert.equal(comparisonsRegistry.getComparisonById("FORGEPRV"), null);
+    assert.deepEqual(fs.readFileSync(indexPath), before);
+  });
+});
+
+run("DB-01 valid registry mutations preserve co-resident legacy records", async () => {
+  const comparisonsRegistry = await import("../src/lib/services/comparisons-registry.ts");
+
+  await withTempCwd(async () => {
+    const { baselineRunUid, currentRunUid } = writeDb01RunPairFixtures();
+    const validDiff = computeDiff(baselineRunUid, currentRunUid);
+    assert.ok(validDiff);
+
+    const comparisonsDir = path.join(process.cwd(), "data", "comparisons");
+    const indexPath = path.join(comparisonsDir, "index.json");
+    fs.mkdirSync(comparisonsDir, { recursive: true });
+    const legacy = {
+      comparisonId: "00",
+      baselineRunUid: "legacy-a",
+      currentRunUid: "legacy-b",
+      network: "legacy-network",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      diffData: { network: "legacy-network", summary: "legacy bytes stay here" },
+      riskScore: 100,
+      riskLabel: "Excellent",
+      unknownLegacyField: { preserve: ["exactly", 1, true] },
+    };
+    fs.writeFileSync(
+      indexPath,
+      JSON.stringify(
+        {
+          version: 1,
+          comparisons: { "00": legacy },
+          lastUpdated: "2026-01-01T00:00:00.000Z",
+        },
+        null,
+        2
+      )
+    );
+    const legacyBytes = JSON.stringify(legacy);
+
+    const originalDateNow = Date.now;
+    const originalRandom = Math.random;
+    let randomCall = 0;
+    Date.now = () => 0;
+    Math.random = () => (randomCall++ === 0 ? 0 : 0.5);
+    let saved;
+    try {
+      // The second argument keeps this test failing on the reviewed API while
+      // remaining ignored by the corrected server-recomputing boundary.
+      saved = comparisonsRegistry.saveComparison(
+        { baselineRunUid, currentRunUid, title: "valid" },
+        validDiff
+      );
+    } finally {
+      Date.now = originalDateNow;
+      Math.random = originalRandom;
+    }
+
+    assert.notEqual(saved.comparisonId, "00");
+    let persisted = JSON.parse(fs.readFileSync(indexPath, "utf8"));
+    assert.equal(JSON.stringify(persisted.comparisons["00"]), legacyBytes);
+    assert.equal(persisted.comparisons[saved.comparisonId].title, "valid");
+    assert.deepEqual(
+      comparisonsRegistry.listComparisons().map((comparison) => comparison.comparisonId),
+      [saved.comparisonId]
+    );
+
+    const updated = comparisonsRegistry.updateComparison(saved.comparisonId, {
+      title: "updated",
+      notes: "preserve legacy",
+    });
+    assert.equal(updated?.title, "updated");
+    persisted = JSON.parse(fs.readFileSync(indexPath, "utf8"));
+    assert.equal(JSON.stringify(persisted.comparisons["00"]), legacyBytes);
+
+    assert.equal(comparisonsRegistry.deleteComparison(saved.comparisonId), true);
+    persisted = JSON.parse(fs.readFileSync(indexPath, "utf8"));
+    assert.equal(JSON.stringify(persisted.comparisons["00"]), legacyBytes);
+    assert.equal(saved.comparisonId in persisted.comparisons, false);
+
+    const beforeLegacyMutation = fs.readFileSync(indexPath);
+    assert.equal(comparisonsRegistry.updateComparison("00", { title: "do not mutate" }), null);
+    assert.equal(comparisonsRegistry.deleteComparison("00"), false);
+    assert.deepEqual(fs.readFileSync(indexPath), beforeLegacyMutation);
+  });
+});
+
+run("DB-01 malformed comparison registries cannot be overwritten by mutations", async () => {
+  const comparisonsRegistry = await import("../src/lib/services/comparisons-registry.ts");
+
+  await withTempCwd(async () => {
+    const { baselineRunUid, currentRunUid } = writeDb01RunPairFixtures();
+    const validDiff = computeDiff(baselineRunUid, currentRunUid);
+    assert.ok(validDiff);
+
+    const comparisonsDir = path.join(process.cwd(), "data", "comparisons");
+    const indexPath = path.join(comparisonsDir, "index.json");
+    fs.mkdirSync(comparisonsDir, { recursive: true });
+    fs.writeFileSync(indexPath, "{ malformed-registry");
+    const before = fs.readFileSync(indexPath);
+    const integrityError = (error) => error?.name === "ComparisonRegistryIntegrityError";
+
+    assert.throws(
+      () => comparisonsRegistry.saveComparison(
+        { baselineRunUid, currentRunUid },
+        validDiff
+      ),
+      integrityError
+    );
+    assert.deepEqual(fs.readFileSync(indexPath), before);
+    assert.throws(
+      () => comparisonsRegistry.updateComparison("ANY", { title: "no" }),
+      integrityError
+    );
+    assert.deepEqual(fs.readFileSync(indexPath), before);
+    assert.throws(
+      () => comparisonsRegistry.deleteComparison("ANY"),
+      integrityError
+    );
+    assert.deepEqual(fs.readFileSync(indexPath), before);
   });
 });
 
@@ -6413,14 +6913,14 @@ run("DB-01 scorecard export and rule fallback preserve evidence limitations", as
   });
 });
 
-run("DB-01 production demo payload remains explicitly fail closed", () => {
+run("DB-01 production demo is useful, synthetic, and evidence bounded", () => {
   const demo = JSON.parse(
     fs.readFileSync(path.join(process.cwd(), "data", "demo", "demo-data.json"), "utf8")
   );
 
   for (const scorecard of [demo.baselineScorecard, demo.currentScorecard]) {
     assert.equal(scorecard.evidence.version, "psec.evidence.v1");
-    assert.equal(scorecard.evidence.status, "insufficient-evidence");
+    assert.equal(scorecard.evidence.status, "supported");
     assert.equal(scorecard.evidence.supports.llmSummary, false);
     assert.equal(scorecard.riskPorts, scorecard.riskPortsDetail.length);
     assert.deepEqual(scorecard.evidence.coverage.current.expectedSources, [
@@ -6430,27 +6930,735 @@ run("DB-01 production demo payload remains explicitly fail closed", () => {
       "arp_snapshot",
       "scan_metadata",
     ]);
-    assert.deepEqual(scorecard.evidence.coverage.current.missingSources, [
-      "arp_snapshot",
-      "scan_metadata",
-    ]);
+    assert.deepEqual(scorecard.evidence.coverage.current.missingSources, []);
+    assert.equal(scorecard.evidence.coverage.current.normalizationStatus, "complete");
+    assert.equal(scorecard.evidence.coverage.current.targetProvenanceStatus, "verified");
+    assert.match(scorecard.evidence.limitations.join("\n"), /synthetic demonstration/i);
   }
 
-  assert.equal(demo.diff.evidence.status, "insufficient-evidence");
-  assert.equal(demo.diff.evidence.supports.deviceAbsence, false);
-  assert.equal(demo.diff.evidence.supports.portClosure, false);
+  assert.equal(demo.diff.evidence.status, "supported");
+  assert.equal(demo.diff.evidence.supports.deviceAbsence, true);
+  assert.equal(demo.diff.evidence.supports.portClosure, true);
   assert.equal(demo.diff.evidence.supports.comparisonPersistence, false);
   assert.equal(demo.diff.evidence.supports.llmSummary, false);
-  assert.deepEqual(demo.diff.newHosts, []);
+  assert.equal(demo.diff.newHosts.length, 1);
   assert.deepEqual(demo.diff.removedHosts, []);
-  assert.deepEqual(demo.diff.portsOpened, []);
+  assert.equal(demo.diff.portsOpened.length, 1);
   assert.deepEqual(demo.diff.portsClosed, []);
-  assert.deepEqual(demo.diff.riskFindings, []);
-  assert.ok(demo.diff.identityUncertain.length > 0);
+  assert.deepEqual(demo.diff.riskFindings, demo.diff.portsOpened);
+  assert.deepEqual(demo.diff.identityUncertain, []);
+  assert.match(demo.diff.evidence.limitations.join("\n"), /synthetic demonstration/i);
   assert.doesNotMatch(
     demo.diff.summary,
     /internet exposure|perimeter failure|breach probability|financial impact|network (?:is )?safe/i
   );
+});
+
+run("DB-01 corrective normalization records the 256/257 open-port boundary and blocks false closure", async () => {
+  await withTempCwd(async () => {
+    const baselineRaw = createObservationRegistryBundle({
+      runUid: "normalization-port-baseline",
+      network: "normalization-lab",
+      startedAt: "2026-07-01T10:00:00.000Z",
+      endedAt: "2026-07-01T10:01:00.000Z",
+      generatedAt: "2026-07-01T10:01:00.000Z",
+    });
+    const currentRaw = createObservationRegistryBundle({
+      runUid: "normalization-port-current",
+      network: "normalization-lab",
+      startedAt: "2026-07-01T11:00:00.000Z",
+      endedAt: "2026-07-01T11:01:00.000Z",
+      generatedAt: "2026-07-01T11:01:00.000Z",
+    });
+    baselineRaw.devices = baselineRaw.devices.filter((device) => device.macs.includes("02:00:00:00:00:10"));
+    currentRaw.devices = currentRaw.devices.filter((device) => device.macs.includes("02:00:00:00:00:10"));
+    const baselineSource = baselineRaw.sources.find((source) => source.artifactLabel === "ports").sourceId;
+    const currentSource = currentRaw.sources.find((source) => source.artifactLabel === "ports").sourceId;
+    baselineRaw.devices[0].openPorts = [observationTestPort(baselineSource, 65535)];
+    currentRaw.devices[0].openPorts = [
+      ...Array.from({ length: 256 }, (_, index) => observationTestPort(currentSource, index + 1)),
+      observationTestPort(currentSource, 65535),
+    ];
+
+    const at256Raw = cloneJson(currentRaw);
+    at256Raw.devices[0].openPorts = at256Raw.devices[0].openPorts.slice(0, 256);
+    const at256 = sanitizeObservationBundleV1(at256Raw);
+    const at257 = sanitizeObservationBundleV1(currentRaw);
+    const baseline = sanitizeObservationBundleV1(baselineRaw);
+    const diff = buildDiffFromObservationBundles(baseline, at257);
+
+    assert.equal(at256.normalization.status, "complete");
+    assert.equal(at257.normalization.status, "truncated");
+    assert.ok(at257.normalization.reasonCodes.includes("open-port-limit-exceeded"));
+    assert.notEqual(at257.coverage.status, "complete");
+    assert.equal(diff.evidence.status, "insufficient-evidence");
+    assert.deepEqual(diff.portsClosed, []);
+  });
+});
+
+run("DB-01 legacy or internally inconsistent normalization provenance fails closed", async () => {
+  await withTempCwd(async () => {
+    const baselineRaw = createObservationRegistryBundle({
+      runUid: "normalization-provenance-baseline",
+      network: "normalization-provenance-lab",
+      startedAt: "2026-07-01T10:00:00.000Z",
+      endedAt: "2026-07-01T10:01:00.000Z",
+      generatedAt: "2026-07-01T10:01:00.000Z",
+    });
+    const currentTemplate = createObservationRegistryBundle({
+      runUid: "normalization-provenance-current",
+      network: "normalization-provenance-lab",
+      startedAt: "2026-07-01T11:00:00.000Z",
+      endedAt: "2026-07-01T11:01:00.000Z",
+      generatedAt: "2026-07-01T11:01:00.000Z",
+    });
+    baselineRaw.devices = baselineRaw.devices.filter((device) =>
+      device.macs.includes("02:00:00:00:00:10")
+    );
+    currentTemplate.devices = currentTemplate.devices.filter((device) =>
+      device.macs.includes("02:00:00:00:00:10")
+    );
+    const baselineSource = baselineRaw.sources.find(
+      (source) => source.artifactLabel === "ports"
+    ).sourceId;
+    baselineRaw.devices[0].openPorts = [observationTestPort(baselineSource, 443)];
+    currentTemplate.devices[0].openPorts = [];
+    const baseline = sanitizeObservationBundleV1(baselineRaw);
+
+    for (const testCase of [
+      {
+        name: "missing normalization record",
+        reasonCode: "normalization-record-missing",
+        mutate(bundle) {
+          delete bundle.normalization;
+        },
+      },
+      {
+        name: "truncated status without reasons",
+        reasonCode: "normalization-record-inconsistent",
+        mutate(bundle) {
+          bundle.normalization = { status: "truncated", reasonCodes: [], losses: [] };
+        },
+      },
+    ]) {
+      const imported = cloneJson(currentTemplate);
+      testCase.mutate(imported);
+      const current = sanitizeObservationBundleV1(imported);
+      const diff = buildDiffFromObservationBundles(baseline, current);
+
+      assert.equal(
+        current.normalization.status,
+        "truncated",
+        `${testCase.name} was unsafely upgraded to complete`
+      );
+      assert.ok(current.normalization.reasonCodes.includes(testCase.reasonCode), testCase.name);
+      assert.notEqual(current.coverage.status, "complete", testCase.name);
+      assert.equal(diff.evidence.status, "insufficient-evidence", testCase.name);
+      assert.equal(diff.evidence.supports.portClosure, false, testCase.name);
+      assert.equal(diff.evidence.supports.comparisonPersistence, false, testCase.name);
+      assert.equal(diff.evidence.supports.llmSummary, false, testCase.name);
+      assert.deepEqual(diff.portsClosed, [], testCase.name);
+    }
+  });
+});
+
+run("DB-01 corrective normalization records malformed still-open evidence and blocks false closure", async () => {
+  await withTempCwd(async () => {
+    const baselineRaw = createObservationRegistryBundle({
+      runUid: "normalization-invalid-port-baseline",
+      network: "normalization-invalid-lab",
+      startedAt: "2026-07-01T12:00:00.000Z",
+      endedAt: "2026-07-01T12:01:00.000Z",
+      generatedAt: "2026-07-01T12:01:00.000Z",
+    });
+    const currentRaw = createObservationRegistryBundle({
+      runUid: "normalization-invalid-port-current",
+      network: "normalization-invalid-lab",
+      startedAt: "2026-07-01T13:00:00.000Z",
+      endedAt: "2026-07-01T13:01:00.000Z",
+      generatedAt: "2026-07-01T13:01:00.000Z",
+    });
+    baselineRaw.devices = baselineRaw.devices.filter((device) =>
+      device.macs.includes("02:00:00:00:00:10")
+    );
+    currentRaw.devices = currentRaw.devices.filter((device) =>
+      device.macs.includes("02:00:00:00:00:10")
+    );
+    const baselineSource = baselineRaw.sources.find(
+      (source) => source.artifactLabel === "ports"
+    ).sourceId;
+    const currentSource = currentRaw.sources.find(
+      (source) => source.artifactLabel === "ports"
+    ).sourceId;
+    baselineRaw.devices[0].openPorts = [observationTestPort(baselineSource, 443)];
+    currentRaw.devices[0].openPorts = [
+      {
+        ...observationTestPort(currentSource, 443),
+        port: "443",
+      },
+    ];
+
+    const baseline = sanitizeObservationBundleV1(baselineRaw);
+    const current = sanitizeObservationBundleV1(currentRaw);
+    const diff = buildDiffFromObservationBundles(baseline, current);
+
+    assert.equal(current.normalization.status, "truncated");
+    assert.ok(current.normalization.reasonCodes.includes("invalid-open-port-dropped"));
+    assert.equal(diff.evidence.status, "insufficient-evidence");
+    assert.deepEqual(diff.portsClosed, []);
+  });
+});
+
+run("DB-01 corrective normalization records the 1000/1001 device boundary", async () => {
+  await withTempCwd(async () => {
+    const raw = createObservationRegistryBundle({ runUid: "normalization-device-limit" });
+    const template = raw.devices[0];
+    const sourceId = raw.sources[0].sourceId;
+    raw.devices = Array.from({ length: 1000 }, (_, index) =>
+      observationTestDevice(template, index, sourceId)
+    );
+    const at1000 = sanitizeObservationBundleV1(raw);
+    raw.devices.push(observationTestDevice(template, 1000, sourceId));
+    const at1001 = sanitizeObservationBundleV1(raw);
+
+    assert.equal(at1000.devices.length, 1000);
+    assert.equal(at1000.normalization.status, "complete");
+    assert.equal(at1001.devices.length, 1000);
+    assert.equal(at1001.normalization.status, "truncated");
+    assert.ok(at1001.normalization.reasonCodes.includes("device-limit-exceeded"));
+    assert.notEqual(at1001.coverage.status, "complete");
+  });
+});
+
+run("DB-01 corrective normalization records the 50/51 source boundary", async () => {
+  await withTempCwd(async () => {
+    const raw = createObservationRegistryBundle({ runUid: "normalization-source-limit" });
+    const originalSources = cloneJson(raw.sources);
+    while (raw.sources.length < 50) {
+      const index = raw.sources.length + 1;
+      raw.sources.push({
+        ...cloneJson(originalSources[0]),
+        sourceId: `src-extra-${index}`,
+        artifactLabel: `supplemental-${index}`,
+      });
+    }
+    const at50 = sanitizeObservationBundleV1(raw);
+    raw.sources.push({
+      ...cloneJson(originalSources[0]),
+      sourceId: "src-extra-51",
+      artifactLabel: "supplemental-51",
+    });
+    const at51 = sanitizeObservationBundleV1(raw);
+
+    assert.equal(at50.sources.length, 50);
+    assert.equal(at50.normalization.status, "complete");
+    assert.equal(at51.sources.length, 50);
+    assert.equal(at51.normalization.status, "truncated");
+    assert.ok(at51.normalization.reasonCodes.includes("source-limit-exceeded"));
+    assert.notEqual(at51.coverage.status, "complete");
+  });
+});
+
+run("DB-01 imported observations preserve unknown collector and vantage fields as evidence loss", async () => {
+  await withTempCwd(async () => {
+    const baseline = sanitizeObservationBundleV1(
+      createObservationRegistryBundle({
+        runUid: "import-field-baseline",
+        network: "import-field-lab",
+        startedAt: "2026-07-01T14:00:00.000Z",
+        endedAt: "2026-07-01T14:01:00.000Z",
+        generatedAt: "2026-07-01T14:01:00.000Z",
+      })
+    );
+    const validCurrent = createObservationRegistryBundle({
+      runUid: "import-field-current",
+      network: "import-field-lab",
+      startedAt: "2026-07-01T15:00:00.000Z",
+      endedAt: "2026-07-01T15:01:00.000Z",
+      generatedAt: "2026-07-01T15:01:00.000Z",
+    });
+    validCurrent.devices[0].openPorts = [];
+
+    for (const testCase of [
+      {
+        name: "missing",
+        mutate(bundle) {
+          delete bundle.collector.kind;
+          delete bundle.vantage.type;
+        },
+      },
+      {
+        name: "invalid",
+        mutate(bundle) {
+          bundle.collector.kind = "forged-registered-collector";
+          bundle.vantage.type = "forged-active-vantage";
+        },
+      },
+    ]) {
+      const imported = cloneJson(validCurrent);
+      testCase.mutate(imported);
+      const current = sanitizeObservationBundleV1(imported);
+      const diff = buildDiffFromObservationBundles(baseline, current);
+      const fallback = generateRuleBasedDiffSummary(diff, testUserProfile);
+
+      assert.equal(current.collector.kind, "unknown", testCase.name);
+      assert.equal(current.vantage.type, "unknown", testCase.name);
+      assert.equal(current.normalization.status, "truncated", testCase.name);
+      assert.ok(
+        current.normalization.reasonCodes.includes("invalid-collector-kind"),
+        testCase.name
+      );
+      assert.ok(
+        current.normalization.reasonCodes.includes("invalid-vantage-type"),
+        testCase.name
+      );
+      assert.equal(diff.evidence.status, "insufficient-evidence", testCase.name);
+      assert.deepEqual(diff.removedHosts, [], testCase.name);
+      assert.deepEqual(diff.portsClosed, [], testCase.name);
+      assert.equal(diff.evidence.supports.comparisonPersistence, false, testCase.name);
+      assert.equal(diff.evidence.supports.llmSummary, false, testCase.name);
+      assert.match(fallback, /insufficient evidence/i, testCase.name);
+      assert.doesNotMatch(fallback, /service closure.+supported|baseline is stable/i, testCase.name);
+    }
+  });
+});
+
+run("DB-01 imported coverage is derived from source provenance rather than self-declared fields", async () => {
+  await withTempCwd(async () => {
+    const baselineRaw = createObservationRegistryBundle({
+      runUid: "import-coverage-baseline",
+      network: "import-coverage-lab",
+      startedAt: "2026-07-01T16:00:00.000Z",
+      endedAt: "2026-07-01T16:01:00.000Z",
+      generatedAt: "2026-07-01T16:01:00.000Z",
+    });
+    const removedDevice = cloneJson(baselineRaw.devices[0]);
+    removedDevice.deviceId = "import-coverage-removed-device";
+    removedDevice.ips = ["192.0.2.88"];
+    removedDevice.macs = ["02:00:00:00:00:88"];
+    removedDevice.hostnames = ["removed-device.example"];
+    removedDevice.identityEvidence = removedDevice.identityEvidence.map((evidence) => {
+      if (evidence.kind === "ip-address" || evidence.kind === "host-up") {
+        return { ...evidence, value: "192.0.2.88" };
+      }
+      if (evidence.kind === "mac-address") {
+        return { ...evidence, value: "02:00:00:00:00:88" };
+      }
+      if (evidence.kind === "arp-neighbor") {
+        return { ...evidence, value: "192.0.2.88 02:00:00:00:00:88" };
+      }
+      if (evidence.kind === "hostname") {
+        return { ...evidence, value: "removed-device.example" };
+      }
+      return evidence;
+    });
+    baselineRaw.devices.push(removedDevice);
+
+    const currentRaw = createObservationRegistryBundle({
+      runUid: "import-coverage-current",
+      network: "import-coverage-lab",
+      startedAt: "2026-07-01T17:00:00.000Z",
+      endedAt: "2026-07-01T17:01:00.000Z",
+      generatedAt: "2026-07-01T17:01:00.000Z",
+    });
+    currentRaw.devices[0].openPorts = [];
+    currentRaw.sources = currentRaw.sources.filter(
+      (source) => !["hosts_up", "arp_snapshot", "scan_metadata"].includes(source.artifactLabel)
+    );
+    const retainedSourceIds = new Set(currentRaw.sources.map((source) => source.sourceId));
+    currentRaw.devices[0].identityEvidence = currentRaw.devices[0].identityEvidence.filter(
+      (evidence) => retainedSourceIds.has(evidence.sourceId)
+    );
+    currentRaw.coverage = {
+      status: "complete",
+      score: 1,
+      expectedSources: ["ports", "discovery"],
+      presentSources: [
+        "ports",
+        "discovery",
+        "hosts_up",
+        "arp_snapshot",
+        "scan_metadata",
+      ],
+      missingSources: [],
+      notes: [],
+      reasonCodes: [],
+      targetProvenance: {
+        status: "verified",
+        declaredScope: currentRaw.site.networkScope,
+        observedScopes: [currentRaw.site.networkScope],
+      },
+    };
+    currentRaw.batch.partial = false;
+
+    const baseline = sanitizeObservationBundleV1(baselineRaw);
+    const current = sanitizeObservationBundleV1(currentRaw);
+    const diff = buildDiffFromObservationBundles(baseline, current);
+    const fallback = generateRuleBasedDiffSummary(diff, testUserProfile);
+
+    assert.deepEqual(current.coverage.expectedSources, comparisonExpectedSources);
+    assert.deepEqual(current.coverage.presentSources, ["ports", "discovery"]);
+    assert.deepEqual(current.coverage.missingSources, [
+      "hosts_up",
+      "arp_snapshot",
+      "scan_metadata",
+    ]);
+    assert.equal(current.coverage.score, 0.6);
+    assert.equal(current.coverage.status, "partial");
+    assert.equal(current.batch.partial, true);
+    assert.equal(diff.evidence.status, "insufficient-evidence");
+    assert.deepEqual(diff.removedHosts, []);
+    assert.deepEqual(diff.portsClosed, []);
+    assert.equal(diff.evidence.supports.comparisonPersistence, false);
+    assert.equal(diff.evidence.supports.llmSummary, false);
+    assert.match(fallback, /insufficient evidence/i);
+    assert.doesNotMatch(
+      fallback,
+      /device absence.+supported|service closure.+supported|baseline is stable/i
+    );
+  });
+});
+
+run("DB-01 corrective coverage rejects empty discovery support artifacts", async () => {
+  await withTempCwd(async () => {
+    const { currentManifest } = writeDb01RunPairFixtures();
+    fs.writeFileSync(currentManifest.keyFiles.hosts_up[0], "");
+    fs.writeFileSync(currentManifest.keyFiles.snapshots[0], "");
+    const current = adaptRunManifestToObservationBundleV1(currentManifest);
+
+    assert.notEqual(current.coverage.status, "complete");
+    assert.equal(current.coverage.presentSources.includes("hosts_up"), false);
+    assert.equal(current.coverage.presentSources.includes("arp_snapshot"), false);
+    assert.ok(current.coverage.reasonCodes.includes("empty-hosts-up"));
+    assert.ok(current.coverage.reasonCodes.includes("empty-arp-snapshot"));
+  });
+});
+
+run("DB-01 corrective coverage rejects a one-host discovery presented as a larger scope", async () => {
+  await withTempCwd(async () => {
+    const { currentManifest } = writeDb01RunPairFixtures({
+      currentHosts: [
+        {
+          ip: "192.0.2.10",
+          mac: "02:00:00:00:00:10",
+          ports: [{ port: 443, protocol: "tcp", service: "https" }],
+        },
+      ],
+      currentScope: "192.0.2.0/24",
+    });
+    const discoveryPath = currentManifest.keyFiles.discovery[0];
+    const narrowXml = createObservationNmapXml([
+      { ip: "192.0.2.10", mac: "02:00:00:00:00:10", ports: [] },
+    ]).replace(/<nmaprun[^>]*>/, '<nmaprun args="nmap -sn 192.0.2.10">');
+    fs.writeFileSync(discoveryPath, narrowXml);
+    const current = adaptRunManifestToObservationBundleV1(currentManifest);
+
+    assert.notEqual(current.coverage.status, "complete");
+    assert.ok(current.coverage.reasonCodes.includes("target-coverage-unverified"));
+  });
+});
+
+run("DB-01 corrective coverage rejects conflicting metadata and Nmap target provenance", async () => {
+  await withTempCwd(async () => {
+    const { currentManifest } = writeDb01RunPairFixtures({ currentScope: "192.0.2.0/24" });
+    for (const label of ["ports", "discovery"]) {
+      const xmlPath = currentManifest.keyFiles[label][0];
+      const xml = fs.readFileSync(xmlPath, "utf8");
+      fs.writeFileSync(
+        xmlPath,
+        xml.replace(/<nmaprun[^>]*>/, '<nmaprun args="nmap 198.51.100.0/24">')
+      );
+    }
+    const current = adaptRunManifestToObservationBundleV1(currentManifest);
+
+    assert.notEqual(current.coverage.status, "complete");
+    assert.ok(current.coverage.reasonCodes.includes("target-provenance-conflict"));
+  });
+});
+
+run("DB-01 corrective identity keeps explicitly weak shared MAC evidence uncertain", async () => {
+  await withTempCwd(async () => {
+    const baseline = createObservationRegistryBundle({
+      runUid: "weak-mac-baseline",
+      network: "identity-lab",
+      startedAt: "2026-07-02T10:00:00.000Z",
+      endedAt: "2026-07-02T10:01:00.000Z",
+      generatedAt: "2026-07-02T10:01:00.000Z",
+    });
+    const current = createObservationRegistryBundle({
+      runUid: "weak-mac-current",
+      network: "identity-lab",
+      startedAt: "2026-07-02T11:00:00.000Z",
+      endedAt: "2026-07-02T11:01:00.000Z",
+      generatedAt: "2026-07-02T11:01:00.000Z",
+    });
+    for (const bundle of [baseline, current]) {
+      bundle.devices = bundle.devices.filter((device) => device.macs.includes("02:00:00:00:00:10"));
+      for (const evidence of bundle.devices[0].identityEvidence) {
+        if (evidence.kind === "mac-address") evidence.confidence = "weak";
+      }
+    }
+    current.devices[0].ips = ["192.0.2.77"];
+    const diff = buildDiffFromObservationBundles(baseline, current);
+
+    assert.equal(diff.evidence.status, "uncertain");
+    assert.ok(diff.evidence.reasonCodes.includes("identity-uncertain"));
+    assert.deepEqual(diff.portsClosed, []);
+  });
+});
+
+run("DB-01 corrective identity records conflicting transitive MAC and IP evidence without merging", async () => {
+  await withTempCwd(async () => {
+    const { currentManifest } = writeDb01RunPairFixtures({
+      currentHosts: [
+        { ip: "192.0.2.10", mac: "02:00:00:00:00:AA", ports: [] },
+        { ip: "192.0.2.20", mac: "02:00:00:00:00:BB", ports: [] },
+      ],
+    });
+    fs.writeFileSync(
+      currentManifest.keyFiles.discovery[0],
+      createObservationNmapXml([
+        { ip: "192.0.2.10", mac: "02:00:00:00:00:BB", ports: [] },
+      ])
+    );
+    const current = adaptRunManifestToObservationBundleV1(currentManifest);
+
+    assert.equal(current.identity.status, "conflicting");
+    assert.ok(current.identity.reasonCodes.includes("conflicting-identifiers"));
+    assert.ok(current.devices.length >= 2);
+  });
+});
+
+run("DB-01 corrective identity treats one observed MAC reused by multiple devices as uncertain", async () => {
+  await withTempCwd(async () => {
+    const baseline = createObservationRegistryBundle({
+      runUid: "mac-reuse-baseline",
+      network: "identity-lab",
+      startedAt: "2026-07-03T10:00:00.000Z",
+      endedAt: "2026-07-03T10:01:00.000Z",
+      generatedAt: "2026-07-03T10:01:00.000Z",
+    });
+    const current = createObservationRegistryBundle({
+      runUid: "mac-reuse-current",
+      network: "identity-lab",
+      startedAt: "2026-07-03T11:00:00.000Z",
+      endedAt: "2026-07-03T11:01:00.000Z",
+      generatedAt: "2026-07-03T11:01:00.000Z",
+    });
+    baseline.devices = baseline.devices.filter((device) => device.macs.includes("02:00:00:00:00:10"));
+    current.devices = current.devices.filter((device) => device.macs.includes("02:00:00:00:00:10"));
+    const reused = cloneJson(current.devices[0]);
+    reused.deviceId = "second-record-sharing-mac";
+    reused.ips = ["192.0.2.77"];
+    reused.identityEvidence = reused.identityEvidence.map((evidence) =>
+      evidence.kind === "ip-address" ? { ...evidence, value: "192.0.2.77" } : evidence
+    );
+    current.devices.push(reused);
+    const normalizedCurrent = sanitizeObservationBundleV1(current);
+    const diff = buildDiffFromObservationBundles(baseline, normalizedCurrent);
+
+    assert.equal(normalizedCurrent.identity.status, "conflicting");
+    assert.equal(diff.evidence.status, "uncertain");
+    assert.deepEqual(diff.portsOpened, []);
+    assert.deepEqual(diff.portsClosed, []);
+  });
+});
+
+run("DB-01 corrective compatibility rejects overlapping collection intervals", async () => {
+  await withTempCwd(async () => {
+    const baseline = createObservationRegistryBundle({
+      runUid: "interval-baseline",
+      network: "interval-lab",
+      startedAt: "2026-07-04T10:00:00.000Z",
+      endedAt: "2026-07-04T10:10:00.000Z",
+      generatedAt: "2026-07-04T10:10:00.000Z",
+    });
+    const current = createObservationRegistryBundle({
+      runUid: "interval-current",
+      network: "interval-lab",
+      startedAt: "2026-07-04T10:05:00.000Z",
+      endedAt: "2026-07-04T10:15:00.000Z",
+      generatedAt: "2026-07-04T10:15:00.000Z",
+    });
+
+    assert.throws(
+      () => buildDiffFromObservationBundles(baseline, current),
+      (error) => error instanceof DiffComparisonError && error.code === "overlapping-collection-intervals"
+    );
+  });
+});
+
+run("DB-01 corrective compatibility rejects changed collection vantage and collector position", async () => {
+  await withTempCwd(async () => {
+    const baseline = createObservationRegistryBundle({
+      runUid: "vantage-baseline",
+      network: "vantage-lab",
+      startedAt: "2026-07-05T10:00:00.000Z",
+      endedAt: "2026-07-05T10:01:00.000Z",
+      generatedAt: "2026-07-05T10:01:00.000Z",
+    });
+    const current = createObservationRegistryBundle({
+      runUid: "vantage-current",
+      network: "vantage-lab",
+      startedAt: "2026-07-05T11:00:00.000Z",
+      endedAt: "2026-07-05T11:01:00.000Z",
+      generatedAt: "2026-07-05T11:01:00.000Z",
+    });
+    current.vantage.type = "packet-highway-mirror-tap";
+    assert.throws(
+      () => buildDiffFromObservationBundles(baseline, current),
+      (error) => error instanceof DiffComparisonError && error.code === "incompatible-vantage"
+    );
+
+    current.vantage.type = baseline.vantage.type;
+    current.vantage.collectorHost = "different-collector-position";
+    assert.throws(
+      () => buildDiffFromObservationBundles(baseline, current),
+      (error) => error instanceof DiffComparisonError && error.code === "incompatible-collector"
+    );
+  });
+});
+
+run("DB-01 corrective compatibility accepts canonical scope and run-type aliases", async () => {
+  await withTempCwd(async () => {
+    const baseline = createObservationRegistryBundle({
+      runUid: "canonical-baseline",
+      network: "canonical-lab",
+      startedAt: "2026-07-06T10:00:00.000Z",
+      endedAt: "2026-07-06T10:01:00.000Z",
+      generatedAt: "2026-07-06T10:01:00.000Z",
+    });
+    const current = createObservationRegistryBundle({
+      runUid: "canonical-current",
+      network: "canonical-lab",
+      startedAt: "2026-07-06T11:00:00.000Z",
+      endedAt: "2026-07-06T11:01:00.000Z",
+      generatedAt: "2026-07-06T11:01:00.000Z",
+    });
+    baseline.site.networkScope = "192.0.2.7/24";
+    baseline.vantage.target = "192.0.2.7/24";
+    baseline.vantage.runType = "baselinekit_v0";
+    current.site.networkScope = "192.0.2.0/24";
+    current.vantage.target = "192.0.2.0/24";
+    current.vantage.runType = "baselinekit-v0";
+
+    const diff = buildDiffFromObservationBundles(baseline, current);
+    assert.ok(diff);
+  });
+});
+
+run("DB-01 corrective Activity fails closed instead of emitting closure from partial current evidence", async () => {
+  await withTempCwd(async () => {
+    const baseline = createObservationRegistryBundle({
+      runUid: "activity-policy-baseline",
+      network: "activity-policy-lab",
+      startedAt: "2026-07-07T10:00:00.000Z",
+      endedAt: "2026-07-07T10:01:00.000Z",
+      generatedAt: "2026-07-07T10:01:00.000Z",
+    });
+    const currentComplete = createObservationRegistryBundle({
+      runUid: "activity-policy-current",
+      network: "activity-policy-lab",
+      startedAt: "2026-07-07T11:00:00.000Z",
+      endedAt: "2026-07-07T11:01:00.000Z",
+      generatedAt: "2026-07-07T11:01:00.000Z",
+    });
+    const current = makePartialCurrentBundleWithClosedPort(currentComplete);
+    registerObservationBundle(baseline, { evaluatedAt: "2026-07-07T12:00:00.000Z" });
+    registerObservationBundle(current, { evaluatedAt: "2026-07-07T12:00:00.000Z" });
+
+    const activity = buildNetworkActivity({ evaluatedAt: "2026-07-07T12:00:00.000Z" });
+    assert.equal(activity.status, "insufficient-evidence");
+    assert.equal(
+      activity.events.some((event) => event.type === "service-or-port-closed"),
+      false
+    );
+    assert.doesNotMatch(activity.summary, /no meaningful changes/i);
+    assert.ok(activity.evidence.reasonCodes.includes("partial-coverage"));
+  });
+});
+
+run("DB-01 corrective Statement cannot become ready or export stability from insufficient comparisons", async () => {
+  await withTempCwd(async () => {
+    const baseline = createObservationRegistryBundle({
+      runUid: "statement-policy-baseline",
+      network: "statement-policy-lab",
+      startedAt: "2026-07-08T10:00:00.000Z",
+      endedAt: "2026-07-08T10:01:00.000Z",
+      generatedAt: "2026-07-08T10:01:00.000Z",
+    });
+    const current = makePartialCurrentBundleWithClosedPort(
+      createObservationRegistryBundle({
+        runUid: "statement-policy-current",
+        network: "statement-policy-lab",
+        startedAt: "2026-07-08T11:00:00.000Z",
+        endedAt: "2026-07-08T11:01:00.000Z",
+        generatedAt: "2026-07-08T11:01:00.000Z",
+      })
+    );
+    registerObservationBundle(baseline, { evaluatedAt: "2026-07-08T12:00:00.000Z" });
+    registerObservationBundle(current, { evaluatedAt: "2026-07-08T12:00:00.000Z" });
+
+    const statement = buildNetworkStatement({
+      siteId: baseline.site.siteId,
+      from: "2026-07-08T00:00:00.000Z",
+      to: "2026-07-08T23:59:59.999Z",
+      evaluatedAt: "2026-07-08T12:00:00.000Z",
+    });
+    const markdown = renderNetworkStatementMarkdown(statement);
+
+    assert.equal(statement.status, "insufficient-evidence");
+    assert.ok(statement.evidence.reasonCodes.includes("partial-coverage"));
+    assert.match(markdown, /insufficient-evidence|partial coverage/i);
+    assert.doesNotMatch(markdown, /appeared stable|no deterministic change events|stability reflects/i);
+  });
+});
+
+run("DB-01 corrective device responses cannot persist against an unsupported Activity conclusion", async () => {
+  const deviceResponseRoute = await import("../src/app/api/activity/device-response/route.ts");
+  await withTempCwd(async () => {
+    const baseline = createObservationRegistryBundle({
+      runUid: "response-policy-baseline",
+      network: "response-policy-lab",
+      startedAt: "2026-07-09T10:00:00.000Z",
+      endedAt: "2026-07-09T10:01:00.000Z",
+      generatedAt: "2026-07-09T10:01:00.000Z",
+    });
+    const current = makePartialCurrentBundleWithClosedPort(
+      createObservationRegistryBundle({
+        runUid: "response-policy-current",
+        network: "response-policy-lab",
+        startedAt: "2026-07-09T11:00:00.000Z",
+        endedAt: "2026-07-09T11:01:00.000Z",
+        generatedAt: "2026-07-09T11:01:00.000Z",
+      })
+    );
+    registerObservationBundle(baseline, { evaluatedAt: "2026-07-09T12:00:00.000Z" });
+    registerObservationBundle(current, { evaluatedAt: "2026-07-09T12:00:00.000Z" });
+    const device = current.devices.find((candidate) => candidate.macs.includes("02:00:00:00:00:10"));
+    assert.ok(device);
+    const target = buildDeviceResponseTarget({
+      siteId: current.site.siteId,
+      observationId: current.observationId,
+      deviceId: device.deviceId,
+      macs: device.macs,
+      identityRuleId: "identity.mac",
+      identityValues: device.macs,
+    });
+    assert.ok(target);
+
+    const response = await deviceResponseRoute.POST(
+      createJsonRequest("/api/activity/device-response", "POST", {
+        target,
+        state: "investigate",
+        friendlyName: "Unsupported closure",
+      })
+    );
+    const body = await response.json();
+    assert.equal(response.status, 422);
+    assert.equal(body.success, false);
+    assert.equal(fs.existsSync(path.join(process.cwd(), "data", "device-responses", "index.json")), false);
+  });
 });
 
 run("inventory POST rejects malformed devices and preserves valid adds", async () => {
@@ -6682,9 +7890,10 @@ run("ingest POST creates observation records that populate network activity", as
     assert.equal(ingestBody.observations.failed, 0);
     assert.deepEqual(ingestBody.observations.warnings, []);
     assert.equal(observations.length, 2);
-    assert.equal(activity.status, "ready");
+    assert.equal(activity.status, "insufficient-evidence");
     assert.equal(activity.site.networkName, "home-lab");
-    assert.ok(activity.events.some((event) => event.type === "service-or-port-opened"));
+    assert.equal(activity.events.length, 0);
+    assert.match(activity.summary, /insufficient|unsupported|no supported/i);
     assertObservationRegistryOutputSafe(readObservationRegistryFilesText());
   });
 });
@@ -6802,7 +8011,7 @@ run("ingest POST is idempotent for duplicate scan uploads", async () => {
     assert.equal(firstBody.observations.duplicate, 0);
     assert.equal(firstBody.observations.failed, 0);
     assert.equal(firstObservations.length, 2);
-    assert.equal(firstActivity.status, "ready");
+    assert.equal(firstActivity.status, "insufficient-evidence");
 
     // Re-uploading the exact same scan must not create new runs or new
     // observation records, and must not pollute /activity with repeated
@@ -6828,7 +8037,7 @@ run("ingest POST is idempotent for duplicate scan uploads", async () => {
       firstObservations.map((entry) => entry.registryId).sort(),
       "observation registry identities must be stable across duplicate uploads"
     );
-    assert.equal(secondActivity.status, "ready");
+    assert.equal(secondActivity.status, "insufficient-evidence");
     assert.equal(
       secondActivity.events.length,
       firstActivity.events.length,
@@ -6935,7 +8144,7 @@ run("ingest POST dedupes old-style observations by source run identity", async (
     });
 
     assert.equal(oldStyleObservations.length, 2);
-    assert.equal(oldStyleActivity.status, "ready");
+    assert.equal(oldStyleActivity.status, "insufficient-evidence");
 
     const secondBody = await ingestOnce();
     const secondObservations = listObservations(
@@ -6959,7 +8168,7 @@ run("ingest POST dedupes old-style observations by source run identity", async (
       oldStyleRegistryIds,
       "existing old-style observation records must be preserved"
     );
-    assert.equal(secondActivity.status, "ready");
+    assert.equal(secondActivity.status, "insufficient-evidence");
     assert.equal(
       secondActivity.events.length,
       oldStyleActivity.events.length,
@@ -7580,6 +8789,298 @@ run("LLM provider hides upstream bodies in returned errors while logging detail"
       process.env.OPENAI_API_KEY = originalOpenAIKey;
     }
   }
+});
+
+// DB-01 corrective identity-boundary regressions.
+run("DB-01 hostname-only device identity stays uncertain across Diff Activity and Statement", async () => {
+  await withTempCwd(async () => {
+    const sharedDevice = {
+      deviceId: "shared-anchor",
+      ips: ["192.0.2.10"],
+      macs: ["02:00:00:00:00:10"],
+      ports: [{ port: 22, protocol: "tcp", service: "ssh" }],
+    };
+    const baseline = sanitizeObservationBundleV1(
+      createComparisonBundle({
+        observationId: "obs-hostname-only-baseline",
+        siteId: "site-hostname-only",
+        networkName: "hostname-only-lab",
+        observedAt: "2026-07-10T10:00:00.000Z",
+        devices: [
+          sharedDevice,
+          {
+            deviceId: "printer-import-label",
+            ips: [],
+            macs: [],
+            hostnames: ["printer.example.test"],
+            vendors: ["Example Printer"],
+            ports: [{ port: 443, protocol: "tcp", service: "https" }],
+          },
+        ],
+      })
+    );
+    const current = sanitizeObservationBundleV1(
+      createComparisonBundle({
+        observationId: "obs-hostname-only-current",
+        siteId: "site-hostname-only",
+        networkName: "hostname-only-lab",
+        observedAt: "2026-07-10T11:00:00.000Z",
+        devices: [sharedDevice],
+      })
+    );
+
+    assert.equal(baseline.identity.status, "uncertain");
+    assert.ok(baseline.identity.reasonCodes.includes("weak-identity-evidence"));
+
+    const diff = buildDiffFromObservationBundles(baseline, current);
+    assert.equal(diff.evidence.status, "uncertain");
+    assert.equal(diff.evidence.supports.deviceAbsence, false);
+    assert.equal(diff.evidence.supports.portClosure, false);
+    assert.deepEqual(diff.removedHosts, []);
+    assert.deepEqual(diff.portsClosed, []);
+
+    registerObservationBundle(baseline, {
+      importedAt: "2026-07-10T10:05:00.000Z",
+      evaluatedAt: "2026-07-10T12:00:00.000Z",
+    });
+    registerObservationBundle(current, {
+      importedAt: "2026-07-10T11:05:00.000Z",
+      evaluatedAt: "2026-07-10T12:00:00.000Z",
+    });
+
+    const activity = buildNetworkActivity({
+      evaluatedAt: "2026-07-10T12:00:00.000Z",
+    });
+    assert.equal(activity.status, "insufficient-evidence");
+    assert.equal(activity.evidence.supports.deviceAbsence, false);
+    assert.equal(activity.evidence.supports.portClosure, false);
+    assert.equal(
+      activity.events.some(
+        (event) =>
+          event.type === "previously-observed-device-not-observed" ||
+          event.type === "service-or-port-closed"
+      ),
+      false
+    );
+
+    const statement = buildNetworkStatement({
+      siteId: "site-hostname-only",
+      from: "2026-07-10T00:00:00.000Z",
+      to: "2026-07-10T23:59:59.999Z",
+      evaluatedAt: "2026-07-10T12:00:00.000Z",
+    });
+    const markdown = renderNetworkStatementMarkdown(statement);
+    assert.equal(statement.status, "insufficient-evidence");
+    assert.equal(statement.evidence.supports.deviceAbsence, false);
+    assert.equal(statement.evidence.supports.portClosure, false);
+    assert.doesNotMatch(markdown, /appeared stable|no meaningful changes|service closure/i);
+  });
+});
+
+run("DB-01 device response targets use comparator identity instead of imported device IDs", () => {
+  const firstMac = "02:00:00:00:00:81";
+  const secondMac = "02:00:00:00:00:82";
+  const first = buildDeviceResponseTarget({
+    siteId: "site-response-identity",
+    observationId: "obs-response-identity-first",
+    deviceId: "printer",
+    macs: [firstMac],
+    identityRuleId: "identity.mac",
+    identityValues: [firstMac],
+  });
+  const second = buildDeviceResponseTarget({
+    siteId: "site-response-identity",
+    observationId: "obs-response-identity-second",
+    deviceId: "printer",
+    macs: [secondMac],
+    identityRuleId: "identity.mac",
+    identityValues: [secondMac],
+  });
+
+  assert.ok(first);
+  assert.ok(second);
+  assert.equal(first.identity.kind, "mac-address");
+  assert.equal(second.identity.kind, "mac-address");
+  assert.notEqual(first.responseId, second.responseId);
+
+  const hashedMac = `sha256:${"a".repeat(64)}`;
+  const hashed = buildDeviceResponseTarget({
+    siteId: "site-response-identity",
+    observationId: "obs-response-identity-hashed",
+    deviceId: "printer",
+    macs: [firstMac],
+    identityRuleId: "identity.hashed-mac",
+    identityValues: [hashedMac],
+  });
+  assert.ok(hashed);
+  assert.equal(hashed.identity.kind, "hashed-mac");
+
+  assert.equal(
+    buildDeviceResponseTarget({
+      siteId: "site-response-identity",
+      observationId: "obs-response-identity-weak",
+      deviceId: "printer",
+      macs: [firstMac],
+      identityRuleId: "identity.ip-continuity",
+      identityValues: ["192.0.2.81"],
+    }),
+    null
+  );
+});
+
+run("DB-01 repeated imported device IDs cannot carry responses across conflicting observed MACs", async () => {
+  await withTempCwd(async () => {
+    const baseline = createComparisonBundle({
+      observationId: "obs-response-reused-id-baseline",
+      siteId: "site-response-reused-id",
+      networkName: "response-reused-id-lab",
+      observedAt: "2026-07-11T10:00:00.000Z",
+      devices: [
+        {
+          deviceId: "printer",
+          ips: ["192.0.2.91"],
+          macs: ["02:00:00:00:00:91"],
+          ports: [{ port: 80, protocol: "tcp", service: "http" }],
+        },
+      ],
+    });
+    const current = createComparisonBundle({
+      observationId: "obs-response-reused-id-current",
+      siteId: "site-response-reused-id",
+      networkName: "response-reused-id-lab",
+      observedAt: "2026-07-11T11:00:00.000Z",
+      devices: [
+        {
+          deviceId: "printer",
+          ips: ["192.0.2.91"],
+          macs: ["02:00:00:00:00:92"],
+          ports: [{ port: 443, protocol: "tcp", service: "https" }],
+        },
+      ],
+    });
+    const baselineTarget = buildDeviceResponseTarget({
+      siteId: baseline.site.siteId,
+      observationId: baseline.observationId,
+      deviceId: baseline.devices[0].deviceId,
+      macs: baseline.devices[0].macs,
+      identityRuleId: "identity.mac",
+      identityValues: baseline.devices[0].macs,
+    });
+    assert.ok(baselineTarget);
+    upsertDeviceResponse(baselineTarget, "mine", "Old printer", {
+      now: "2026-07-11T10:05:00.000Z",
+    });
+    registerObservationBundle(baseline, {
+      importedAt: "2026-07-11T10:05:00.000Z",
+      evaluatedAt: "2026-07-11T12:00:00.000Z",
+    });
+    registerObservationBundle(current, {
+      importedAt: "2026-07-11T11:05:00.000Z",
+      evaluatedAt: "2026-07-11T12:00:00.000Z",
+    });
+
+    const activity = buildNetworkActivity({
+      evaluatedAt: "2026-07-11T12:00:00.000Z",
+    });
+    const uncertain = activity.events.find(
+      (event) => event.type === "identity-uncertain-possibly-same-device"
+    );
+    assert.ok(uncertain);
+    assert.equal(uncertain.deviceResponse.target, null);
+    assert.equal(uncertain.deviceResponse.statement, null);
+    assert.equal(
+      activity.events.some(
+        (event) => event.deviceResponse.statement?.friendlyName === "Old printer"
+      ),
+      false
+    );
+  });
+});
+
+run("DB-01 unmatched-device response targets require comparator-attested MAC intersection", () => {
+  const rawMac = "02:00:00:00:00:AA";
+  for (const [ruleId, attestedMac] of [
+    ["identity.no-baseline-match", "02:00:00:00:00:BB"],
+    ["identity.no-current-match", "02:00:00:00:00:CC"],
+  ]) {
+    assert.equal(
+      buildDeviceResponseTarget({
+        siteId: "site-response-mismatch",
+        observationId: `obs-${ruleId}`,
+        deviceId: "printer",
+        macs: [rawMac],
+        identityRuleId: ruleId,
+        identityValues: [attestedMac],
+      }),
+      null,
+      `${ruleId} must not ignore comparator-attested identity values`
+    );
+  }
+});
+
+run("DB-01 Activity does not attach a response target when raw and attested MAC evidence disagree", async () => {
+  await withTempCwd(async () => {
+    const stableDevice = {
+      deviceId: "stable-device",
+      ips: ["192.0.2.101"],
+      macs: ["02:00:00:00:01:01"],
+      ports: [{ port: 22, protocol: "tcp", service: "ssh" }],
+    };
+    const baseline = createComparisonBundle({
+      observationId: "obs-response-mismatch-baseline",
+      siteId: "site-response-mismatch-activity",
+      networkName: "response-mismatch-lab",
+      observedAt: "2026-07-12T10:00:00.000Z",
+      devices: [stableDevice],
+    });
+    const current = createComparisonBundle({
+      observationId: "obs-response-mismatch-current",
+      siteId: "site-response-mismatch-activity",
+      networkName: "response-mismatch-lab",
+      observedAt: "2026-07-12T11:00:00.000Z",
+      devices: [
+        stableDevice,
+        {
+          deviceId: "printer",
+          ips: ["192.0.2.102"],
+          macs: ["02:00:00:00:01:AA"],
+          ports: [{ port: 443, protocol: "tcp", service: "https" }],
+        },
+      ],
+    });
+    const importedPrinter = current.devices.find(
+      (device) => device.deviceId === "printer"
+    );
+    assert.ok(importedPrinter);
+    const macEvidence = importedPrinter.identityEvidence.find(
+      (evidence) => evidence.kind === "mac-address"
+    );
+    assert.ok(macEvidence);
+    macEvidence.value = "02:00:00:00:01:BB";
+
+    registerObservationBundle(baseline, {
+      importedAt: "2026-07-12T10:05:00.000Z",
+      evaluatedAt: "2026-07-12T12:00:00.000Z",
+    });
+    registerObservationBundle(current, {
+      importedAt: "2026-07-12T11:05:00.000Z",
+      evaluatedAt: "2026-07-12T12:00:00.000Z",
+    });
+
+    const activity = buildNetworkActivity({
+      evaluatedAt: "2026-07-12T12:00:00.000Z",
+    });
+    const added = activity.events.find(
+      (event) =>
+        event.type === "new-device-observed" &&
+        event.technicalEvidence.currentDevice?.deviceId === "printer"
+    );
+    assert.ok(added);
+    assert.equal(added.technicalEvidence.identityRuleId, "identity.no-baseline-match");
+    assert.deepEqual(added.technicalEvidence.identityValues, ["02:00:00:00:01:bb"]);
+    assert.equal(added.deviceResponse.target, null);
+    assert.equal(added.deviceResponse.statement, null);
+  });
 });
 
 finish().catch((error) => {

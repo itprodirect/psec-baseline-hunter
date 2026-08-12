@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import {
   Dialog,
   DialogContent,
@@ -59,7 +60,7 @@ export function ComparisonHistoryDialog({
                   key={comp.comparisonId}
                   className="flex items-center justify-between p-3 bg-muted/50 rounded-lg hover:bg-muted transition-colors"
                 >
-                  <a
+                  <Link
                     href={`/diff/${comp.comparisonId}`}
                     className="flex-1"
                   >
@@ -76,7 +77,7 @@ export function ComparisonHistoryDialog({
                       </Badge>
                       <span>{comp.diffData.riskFindings.length} review-list entries</span>
                     </div>
-                  </a>
+                  </Link>
                   <Button
                     variant="ghost"
                     size="sm"

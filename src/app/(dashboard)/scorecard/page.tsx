@@ -103,7 +103,11 @@ export default function ScorecardPage() {
   }, [selectedRunUid, isDemoMode]);
 
   const displayData = isDemoMode && demoData ? demoData.currentScorecard : scorecardData;
-  const displayActions = isDemoMode && demoData ? [] : actions;
+  const displayActions = isDemoMode && demoData
+    ? demoData.currentScorecard.riskPortsDetail.slice(0, 3).map((finding) =>
+        `Review whether the observed ${finding.protocol.toUpperCase()} service on port ${finding.port} is expected and appropriately access-controlled.`
+      )
+    : actions;
 
   const handleSelectRun = (runUid: string) => {
     scorecardRequest.current += 1;
@@ -126,7 +130,7 @@ export default function ScorecardPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight">Observation Overview</h1>
+          <h1 className="text-3xl font-bold tracking-tight">Health Overview</h1>
           <p className="text-muted-foreground">
             {displayData
               ? `${displayData.network} - ${formatTimestamp(displayData.timestamp)}`

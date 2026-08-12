@@ -10,23 +10,23 @@
 
 ## What Is This?
 
-PSEC Baseline Hunter helps you answer: **"Is my network safe, and what should I do about it?"**
+PSEC Baseline Hunter helps you answer: **"What did these network observations record, what changed, and what should I review?"**
 
 Upload your network scans, and get:
-- **Plain-English summaries** tailored to your role (executive, attorney, IT, parent)
-- **Prioritized action items** — what to fix first and why
-- **Change detection** — what's new since your last scan
-- **Risk scoring** — understand your security posture at a glance
+- **Evidence-bounded summaries** with recorded presentation context
+- **Prioritized review actions** — what to verify first and why
+- **Change detection** — evidence-supported changes between compatible observations
+- **Review prioritization** — identify observed P0/P1-classified services without treating them as proof of exposure or safety
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│  🏠 Your Network Health                                         │
+│  Network Observation                                            │
 │                                                                 │
-│  Risk Score: 72 (Good)                                          │
+│  Evidence: supported for this declared scope                    │
 │                                                                 │
-│  ✅ No critical exposures detected                              │
-│  ⚠️  2 new devices joined your network                          │
-│  📋 Recommended: Review unknown devices                         │
+│  2 device additions supported by identity evidence              │
+│  1 observed P0/P1-classified service requires review            │
+│  External reachability: not established                         │
 │                                                                 │
 │  [View Details]  [Explain This To Me]  [Export Report]          │
 └─────────────────────────────────────────────────────────────────┘
@@ -38,12 +38,12 @@ Upload your network scans, and get:
 
 | Feature | What It Does |
 |---------|-------------|
-| **Personalized Explanations** | Choose your audience (Executive, Security Pro, Attorney, Operations) and get results in language you understand |
+| **Deterministic Explanations** | Record presentation context alongside server-rendered reports; profile data never changes evidence or conclusions |
 | **Demo Mode** | Try the app instantly with sample data — no scan required |
-| **Risk Prioritization** | Critical → High → Watch classifications with clear action items |
-| **Change Detection** | Compare scans over time to see what's new or different |
-| **One-Click Export** | Generate reports for stakeholders, IT teams, or compliance |
-| **LLM-Powered Summaries** | Optional AI explanations tailored to your profession and context |
+| **Risk Prioritization** | P0/P1/P2 classifications identify observed services for review |
+| **Change Detection** | Compare compatible observations over time within verified evidence limits |
+| **One-Click Export** | Generate evidence-aware reports for review and handoff |
+| **Evidence-Bounded Summaries** | Deterministic reports generated from server-recomputed evidence; no free-form provider narrative |
 
 ---
 
@@ -83,22 +83,22 @@ zip -r my-network.zip my-network/
 ### 👨‍👩‍👧‍👦 Families & Home Users
 > "I want to know if something sketchy joined my Wi-Fi."
 
-Get alerts when new devices appear, understand risks in plain English, and get simple fix instructions.
+Review evidence-supported device additions and service findings in plain English, with collection limits shown alongside them.
 
 ### ⚖️ Attorneys & Compliance
-> "I need to document network exposure for a case or audit."
+> "I need to document what a network observation can and cannot establish."
 
-Export professional reports with liability framing, chain-of-custody language, and regulatory context.
+Export evidence-bounded reports that preserve collection scope, provenance, and explicit limitations.
 
 ### 💼 Small Business Owners
-> "Just tell me what I need to do to stay safe."
+> "Show me what the observations say I should review first."
 
-See your risk score, get the top 3 actions, and share reports with your IT vendor.
+Review the top evidence-bounded actions and share reports with your IT vendor.
 
 ### 🔒 Security Professionals
 > "I want the raw data plus quick triage."
 
-Full port/service details, P0/P1/P2 classifications, and export to CHANGES.md / WATCHLIST.md.
+Full port/service details, P0/P1/P2 review classifications, identity and coverage context, and evidence-aware CSV/Markdown exports.
 
 ---
 
@@ -108,25 +108,17 @@ Full port/service details, P0/P1/P2 classifications, and export to CHANGES.md / 
 ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
 │   UPLOAD     │────▶│   ANALYZE    │────▶│   ACT        │
 │              │     │              │     │              │
-│ Drag & drop  │     │ View health  │     │ Fix issues   │
-│ your scan    │     │ summary &    │     │ with guided  │
-│ ZIP file     │     │ risk score   │     │ checklist    │
+│ Drag & drop  │     │ Review the   │     │ Verify the   │
+│ your scan    │     │ evidence &   │     │ prioritized  │
+│ ZIP file     │     │ limitations  │     │ findings     │
 └──────────────┘     └──────────────┘     └──────────────┘
 ```
 
 ---
 
-## Personalized Explanations
+## Deterministic Evidence Reports
 
-The app adapts its language based on who you are:
-
-| Persona | Language Style |
-|---------|---------------|
-| **Executive** | Risk trends, business impact, board-ready summaries |
-| **Attorney** | Liability exposure, documentation trail, privilege concerns |
-| **Security** | Ports, services, CVEs, technical remediation |
-| **Operations** | Change tickets, uptime risk, rollback steps |
-| **Parent** | "Your kid's iPad" vs "Unknown device on kids' Wi-Fi" |
+The app records selected technical level, role, context, and tone in a bounded presentation note. These settings do not strengthen evidence, change supported conclusions, or introduce role-specific risk, legal, compliance, breach, or financial claims.
 
 ---
 
@@ -142,12 +134,12 @@ psec-baseline-hunter/
 │   │   │   └── diff/             # Changes view (compare runs)
 │   │   └── api/                  # Backend API routes
 │   ├── components/
-│   │   ├── scorecard/            # Personalized summary, modals
+│   │   ├── scorecard/            # Deterministic evidence reports, presentation controls
 │   │   ├── layout/               # Sidebar, navigation
 │   │   └── ui/                   # shadcn/ui components
 │   └── lib/
 │       ├── services/             # Diff engine, risk classifier, parsers
-│       ├── llm/                  # LLM prompt builders
+│       ├── llm/                  # Deterministic evidence report renderers
 │       ├── types/                # TypeScript definitions
 │       └── constants/            # Risk ports, actions mapping
 ├── scripts/                      # PowerShell/bash scan scripts
@@ -161,38 +153,17 @@ psec-baseline-hunter/
 
 | Priority | Ports | Why It Matters |
 |----------|-------|----------------|
-| **P0 Critical** | 23, 445, 3389, 5900, 135, 139, 1080 | Remote access & file sharing — fix immediately |
-| **P1 Admin** | 8080, 8443, 8888, 9000, 9090 | Admin panels — often unprotected |
+| **P0 Critical** | 23, 445, 3389, 5900, 135, 139, 1080 | Remote access and file-sharing services that warrant prompt review |
+| **P1 Admin** | 8080, 8443, 8888, 9000, 9090 | Administrative services that warrant access-control review |
 | **P2 Watch** | 22, 80, 443 | Common services — note when NEW |
 
 ---
 
 ## Configuration
 
-### Optional: Enable AI Summaries
+### Evidence summaries
 
-Add to `.env.local`:
-
-```bash
-# Anthropic is used first when configured.
-ANTHROPIC_API_KEY=sk-ant-your-key-here
-ANTHROPIC_MODEL=claude-3-5-sonnet-20241022
-
-# OpenAI is used only when Anthropic is not configured.
-OPENAI_API_KEY=sk-your-key-here
-OPENAI_MODEL=gpt-4o
-
-# Optional LLM safety controls.
-LLM_REQUEST_TIMEOUT_MS=15000
-LLM_MAX_TOKENS=2000
-```
-
-The model variables are optional; the values shown above match the current runtime defaults. Without API keys, or when route-level LLM calls fail, the app uses intelligent rule-based summaries.
-
-Current implementation notes:
-- OpenAI uses a direct Chat Completions API `fetch`, not the Responses API or the OpenAI SDK.
-- Anthropic uses a direct Messages API `fetch`, not the Anthropic SDK.
-- Future model-default or API modernization should be handled in a separate focused issue/PR.
+Scorecard, Diff, and executive reports are rendered deterministically after the server recomputes and validates the relevant evidence. Provider API keys do not enable free-form narratives for these DB-01 outputs.
 
 ---
 
@@ -221,18 +192,18 @@ npm test          # Run tests
 ## Roadmap Highlights
 
 ### ✅ Completed (v0.6.0)
-- Persona-based explanations with LLM integration
+- Deterministic, evidence-bounded explanations with recorded presentation context
 - Demo mode with sample data
-- Risk scoring and prioritization
+- Evidence-bounded review prioritization without synthetic safety scores
 - Change detection and diff view
-- Real-world impact cards with breach examples
+- Port impact endpoint closed unless verified external-vantage evidence is available
 - Executive summaries for leadership
 - **Custom risk rules** - Per-network port classifications
 - **CSV export** - Download scorecard and diff data
 - **Comparison history** - Save and share scan comparisons
 
 ### 📋 Planned (Phase 6+)
-- **LLM observability** - Wandb integration for tracking API calls, costs, performance
+- **Optional provider research** - any future provider output must remain subordinate to structured evidence support
 - **S3 cloud storage** - Move from local filesystem
 - Device identification (HTTP titles, MAC vendors)
 - Scheduled scans + weekly digest
@@ -257,7 +228,7 @@ MIT License — see [LICENSE](LICENSE) for details.
 - [Nmap](https://nmap.org/) — The network scanner that powers our data
 - [shadcn/ui](https://ui.shadcn.com/) — Beautiful UI components
 - [Next.js](https://nextjs.org/) — React framework
-- [Anthropic](https://anthropic.com/) — Claude AI for summaries
+- Provider integrations remain available for non-authoritative experimentation; evidence-sensitive summaries are deterministic.
 
 ---
 

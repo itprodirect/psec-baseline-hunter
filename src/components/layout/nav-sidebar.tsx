@@ -39,7 +39,7 @@ const NAV_ITEMS = [
     description: "Import scan files",
   },
   {
-    title: "Observation Overview",
+    title: "Health Overview",
     href: "/scorecard",
     icon: BarChart3,
     description: "Single run analysis",

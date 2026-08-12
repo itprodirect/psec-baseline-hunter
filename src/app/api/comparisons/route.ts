@@ -2,13 +2,13 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import {
+  isComparisonDataNotFoundError,
   isUnsupportedComparisonPersistenceError,
   listComparisons,
   saveComparison,
 } from "@/lib/services/comparisons-registry";
 import {
   AMBIGUOUS_RUN_COMPARISON_ERROR,
-  computeDiff,
   isDiffComparisonError,
 } from "@/lib/services/diff-engine";
 import type { ComparisonResponse } from "@/lib/types";
@@ -71,30 +71,19 @@ export async function GET(
 export async function POST(request: NextRequest) {
   try {
     const body = validateSaveComparisonBody(await readJsonObject(request));
-    const diffData = computeDiff(body.baselineRunUid, body.currentRunUid);
-
-    if (!diffData) {
-      return NextResponse.json(
-        { success: false, error: "Comparison data was not found." },
-        { status: 404 }
-      );
-    }
-
-    if (
-      diffData.evidence?.version !== "psec.evidence.v1" ||
-      diffData.evidence.status !== "supported" ||
-      diffData.evidence.supports.comparisonPersistence !== true
-    ) {
-      return NextResponse.json(INSUFFICIENT_COMPARISON_RESPONSE, { status: 422 });
-    }
-
-    const comparison = saveComparison(body, diffData);
+    const comparison = saveComparison(body);
     return NextResponse.json({ success: true, comparison });
   } catch (error) {
     if (isRequestValidationError(error)) {
       return NextResponse.json(
         { success: false, error: error.message },
         { status: 400 }
+      );
+    }
+    if (isComparisonDataNotFoundError(error)) {
+      return NextResponse.json(
+        { success: false, error: "Comparison data was not found." },
+        { status: 404 }
       );
     }
     if (isUnsupportedComparisonPersistenceError(error)) {

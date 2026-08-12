@@ -6,6 +6,7 @@ import { EvidenceStatusBanner } from "@/components/evidence/EvidenceStatusBanner
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { buildTopActions } from "@/lib/services/diff-actions";
 import type {
   DiffData,
   HostChange,
@@ -153,6 +154,7 @@ interface DiffViewProps {
 export function DiffView({ data, preDetails, exportSection }: DiffViewProps) {
   const supportsAbsence = data.evidence.supports.deviceAbsence;
   const supportsClosure = data.evidence.supports.portClosure;
+  const topActions = buildTopActions(data);
 
   return (
     <div className="space-y-6">
@@ -295,6 +297,14 @@ export function DiffView({ data, preDetails, exportSection }: DiffViewProps) {
                 {data.riskFindings.length > 0
                   ? <PortTable entries={data.riskFindings} showClassification />
                   : <p className="text-sm text-muted-foreground">No review-list entries were produced by this comparison.</p>}
+                {topActions.length > 0 && (
+                  <div className="rounded-lg border bg-background p-4">
+                    <h4 className="font-semibold">Top review actions</h4>
+                    <ol className="mt-2 list-decimal space-y-2 pl-5 text-sm">
+                      {topActions.map((action) => <li key={action}>{action}</li>)}
+                    </ol>
+                  </div>
+                )}
               </div>
             </TabsContent>
 
