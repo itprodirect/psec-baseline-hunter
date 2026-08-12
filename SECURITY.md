@@ -45,6 +45,35 @@ deployment verdict, and must not be hosted or exposed. Its dependency set and
 error/output behavior have not been brought to the current Next.js security
 boundary.
 
+## Node dependency and audit policy
+
+The supported development and CI toolchain is the exact Node.js and npm pair
+declared in `package.json` and `.nvmrc`. Install the reviewed lockfile with
+`npm ci`; do not regenerate it during a clean install.
+
+Install scripts are denied unless their exact package version appears in the
+manifest's `allowScripts` policy. The currently approved native-binding build
+and compatibility check are version-pinned; any new or changed install script
+must be reviewed before a clean install can succeed.
+
+Both audit gates are blocking:
+
+- `npm run audit:prod` rejects high or critical findings in production
+  dependencies.
+- `npm run audit:all` rejects moderate, high, or critical findings across the
+  full production and development dependency tree.
+
+The current baseline has no advisory exceptions. If a compatible remediation
+is not available in the future, an exception must not weaken either raw audit
+command silently. A separately reviewed exception mechanism must identify the
+advisory and affected dependency path, document verified reachability, name an
+owner and follow-up issue, set an ISO-8601 expiry date, and fail validation when
+that date expires. Its validator and expired-exception regression test must be
+blocking before the exception is accepted.
+
+A clean advisory report is dependency-maintenance evidence, not proof that the
+application is secure.
+
 ## Hosted and shared use
 
 Do not host or share the current application. Authentication, object ownership,

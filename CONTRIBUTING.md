@@ -22,8 +22,8 @@ Thank you for your interest in contributing! This document provides guidelines a
 
 | Tool | Version | Check Command |
 |------|---------|---------------|
-| Node.js | 20+ | `node --version` |
-| npm | 10+ | `npm --version` |
+| Node.js | 24.19.0 | `node --version` |
+| npm | 11.17.0 | `npm --version` |
 | Git | Any | `git --version` |
 
 ### Initial Setup
@@ -34,7 +34,7 @@ git clone https://github.com/itprodirect/psec-baseline-hunter.git
 cd psec-baseline-hunter
 
 # Install dependencies
-npm install
+npm ci
 
 # Create data directories
 mkdir -p data/uploads data/extracted
@@ -63,8 +63,14 @@ OPENAI_API_KEY=sk-...
 npm run dev           # Start dev server (http://localhost:3000)
 npm run build         # Production build
 npm run lint          # Run ESLint
-npx tsc --noEmit      # Type check
+npm run typecheck     # Type check without incremental state
+npm run audit:prod    # Production high/critical dependency gate
+npm run audit:all     # Full moderate-or-higher dependency gate
 ```
+
+Clean installs must use the reviewed lockfile. For an intentional dependency
+change, update and review both `package.json` and `package-lock.json`; never
+delete the lockfile as an installation workaround.
 
 ---
 

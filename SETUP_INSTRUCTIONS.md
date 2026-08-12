@@ -9,7 +9,7 @@ Run these commands in order:
 
 ```bash
 # 1. Install all dependencies (including new Radix UI packages)
-npm install
+npm ci
 
 # 2. Clear Next.js cache (optional but recommended)
 rm -rf .next
@@ -34,18 +34,18 @@ These components depend on:
 
 ## Verification
 
-After running `npm install`, you should see these directories:
+After running `npm ci`, you should see these directories:
 - `node_modules/@radix-ui/react-label/`
 - `node_modules/@radix-ui/react-select/`
 
 ## If Still Having Issues
 
-1. **Check Node version:** `node --version` (should be 20+)
-2. **Check npm version:** `npm --version` (should be 10+)
+1. **Check Node version:** `node --version` (must be 24.19.0)
+2. **Check npm version:** `npm --version` (must be 11.17.0)
 3. **Try clean install:**
    ```bash
-   rm -rf node_modules package-lock.json
-   npm install
+   rm -rf node_modules
+   npm ci
    ```
 4. **Check for specific error messages** and let me know what they say
 
