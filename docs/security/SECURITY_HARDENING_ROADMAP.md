@@ -21,7 +21,12 @@ Milestone:
 
 | Order | Work item | Finding IDs | Dependency | Completion signal |
 | --- | --- | --- | --- | --- |
-| 1 | [#54](https://github.com/itprodirect/psec-baseline-hunter/issues/54) — fail closed on unsupported Scorecard/Diff conclusions | DB-01 | None | Identity, coverage, network, and vantage uncertainty is preserved across API, UI, exports, and summaries |
+| 1 | [#54](https://github.com/itprodirect/psec-baseline-hunter/issues/54) — frozen DB-01 umbrella | DB-01 | Five bounded children below | Close only after every child, normal-path regression, cross-surface verification, and independent-review gate passes |
+| 1a | [#65](https://github.com/itprodirect/psec-baseline-hunter/issues/65) — Observation authority and loss-aware normalization | DB-01 F01–F07 | Canonical main | Imported bundles remain review-only and evidence loss is monotonic |
+| 1b | [#66](https://github.com/itprodirect/psec-baseline-hunter/issues/66) — canonical evidence semantics | DB-01 F08–F12 | #65 | One evaluator authorizes conclusions from origin, coverage, identity, chronology, and vantage |
+| 1c | [#67](https://github.com/itprodirect/psec-baseline-hunter/issues/67) — saved-comparison recomputation or quarantine | DB-01 F13–F14 | #66 | Serialized conclusions are never authoritative |
+| 1d | [#68](https://github.com/itprodirect/psec-baseline-hunter/issues/68) — current-result mutation ownership | DB-01 F15–F17 | #66 | Mutations require the same still-current supported evaluation |
+| 1e | [#69](https://github.com/itprodirect/psec-baseline-hunter/issues/69) — cross-surface integration | DB-01 F18–F20 | #66, #67, #68 | Every active output sink preserves canonical evidence status |
 | 2 | [#56](https://github.com/itprodirect/psec-baseline-hunter/issues/56) — contain scanner output, archive, and cleanup paths | DB-02 | None | Only the unique run workspace can be archived or removed; path and target validation regressions pass |
 | 3 | [#57](https://github.com/itprodirect/psec-baseline-hunter/issues/57) — enforce loopback startup and safe mutation origins | DB-03 local subset | None | Default local commands bind to loopback and rejected origins/content types are stopped before mutation |
 | 4 | [#55](https://github.com/itprodirect/psec-baseline-hunter/issues/55) — replace potentially sensitive documentation fixtures and local paths | DB-06 | None | Tracked documentation contains only unmistakably synthetic examples and repository-relative references |
@@ -34,9 +39,51 @@ Items may be developed independently where their issue says so. Changes must
 remain separated by concern; dependency upgrades must not be silently bundled
 into evidence-integrity or parser behavior PRs.
 
+### DB-01 decomposition
+
+Externally imported Observation Bundles are
+`UNSUPPORTED_FOR_NEGATIVE_CONCLUSIONS_IN_LOCAL_V0`. They may contribute bounded
+positive review observations, but may not establish identity continuity,
+completeness, device absence, service or port closure, stability, persistence
+eligibility, authoritative summary eligibility, or external reachability. Only
+server-derived provenance from canonical local artifacts may authorize supported
+negative conclusions.
+
+The approved implementation sequence is:
+
+```text
+canonical main
+    ↓
+#65 — Observation authority
+    ↓
+#66 — Evidence semantics
+    ├────────────────┐
+    ↓                ↓
+#67              #68
+Saved data       Mutation ownership
+    └───────┬────────┘
+            ↓
+#69 — Cross-surface integration
+```
+
+[#61](https://github.com/itprodirect/psec-baseline-hunter/issues/61) may
+proceed in parallel. It is not a blanket prerequisite for #68; a slice may
+reuse a merged persistence primitive or name one precise small dependency.
+[#60](https://github.com/itprodirect/psec-baseline-hunter/issues/60) proceeds
+independently, and [#48](https://github.com/itprodirect/psec-baseline-hunter/issues/48)
+remains the separate pre-hosting Activity privacy/evidence-UX concern.
+
+[PR #64](https://github.com/itprodirect/psec-baseline-hunter/pull/64) is a
+superseded security design spike and adversarial-test source, not a merge
+candidate. Neither full commit is approved for whole-commit cherry-picking;
+its branch and history remain preserved while selected concepts or tests may
+be manually reimplemented under #65–#69.
+
 ### Local milestone completion criteria
 
-- All eight bounded issues are closed through independently reviewable PRs.
+- All five DB-01 replacement issues are closed through independently reviewed
+  PRs, the #54 umbrella completion gate passes, and all other local-milestone
+  implementation issues are complete.
 - Required regression tests pass from a clean checkout.
 - Local startup enforces the documented loopback boundary.
 - Scorecard/Diff uncertainty is visible and consistent in every output channel.
@@ -67,7 +114,9 @@ hosted product boundary is explicitly approved:
   the real deployment edge;
 - distributed request, storage, concurrency, provider-rate, and cost quotas;
 - provider disclosure, pseudonymization, output validation, and redacted logs;
-- server-established observation provenance and coverage claims; and
+- authoritative imported-observation identity, coverage, continuity,
+  negative-conclusion authority, and hosted provenance beyond the local-V0
+  review-only decision; and
 - deployment-specific abuse, backup, restore, retention, and deletion tests.
 
 These are intentionally not decomposed into implementation issues yet. Doing
@@ -107,7 +156,7 @@ architecture.
 
 | Finding | Primary owner | Residual/deferred work |
 | --- | --- | --- |
-| DB-01 | [#54](https://github.com/itprodirect/psec-baseline-hunter/issues/54) | None after acceptance criteria pass |
+| DB-01 | Frozen umbrella [#54](https://github.com/itprodirect/psec-baseline-hunter/issues/54), decomposed into [#65](https://github.com/itprodirect/psec-baseline-hunter/issues/65), [#66](https://github.com/itprodirect/psec-baseline-hunter/issues/66), [#67](https://github.com/itprodirect/psec-baseline-hunter/issues/67), [#68](https://github.com/itprodirect/psec-baseline-hunter/issues/68), and [#69](https://github.com/itprodirect/psec-baseline-hunter/issues/69) | [PR #64](https://github.com/itprodirect/psec-baseline-hunter/pull/64) is a superseded design spike; #61 is parallel rather than a blanket #68 prerequisite |
 | DB-02 | [#56](https://github.com/itprodirect/psec-baseline-hunter/issues/56) | Reassess only if scanner execution model changes |
 | DB-03 | [#57](https://github.com/itprodirect/psec-baseline-hunter/issues/57) | Authentication, ownership, tenancy, sharing, and edge policy remain under the pre-hosting tracker |
 | DB-04 | [#60](https://github.com/itprodirect/psec-baseline-hunter/issues/60) | Revalidate limits in the selected hosted runtime |
@@ -115,7 +164,7 @@ architecture.
 | DB-06 | [#55](https://github.com/itprodirect/psec-baseline-hunter/issues/55) | History treatment requires a separate owner decision if provenance is confirmed |
 | DB-07 | [#60](https://github.com/itprodirect/psec-baseline-hunter/issues/60) for input/resource bounds | Provider privacy, distributed budgets, output trust, and log policy remain under the pre-hosting tracker |
 | DB-08 | [#58](https://github.com/itprodirect/psec-baseline-hunter/issues/58) | Re-test against supported spreadsheet applications |
-| DB-09 | Pre-hosting tracker | Create an implementation issue only after external observation-import requirements are approved |
+| DB-09 | Imported bundles are review-only for negative conclusions in local V0; canonical local authority is enforced through DB-01 | Imported-observation authority beyond local V0 remains under [#62](https://github.com/itprodirect/psec-baseline-hunter/issues/62) |
 | DB-10 | [#61](https://github.com/itprodirect/psec-baseline-hunter/issues/61) | Replace filesystem persistence if the hosted architecture selects a transactional store |
 | DB-11 | [#60](https://github.com/itprodirect/psec-baseline-hunter/issues/60) for resource bounds | Structural parser evidence work remains a pre-hosting/maintenance gate |
 | DB-12 | [#59](https://github.com/itprodirect/psec-baseline-hunter/issues/59) | Legacy Python remains explicitly unsupported |

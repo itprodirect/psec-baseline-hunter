@@ -40,7 +40,7 @@ if outputs are used as authoritative security conclusions without corroboration.
 
 | ID | Category | Severity / confidence | High-level finding | Disposition |
 | --- | --- | --- | --- | --- |
-| DB-01 | Security-decision integrity | High / high | Legacy Scorecard and Diff can overstate device continuity, change, stability, and external exposure when identity, coverage, network, or vantage evidence is incomplete | [#54](https://github.com/itprodirect/psec-baseline-hunter/issues/54) |
+| DB-01 | Security-decision integrity | High / high | Legacy Scorecard and Diff can overstate device continuity, change, stability, and external exposure when identity, coverage, network, or vantage evidence is incomplete | Frozen umbrella [#54](https://github.com/itprodirect/psec-baseline-hunter/issues/54), decomposed into [#65](https://github.com/itprodirect/psec-baseline-hunter/issues/65)–[#69](https://github.com/itprodirect/psec-baseline-hunter/issues/69) |
 | DB-02 | Operational safety | High / high | Scanner output, archive, and cleanup targets are not sufficiently confined to a unique run directory | [#56](https://github.com/itprodirect/psec-baseline-hunter/issues/56) |
 | DB-03 | Deployment control | Critical for multi-user; high hosted / high | The application lacks authentication and ownership boundaries; local startup and mutation-origin handling do not enforce the documented trust boundary | [#57](https://github.com/itprodirect/psec-baseline-hunter/issues/57) plus pre-hosting gate |
 | DB-04 | Availability and storage | High hosted; medium local / high | Several request, archive, parser, and retention limits occur after buffering or allow excessive synchronous work and persistent growth | [#60](https://github.com/itprodirect/psec-baseline-hunter/issues/60) |
@@ -48,7 +48,7 @@ if outputs are used as authoritative security conclusions without corroboration.
 | DB-06 | Public documentation privacy | Medium / medium-high | Tracked documentation includes environment-specific examples whose provenance is uncertain and local-machine path examples | [#55](https://github.com/itprodirect/psec-baseline-hunter/issues/55) |
 | DB-07 | LLM boundary | High hosted availability/cost; medium integrity/privacy / high | Input, budget, disclosure, output-trust, and logging controls are insufficient for an exposed service | Resource subset in [#60](https://github.com/itprodirect/psec-baseline-hunter/issues/60); remaining work deferred to pre-hosting gate |
 | DB-08 | Export safety | Medium / high | CSV structural quoting does not prevent formula interpretation by spreadsheet applications | [#58](https://github.com/itprodirect/psec-baseline-hunter/issues/58) |
-| DB-09 | Evidence provenance | Medium / high | Imported observations can assert stronger identity or coverage than server-derived evidence establishes | Deferred to pre-hosting gate; normal local UI does not expose arbitrary import |
+| DB-09 | Evidence provenance | Medium / high | Imported observations can assert stronger identity or coverage than server-derived evidence establishes | Review-only for negative conclusions in local V0; authority beyond local V0 remains under [#62](https://github.com/itprodirect/psec-baseline-hunter/issues/62) |
 | DB-10 | Persistent-state integrity | Medium / high | Filesystem registries are not atomic and identifiers are not consistently collision-safe | [#61](https://github.com/itprodirect/psec-baseline-hunter/issues/61) |
 | DB-11 | Parser evidence quality | Medium to low / high | Residual Nmap and PCAPNG semantic-validation gaps can reduce evidence quality or consume disproportionate work | Resource subset in [#60](https://github.com/itprodirect/psec-baseline-hunter/issues/60); structural work deferred to pre-hosting gate |
 | DB-12 | Supply chain and CI | High maintenance priority / high | Current dependency and CI security gates require refresh; the legacy runtime remains unsupported | [#59](https://github.com/itprodirect/psec-baseline-hunter/issues/59) |
@@ -83,9 +83,11 @@ multi-user verdicts.
 
 The supported boundary is defined in [`SECURITY.md`](../../../SECURITY.md). In
 summary: listen only on loopback, use one trusted local user, do not share the
-service, import trusted artifacts, protect generated data, independently verify
-security conclusions, constrain scanner use, and make external-provider use an
-explicit operator choice.
+service, treat uploaded scan artifacts and externally imported Observation
+Bundles as untrusted, protect generated data, independently verify security
+conclusions, constrain scanner use, and make external-provider use an explicit
+operator choice. Imported bundles may contribute bounded positive review
+observations, but are unsupported for negative conclusions in local V0.
 
 The legacy Streamlit/Python runtime is reference-only and unsupported.
 
@@ -98,12 +100,27 @@ The legacy Streamlit/Python runtime is reference-only and unsupported.
   [Pre-hosting Security Gate](https://github.com/itprodirect/psec-baseline-hunter/milestone/2)
 - Existing Activity privacy/evidence work:
   [#48](https://github.com/itprodirect/psec-baseline-hunter/issues/48)
+- DB-01 umbrella and bounded implementation sequence:
+  [#54](https://github.com/itprodirect/psec-baseline-hunter/issues/54) →
+  [#65](https://github.com/itprodirect/psec-baseline-hunter/issues/65) →
+  [#66](https://github.com/itprodirect/psec-baseline-hunter/issues/66) →
+  ([#67](https://github.com/itprodirect/psec-baseline-hunter/issues/67) and
+  [#68](https://github.com/itprodirect/psec-baseline-hunter/issues/68)) →
+  [#69](https://github.com/itprodirect/psec-baseline-hunter/issues/69)
+- Superseded DB-01 design spike:
+  [PR #64](https://github.com/itprodirect/psec-baseline-hunter/pull/64), preserved
+  as historical design/adversarial-test evidence and not approved for merge or
+  whole-commit cherry-picking
 - Detailed roadmap:
   [`docs/security/SECURITY_HARDENING_ROADMAP.md`](../SECURITY_HARDENING_ROADMAP.md)
 
 Authentication, ownership, tenant isolation, safe sharing, distributed LLM
 quotas, and full multi-user architecture remain deliberately under the
-pre-hosting tracker. No product architecture is implied by this review.
+pre-hosting tracker. Issue #61 may proceed in parallel and is not a blanket
+prerequisite for DB-01 mutation ownership in #68. Issue #60 remains independent,
+and #48 remains separate rather than duplicated. No hosted product architecture
+is implied by this review; the supported deployment remains local,
+single-user, and loopback-only.
 
 ## Review limitations
 
