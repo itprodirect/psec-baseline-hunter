@@ -48,7 +48,7 @@ const MAX_NORMALIZATION_LOSS_COUNT = 1_000_000;
 
 const PACKET_HIGHWAY_CAN_SUPPORT = [
   "Review of retained, normalized traffic metadata from the selected capture window and vantage.",
-  "Bounded positive observations of devices, flows, DNS names, and watch items retained in the saved analysis.",
+  "Bounded positive observations of retained devices, external endpoints, flows, animation events, and DNS records.",
 ] as const;
 const PACKET_HIGHWAY_CANNOT_PROVE = [
   "Identity continuity, complete inventory, device absence, service or port closure, stability, or persistence eligibility.",
@@ -490,7 +490,7 @@ function sanitizeObservationBundleWithContext(
   );
   validateStoredAuthority(raw.origin, context, normalization);
   const observationId = safeId(raw.observationId, "obs-unknown");
-  const sources = sanitizeSources(raw.sources, normalization);
+  const sources = sanitizeSources(raw.sources, normalization, context.origin);
   if (sources.length === 0) {
     throw new ObservationBundleValidationError("Observation bundle has no source records.");
   }
@@ -1271,17 +1271,24 @@ function validateStoredAuthority(
 
 function sanitizeSources(
   rawSources: unknown[],
-  normalization: NormalizationCollector
+  normalization: NormalizationCollector,
+  origin: ObservationOriginKind
 ): ObservationSourceRef[] {
   const candidates: ObservationSourceRef[] = [];
+  const untrustedClaims = { count: 0 };
   for (const raw of rawSources) {
     if (!isRecord(raw)) {
       recordLoss(normalization, "invalid-source-record-dropped");
       continue;
     }
-    const source = sanitizeSource(raw, normalization);
+    const source = sanitizeSource(raw, normalization, origin, untrustedClaims);
     if (source) candidates.push(source);
   }
+  recordRetainedLoss(
+    normalization,
+    "untrusted-source-claim-ignored",
+    untrustedClaims.count
+  );
   const counts = new Map<string, number>();
   for (const source of candidates) {
     counts.set(source.sourceId, (counts.get(source.sourceId) ?? 0) + 1);
@@ -1300,7 +1307,9 @@ function sanitizeSources(
 
 function sanitizeSource(
   raw: Record<string, unknown>,
-  normalization: NormalizationCollector
+  normalization: NormalizationCollector,
+  origin: ObservationOriginKind,
+  untrustedClaims: { count: number }
 ): ObservationSourceRef | null {
   const sourceId = safeId(raw.sourceId, "");
   if (!sourceId) {
@@ -1320,13 +1329,20 @@ function sanitizeSource(
     recordLoss(normalization, "invalid-source-record-dropped");
     return null;
   }
+  const preserveSourceClaim =
+    origin === "canonical-local-artifacts" ||
+    origin === "supplemental-review" ||
+    origin === "server-synthetic-demo";
+  if (!preserveSourceClaim && (raw.parsed !== false || raw.recordCount !== 0)) {
+    untrustedClaims.count += 1;
+  }
   return {
     sourceId,
     kind: raw.kind as ObservationSourceKind,
     artifactLabel: safeText(raw.artifactLabel, 80) || "unknown",
     fileName: sanitizeFileName(raw.fileName),
-    parsed: raw.parsed,
-    recordCount: Math.floor(raw.recordCount),
+    parsed: preserveSourceClaim ? raw.parsed : false,
+    recordCount: preserveSourceClaim ? Math.floor(raw.recordCount) : 0,
     notes: sanitizeNotes(raw.notes),
   };
 }

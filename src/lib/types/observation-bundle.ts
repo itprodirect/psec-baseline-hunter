@@ -52,6 +52,7 @@ export const OBSERVATION_NORMALIZATION_LOSS_CODES = [
   "normalization-metadata-invalid",
   "untrusted-coverage-claim-ignored",
   "untrusted-supplemental-claim-ignored",
+  "untrusted-source-claim-ignored",
   "source-limit-exceeded",
   "device-limit-exceeded",
   "identity-evidence-limit-exceeded",

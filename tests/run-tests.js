@@ -34,6 +34,8 @@ let buildObservationBundleV1FromRun;
 let parseObservationBundleV1Json;
 let sanitizeCanonicalLocalObservationBundleV1;
 let sanitizeImportedObservationBundleV1;
+let sanitizeStoredObservationBundleV1;
+let sanitizeSupplementalObservationBundleV1;
 let isObservationBundleValidationError;
 let MAX_OBSERVATION_BUNDLE_JSON_BYTES;
 let MAX_OBSERVATION_NMAP_XML_BYTES;
@@ -132,6 +134,8 @@ async function loadModules() {
     parseObservationBundleV1Json,
     sanitizeCanonicalLocalObservationBundleV1,
     sanitizeImportedObservationBundleV1,
+    sanitizeStoredObservationBundleV1,
+    sanitizeSupplementalObservationBundleV1,
     isObservationBundleValidationError,
     MAX_OBSERVATION_BUNDLE_JSON_BYTES,
     MAX_OBSERVATION_NMAP_XML_BYTES,
@@ -2663,6 +2667,60 @@ run("DB-01 slice 1 preserves loss monotonically across repeated sanitation", () 
   }
   assert.doesNotMatch(JSON.stringify(sanitized.normalization), /443|8443|192\.0\.2|02:00/);
 });
+run("DB-01 slice 1 rejects untrusted source count authority by origin", async () => {
+  await withTempCwd(async () => {
+    const forged = createComparisonBundle({
+      observationId: "obs-forged-external-source-count",
+      networkName: "forged-external-source-count",
+      devices: [{
+        deviceId: "forged-count-device",
+        ips: ["192.0.2.44"],
+        macs: [],
+        ports: [{ port: 443, protocol: "tcp", service: "https" }],
+      }],
+    });
+    forged.sources[0].parsed = true;
+    forged.sources[0].recordCount = 999999;
+
+    const result = registerObservationBundle(forged, {
+      evaluatedAt: "2026-05-04T12:00:00.000Z",
+    });
+    const reopened = getObservationById(result.record.registryId, {
+      evaluatedAt: "2026-05-04T12:00:00.000Z",
+    });
+    assert.ok(reopened);
+    assert.equal(reopened.origin.kind, "external-import");
+    assert.equal(reopened.bundle.sources[0].parsed, false);
+    assert.equal(reopened.bundle.sources[0].recordCount, 0);
+    assert.equal(
+      normalizationLossCount(reopened.bundle, "untrusted-source-claim-ignored"),
+      forged.sources.length
+    );
+    assert.equal(reopened.bundle.devices[0].openPorts[0].port, 443);
+    assert.equal(reopened.bundle.coverage.presentSources.length, 0);
+    assert.throws(() => compareObservationBundlesV1(reopened.bundle, cloneJson(reopened.bundle)),
+      (error) => isObservationComparisonError(error) && error.code === "review_only_observation");
+    const sanitizedAgain = sanitizeImportedObservationBundleV1(reopened.bundle);
+    assert.deepEqual(sanitizedAgain.normalization, reopened.bundle.normalization);
+
+    const futureOrigin = createComparisonBundle({
+      observationId: "obs-future-source-origin",
+      networkName: "future-source-origin",
+    });
+    futureOrigin.origin = { kind: "future-stored-origin", assignedBy: "server" };
+    futureOrigin.sources[0].parsed = true;
+    futureOrigin.sources[0].recordCount = 123456;
+    const legacy = sanitizeStoredObservationBundleV1(futureOrigin);
+    assert.equal(legacy.origin.kind, "legacy-unknown");
+    assert.equal(legacy.sources[0].parsed, false);
+    assert.equal(legacy.sources[0].recordCount, 0);
+    assert.equal(
+      normalizationLossCount(legacy, "untrusted-source-claim-ignored"),
+      futureOrigin.sources.length
+    );
+    assert.deepEqual(sanitizeStoredObservationBundleV1(legacy).normalization, legacy.normalization);
+  });
+});
 run("DB-01 slice 1 registry reads preserve known loss and fail inconsistent metadata closed", async () => {
   await withTempCwd(async () => {
     const evaluatedAt = "2026-04-02T00:00:00.000Z";
@@ -3786,6 +3844,115 @@ run("packet highway save API returns a reopenable supplemental visual evidence l
     assert.equal(
       getBody.observation.bundle.supplementalEvidence[0].packetHighway.capture.meta.format,
       "fixture"
+    );
+  });
+});
+
+run("packet highway save API drops malformed flows before persistence and reopening", async () => {
+  const packetHighwayObservationRoute = await import("../src/app/api/packet-highway/observations/route.ts");
+  const observationRoute = await import("../src/app/api/observations/[registryId]/route.ts");
+
+  await withTempCwd(async () => {
+    const capture = createPacketHighwayCapture();
+    const validFlow = capture.flows[0];
+    capture.flows.push(
+      { ...cloneJson(validFlow), id: "flow-bad-scope", scope: "external:C:\\private\\hostile.pcap" },
+      { ...cloneJson(validFlow), id: "flow-bad-protocol", protocol: "tcp:/tmp/hostile" },
+      { ...cloneJson(validFlow), id: "flow-bad-category", category: "https:C:\\private" },
+      { ...cloneJson(validFlow), id: "flow-bad-port", port: 70000 }
+    );
+
+    const response = await packetHighwayObservationRoute.POST(
+      createRawJsonRequest("/api/packet-highway/observations", "POST", JSON.stringify({
+        capture,
+        site: { networkName: "packet-highway-strict-flow-lab" },
+        collectionVantage: "gateway-router",
+      }))
+    );
+    const body = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(body.success, true);
+
+    const registryId = body.observation.registryId;
+    const getResponse = await observationRoute.GET(
+      new Request(`http://localhost/api/observations/${registryId}`),
+      { params: Promise.resolve({ registryId }) }
+    );
+    const getBody = await getResponse.json();
+    assert.equal(getResponse.status, 200);
+    assert.equal(getBody.success, true);
+
+    const reopened = getBody.observation.bundle;
+    const reopenedFlows = reopened.supplementalEvidence[0].packetHighway.capture.flows;
+    assert.deepEqual(reopenedFlows.map((flow) => flow.id), ["flow-1"]);
+    assert.equal(reopenedFlows[0].scope, "external");
+    assert.equal(normalizationLossCount(reopened, "packet-highway-records-ignored"), 4);
+    assert.ok(normalizationLossCount(reopened, "packet-highway-capture-truncated") > 0);
+    assert.doesNotMatch(JSON.stringify(reopened.normalization),
+      /hostile|private|flow-bad|external:C|tcp:\/tmp/i);
+    assert.doesNotMatch(JSON.stringify(getBody), /hostile\.pcap|tcp:\/tmp\/hostile|https:C:\\private/i);
+
+    const sanitizedAgain = sanitizeSupplementalObservationBundleV1(reopened);
+    assert.deepEqual(
+      sanitizedAgain.supplementalEvidence[0].packetHighway.capture.flows,
+      reopenedFlows
+    );
+    assert.deepEqual(sanitizedAgain.normalization, reopened.normalization);
+  });
+});
+
+run("packet highway save API reconciles retained source counts after discarding alerts", async () => {
+  const packetHighwayObservationRoute = await import("../src/app/api/packet-highway/observations/route.ts");
+  const observationRoute = await import("../src/app/api/observations/[registryId]/route.ts");
+
+  await withTempCwd(async () => {
+    const response = await packetHighwayObservationRoute.POST(
+      createRawJsonRequest("/api/packet-highway/observations", "POST", JSON.stringify({
+        capture: createPacketHighwayCapture(),
+        site: { networkName: "packet-highway-retained-count-lab" },
+        collectionVantage: "this-computer",
+      }))
+    );
+    const body = await response.json();
+    assert.equal(response.status, 200);
+    const getResponse = await observationRoute.GET(
+      new Request(`http://localhost/api/observations/${body.observation.registryId}`),
+      { params: Promise.resolve({ registryId: body.observation.registryId }) }
+    );
+    const getBody = await getResponse.json();
+    assert.equal(getResponse.status, 200);
+
+    const reopened = getBody.observation.bundle;
+    const capture = reopened.supplementalEvidence[0].packetHighway.capture;
+    const source = reopened.sources.find((item) => item.kind === "packet-highway-analysis");
+    const retainedRecordCount = capture.devices.length + capture.externalEndpoints.length +
+      capture.flows.length + capture.animationEvents.length + capture.dnsQueries.length;
+    assert.deepEqual(capture.alerts, []);
+    assert.equal(source.recordCount, retainedRecordCount);
+    assert.equal(source.recordCount, 6);
+    assert.ok(capture.devices.length > 0);
+    assert.ok(capture.externalEndpoints.length > 0);
+    assert.ok(capture.flows.length > 0);
+    assert.ok(capture.dnsQueries.length > 0);
+    assert.ok(normalizationLossCount(reopened, "untrusted-supplemental-claim-ignored") > 0);
+
+    const retainedClaims = [
+      ...reopened.coverage.notes,
+      ...reopened.batch.notes,
+      ...reopened.vantage.notes,
+      ...reopened.sources.flatMap((item) => item.notes),
+      ...reopened.notes,
+      reopened.supplementalEvidence[0].summary,
+      ...reopened.supplementalEvidence[0].packetHighway.canSupport,
+      ...capture.summary.lines,
+      capture.summary.headline,
+    ].join("\n");
+    assert.doesNotMatch(retainedClaims, /watch item|client alert|retained alert/i);
+    assert.match(retainedClaims,
+      /devices=2; externalEndpoints=1; flows=1; animationEvents=1; dnsRecords=1/i);
+    assert.deepEqual(
+      sanitizeSupplementalObservationBundleV1(reopened).normalization,
+      reopened.normalization
     );
   });
 });
