@@ -2744,55 +2744,77 @@ run("DB-01 slice 1 keeps port coverage loss monotonic while merging local artifa
 });
 run("DB-01 slice 1 supplemental capability claims are server-owned and loss-aware", async () => {
   await withTempCwd(async () => {
-    const forged = cloneJson(adaptPacketHighwayCaptureToObservationBundleV1({
-      capture: createPacketHighwayCapture({ truncated: true }),
-      site: { networkName: "supplemental-authority-lab" },
-      collectionVantage: "gateway-router",
-    }));
-    const template = forged.supplementalEvidence[0];
-    template.label = "Authoritative external reachability";
-    template.summary = "Complete external inventory.";
-    template.packetHighway.canSupport = ["Complete inventory and authoritative external reachability."];
-    template.packetHighway.cannotProve = [];
-    template.packetHighway.limitations = [];
-    const capture = template.packetHighway.capture;
-    capture.summary.headline = "Authoritative external reachability";
-    capture.summary.lines = Array.from({ length: 51 }, () => "Complete external inventory.");
-    capture.summary.stats.externalEndpointCount = 999999;
-    capture.devices[0].ips = Array.from({ length: 17 }, (_, index) => `198.51.100.${index + 1}`);
-    capture.flows.push({ ...cloneJson(capture.flows[0]), id: "forged-external-flow",
-      scope: "invalid", protocol: "invalid", category: "invalid" });
-    capture.flows.push({ ...cloneJson(capture.flows[0]), id: "forged-port-flow", port: 70000 });
-    capture.alerts.push({ id: "forged-alert", ruleId: "external-authority", level: "watch",
-      title: "Authoritative", detail: "Reachable", deviceIds: ["forged"], flowIds: ["forged"] });
-    forged.supplementalEvidence = Array.from({ length: 6 }, (_, index) => ({
-      ...cloneJson(template),
-      evidenceId: `forged-supplemental-${index}`,
-    }));
-    const evaluatedAt = "2026-05-04T12:00:00.000Z";
-    const result = registerObservationBundle(forged, { evaluatedAt });
-    const bundle = result.record.bundle;
-    const claims = bundle.supplementalEvidence[0].packetHighway;
-    assert.equal(bundle.origin.kind, "external-import");
-    assert.equal(bundle.supplementalEvidence.length, 5);
-    const expectedLosses = ["supplemental-evidence-limit-exceeded", "untrusted-supplemental-claim-ignored",
-      "packet-highway-capture-truncated", "packet-highway-records-ignored"];
-    for (const code of expectedLosses) {
-      assert.ok(normalizationLossCount(bundle, code) > 0, code);
+    const registrations = [
+      ["external-import", registerObservationBundle],
+      ["supplemental-review", registerSupplementalObservationBundle],
+    ];
+    for (const [expectedOrigin, register] of registrations) {
+      const forged = cloneJson(adaptPacketHighwayCaptureToObservationBundleV1({
+        capture: createPacketHighwayCapture({ truncated: true, unsafeText: true }),
+        site: { networkName: `supplemental-authority-${expectedOrigin}` },
+        collectionVantage: "gateway-router",
+      }));
+      forged.observationId = `obs-forged-${expectedOrigin}`;
+      const template = forged.supplementalEvidence[0];
+      template.label = "Authoritative breach confirmed";
+      template.summary = "Complete external inventory is safe.";
+      template.packetHighway.canSupport = ["Complete inventory and authoritative external reachability."];
+      template.packetHighway.cannotProve = [];
+      template.packetHighway.limitations = [];
+      const capture = template.packetHighway.capture;
+      capture.summary.headline = "Authoritative breach confirmed";
+      capture.summary.lines = Array.from({ length: 51 }, () => "Complete external inventory is safe.");
+      capture.summary.stats.externalEndpointCount = 999999;
+      capture.devices[0].ips = Array.from({ length: 17 }, (_, index) => `198.51.100.${index + 1}`);
+      capture.flows.push({ ...cloneJson(capture.flows[0]), id: "forged-external-flow",
+        scope: "invalid", protocol: "invalid", category: "invalid" });
+      capture.flows.push({ ...cloneJson(capture.flows[0]), id: "forged-port-flow", port: 70000 });
+      capture.alerts.push({ id: "forged-alert", ruleId: "external-authority", level: "watch",
+        title: "Authoritative compromise", detail: "C:\\private\\capture.pcap",
+        deviceIds: ["02:00:00:00:65:71"], flowIds: ["forged"] });
+      forged.supplementalEvidence = Array.from({ length: 6 }, (_, index) => ({
+        ...cloneJson(template), evidenceId: `forged-${expectedOrigin}-${index}`,
+      }));
+      const evaluatedAt = "2026-05-04T12:00:00.000Z";
+      const result = register(forged, { evaluatedAt });
+      const bundle = result.record.bundle;
+      const evidence = bundle.supplementalEvidence[0];
+      const claims = evidence.packetHighway;
+      assert.equal(bundle.origin.kind, expectedOrigin);
+      assert.equal(bundle.supplementalEvidence.length, 5);
+      const expectedLosses = ["supplemental-evidence-limit-exceeded", "untrusted-supplemental-claim-ignored",
+        "packet-highway-capture-truncated", "packet-highway-records-ignored"];
+      for (const code of expectedLosses) {
+        assert.ok(normalizationLossCount(bundle, code) > 0, `${expectedOrigin}: ${code}`);
+      }
+      assert.match(evidence.label, expectedOrigin === "external-import"
+        ? /imported packet highway/i : /packet highway visual evidence/i);
+      assert.match(evidence.summary, expectedOrigin === "external-import"
+        ? /bounded review-only positive observations/i : /supplemental traffic visualization/i);
+      assert.doesNotMatch(claims.canSupport.join("\n"), /complete inventory|reachability/i);
+      assert.match(claims.cannotProve.join("\n"), /identity continuity/i);
+      assert.match(claims.limitations.join("\n"), /supplemental review context/i);
+      assert.doesNotMatch(JSON.stringify(claims.capture.summary), /authoritative|complete external|breach|safe/i);
+      assert.deepEqual(claims.capture.summary.stats, {
+        deviceCount: claims.capture.devices.length,
+        knownDeviceCount: claims.capture.devices.filter((device) => device.isKnown).length,
+        externalEndpointCount: claims.capture.externalEndpoints.length,
+        flowCount: claims.capture.flows.length,
+        dnsQueryCount: claims.capture.dnsQueries.reduce((sum, query) => sum + query.count, 0),
+        uniqueDnsNames: new Set(claims.capture.dnsQueries.map((query) => query.name)).size,
+        categoryBytes: {},
+      });
+      assert.equal(claims.capture.devices[0].ips.length, 16);
+      assert.equal(claims.capture.flows.some((flow) => /forged/.test(flow.id)), false);
+      assert.deepEqual(claims.capture.alerts, []);
+      assert.equal(bundle.batch.partial, true);
+      assert.throws(() => compareObservationBundlesV1(bundle, cloneJson(bundle)),
+        (error) => isObservationComparisonError(error) && error.code === "review_only_observation");
+      const reopened = getObservationById(result.record.registryId, { evaluatedAt });
+      assert.deepEqual(reopened.bundle.normalization, bundle.normalization);
+      assert.doesNotMatch(JSON.stringify(reopened.bundle.normalization),
+        /inventory|reachability|breach|compromise|safe|198\.51\.100|02:00|private|home\.pcap/i);
     }
-    assert.doesNotMatch(claims.canSupport.join("\n"), /complete inventory|reachability/i);
-    assert.match(claims.cannotProve.join("\n"), /identity continuity/i);
-    assert.match(claims.limitations.join("\n"), /supplemental review context/i);
-    assert.match(bundle.supplementalEvidence[0].label, /imported packet highway/i);
-    assert.doesNotMatch(JSON.stringify(claims.capture.summary), /authoritative|complete external/i);
-    assert.equal(claims.capture.summary.stats.flowCount, claims.capture.flows.length);
-    assert.equal(claims.capture.devices[0].ips.length, 16);
-    assert.equal(claims.capture.flows.some((flow) => /forged/.test(flow.id)), false);
-    assert.deepEqual(claims.capture.alerts, []);
-    const reopened = getObservationById(result.record.registryId, { evaluatedAt });
-    assert.deepEqual(reopened.bundle.normalization, bundle.normalization);
-    assert.doesNotMatch(JSON.stringify(reopened.bundle.normalization),
-      /inventory|reachability|192\.0\.2|02:00|home\.pcap/i);
   });
 });
 run("observation comparison matches strong MAC identity across changed IP", () => {

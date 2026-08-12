@@ -58,6 +58,9 @@ const PACKET_HIGHWAY_LIMITATIONS = [
   "Packet Highway evidence is supplemental review context only and never replaces canonical local scan evidence.",
   "Visibility is limited to the retained capture window, selected collection vantage, and parser limits.",
 ] as const;
+const SUPPLEMENTAL_PACKET_HIGHWAY_LABEL = "Packet Highway visual evidence";
+const SUPPLEMENTAL_PACKET_HIGHWAY_SUMMARY =
+  "Supplemental traffic visualization metadata. Use it to inspect what this capture saw, not to infer ownership, safety, or complete coverage.";
 const IMPORTED_PACKET_HIGHWAY_LABEL = "Imported Packet Highway analysis";
 const IMPORTED_PACKET_HIGHWAY_SUMMARY = "Imported traffic metadata retained as bounded review-only positive observations.";
 const IMPORTED_PACKET_HIGHWAY_HEADLINE = "Imported traffic metadata is available for review.";
@@ -1760,6 +1763,10 @@ function sanitizeSupplementalEvidence(
   return evidence.length > 0 ? evidence.slice(0, MAX_SUPPLEMENTAL_EVIDENCE) : undefined;
 }
 
+function isUntrustedPacketHighwayOrigin(origin: ObservationOriginKind): boolean {
+  return origin !== "canonical-local-artifacts" && origin !== "server-synthetic-demo";
+}
+
 function sanitizeSupplementalEvidenceItem(
   raw: Record<string, unknown>,
   normalization: NormalizationCollector,
@@ -1774,18 +1781,21 @@ function sanitizeSupplementalEvidenceItem(
   );
   if (!packetHighway) return null;
 
-  const imported = origin === "external-import";
-  if (imported && (raw.label !== IMPORTED_PACKET_HIGHWAY_LABEL ||
-    raw.summary !== IMPORTED_PACKET_HIGHWAY_SUMMARY)) {
+  const reviewOnly = isUntrustedPacketHighwayOrigin(origin);
+  const reviewLabel = origin === "supplemental-review"
+    ? SUPPLEMENTAL_PACKET_HIGHWAY_LABEL : IMPORTED_PACKET_HIGHWAY_LABEL;
+  const reviewSummary = origin === "supplemental-review"
+    ? SUPPLEMENTAL_PACKET_HIGHWAY_SUMMARY : IMPORTED_PACKET_HIGHWAY_SUMMARY;
+  if (reviewOnly && (raw.label !== reviewLabel || raw.summary !== reviewSummary)) {
     recordLoss(normalization, "untrusted-supplemental-claim-ignored");
   }
 
   return {
     evidenceId: safeId(raw.evidenceId, `phe-${hashString(packetHighway.capture.meta.generatedAt).slice(0, 12)}`),
     kind: "packet-highway-analysis",
-    label: imported ? IMPORTED_PACKET_HIGHWAY_LABEL :
+    label: reviewOnly ? reviewLabel :
       safeText(raw.label, 120) || "Packet Highway analysis",
-    summary: imported ? IMPORTED_PACKET_HIGHWAY_SUMMARY :
+    summary: reviewOnly ? reviewSummary :
       safeText(raw.summary, 240) || "Supplemental Packet Highway metadata linked to this observation.",
     packetHighway,
   };
@@ -1818,7 +1828,7 @@ function sanitizePacketHighwayEvidence(
       );
     }
     if (
-      origin === "external-import" &&
+      isUntrustedPacketHighwayOrigin(origin) &&
       (!sameStringArray(raw.canSupport, PACKET_HIGHWAY_CAN_SUPPORT) ||
         !sameStringArray(raw.cannotProve, PACKET_HIGHWAY_CANNOT_PROVE) ||
         !sameStringArray(raw.limitations, PACKET_HIGHWAY_LIMITATIONS))
@@ -1906,7 +1916,7 @@ function sanitizePacketHighwayCaptureForObservation(
       flowIds: alert.flowIds.map((id) => safeId(id, "flow-unknown")),
     })),
   };
-  if (origin === "external-import") {
+  if (isUntrustedPacketHighwayOrigin(origin)) {
     const importedSummary = summarizeImportedPacketHighwayCapture(sanitized);
     const changed = JSON.stringify(sanitized.summary) !== JSON.stringify(importedSummary) ||
       sanitized.alerts.length > 0;
