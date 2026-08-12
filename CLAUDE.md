@@ -271,7 +271,7 @@ This repo accepts user-supplied network artifacts. Treat all uploaded ZIPs, XML 
 
 When touching dependencies:
 
-1. Run `npm audit`.
+1. Run `npm run audit:prod` and `npm run audit:all`.
 2. Classify findings as:
    - runtime exposure,
    - development/build-tool exposure,
@@ -344,11 +344,14 @@ Run and report:
 
 ```bash
 npm ci
+npm audit --omit=dev --audit-level=high
 npm audit --audit-level=moderate
 npm test
+npm run test:browser
 npm run lint
-npx tsc --noEmit
+npx tsc --noEmit --incremental false
 npm run build
+git diff --check
 git status --short
 git check-ignore path/to/test.pcap path/to/test.pcapng path/to/test.har path/to/conn.log
 ```

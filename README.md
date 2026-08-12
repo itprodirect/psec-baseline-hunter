@@ -54,7 +54,7 @@ Upload your network scans, and get:
 ```bash
 git clone https://github.com/itprodirect/psec-baseline-hunter.git
 cd psec-baseline-hunter
-npm install
+npm ci
 npm run dev
 ```
 
@@ -62,7 +62,7 @@ Open http://localhost:3000 and click **"Try Demo"** — see the app with sample 
 
 ### Option 2: Scan Your Own Network
 
-**Prerequisites:** Node.js 20+, Nmap installed
+**Prerequisites:** Node.js 24.19.0, npm 11.17.0, Nmap installed
 
 ```bash
 # 1. Run a scan (replace with your network range)

@@ -1,22 +1,21 @@
-name: CI
+name: Dependency audit
 
 on:
-  push:
-    branches: [main, feature/*]
-  pull_request:
-    branches: [main]
+  schedule:
+    - cron: '23 8 * * 1'
+  workflow_dispatch: {}
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.ref }}
+  group: dependency-audit-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  build:
+  audit:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 15
 
     steps:
       - name: Checkout repository
@@ -44,25 +43,3 @@ jobs:
 
       - name: Audit all dependencies
         run: npm run audit:all
-
-      - name: Run tests
-        run: npm test
-
-      - name: Install browser smoke dependencies
-        run: npx --no-install playwright install --with-deps chromium
-
-      - name: Run Packet Highway browser smoke
-        run: npm run test:browser
-
-      - name: Run linter
-        run: npm run lint
-
-      - name: Type check
-        run: npm run typecheck
-
-      - name: Build
-        run: npm run build
-        env:
-          # Placeholder values for build
-          AWS_REGION: us-east-1
-          S3_BUCKET: placeholder
