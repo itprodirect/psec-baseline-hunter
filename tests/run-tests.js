@@ -32,12 +32,16 @@ let getLLMRequestTimeoutMs;
 let adaptRunManifestToObservationBundleV1;
 let buildObservationBundleV1FromRun;
 let parseObservationBundleV1Json;
+let sanitizeCanonicalLocalObservationBundleV1;
+let sanitizeImportedObservationBundleV1;
 let isObservationBundleValidationError;
 let MAX_OBSERVATION_BUNDLE_JSON_BYTES;
 let MAX_OBSERVATION_NMAP_XML_BYTES;
 let MAX_OBSERVATION_HOSTS_UP_BYTES;
 let MAX_OBSERVATION_ARP_SNAPSHOT_BYTES;
 let registerObservationBundle;
+let registerCanonicalObservationBundle;
+let registerSupplementalObservationBundle;
 let registerObservationBundleJson;
 let getObservationById;
 let listObservations;
@@ -126,6 +130,8 @@ async function loadModules() {
     adaptRunManifestToObservationBundleV1,
     buildObservationBundleV1FromRun,
     parseObservationBundleV1Json,
+    sanitizeCanonicalLocalObservationBundleV1,
+    sanitizeImportedObservationBundleV1,
     isObservationBundleValidationError,
     MAX_OBSERVATION_BUNDLE_JSON_BYTES,
     MAX_OBSERVATION_NMAP_XML_BYTES,
@@ -134,6 +140,8 @@ async function loadModules() {
   } = observationBundle);
   ({
     registerObservationBundle,
+    registerCanonicalObservationBundle,
+    registerSupplementalObservationBundle,
     registerObservationBundleJson,
     getObservationById,
     listObservations,
@@ -1040,6 +1048,8 @@ function createComparisonBundle(options = {}) {
   return {
     schemaVersion: "psec.observation-bundle.v1",
     observationId: options.observationId ?? `obs-${observedAt.replace(/[^0-9]/g, "").slice(0, 12)}`,
+    origin: { kind: "canonical-local-artifacts", assignedBy: "server" },
+    normalization: { status: "complete", losses: [] },
     site: {
       siteId: options.siteId ?? "site-comparison-lab",
       networkName: options.networkName ?? "comparison-lab",
@@ -1060,17 +1070,22 @@ function createComparisonBundle(options = {}) {
       partial: options.partial ?? coverageStatus !== "complete",
       notes: [],
     },
-    sources: [
-      {
-        sourceId,
-        kind: "nmap-xml",
-        artifactLabel: "ports",
-        fileName: "synthetic.xml",
-        parsed: true,
-        recordCount: options.devices?.length ?? 0,
-        notes: [],
-      },
-    ],
+    sources: comparisonExpectedSources.map((label) => ({
+      sourceId: label === "ports" ? sourceId : `${sourceId}-${label}`,
+      kind:
+        label === "hosts_up"
+          ? "hosts-up"
+          : label === "arp_snapshot"
+            ? "arp-snapshot"
+            : label === "scan_metadata"
+              ? "scan-metadata"
+              : "nmap-xml",
+      artifactLabel: label,
+      fileName: label === "ports" || label === "discovery" ? `synthetic-${label}.xml` : null,
+      parsed: !missingSources.includes(label),
+      recordCount: label === "ports" ? (options.devices?.length ?? 0) : 1,
+      notes: [],
+    })),
     vantage: {
       type: "active-scan-upload",
       runType: "synthetic",
@@ -1146,6 +1161,14 @@ function createComparisonEvidence(kind, value, sourceId, confidence = "observed"
     sourceId,
     confidence,
   };
+}
+
+function cloneJson(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function normalizationLossCount(bundle, code) {
+  return bundle.normalization.losses.find((loss) => loss.code === code)?.count ?? 0;
 }
 
 function createDeviceResponseTargetForBundleDevice(bundle, deviceIndex = 0) {
@@ -2128,25 +2151,31 @@ run("observation registry retains same-site observations chronologically and ded
     assert.equal(older.site.siteId, newer.site.siteId);
     assert.notEqual(older.observationId, newer.observationId);
 
-    const newerResult = registerObservationBundle(newer, {
+    const newerResult = registerCanonicalObservationBundle(newer, {
       importedAt: "2026-04-15T12:07:00.000Z",
       evaluatedAt: "2026-04-16T00:00:00.000Z",
     });
-    const olderResult = registerObservationBundle(older, {
+    const olderResult = registerCanonicalObservationBundle(older, {
       importedAt: "2026-04-01T12:07:00.000Z",
       evaluatedAt: "2026-04-16T00:00:00.000Z",
     });
-    const duplicate = registerObservationBundleJson(JSON.stringify(older), {
+    const imported = registerObservationBundleJson(JSON.stringify(older), {
       importedAt: "2026-04-20T00:00:00.000Z",
       evaluatedAt: "2026-04-20T00:00:00.000Z",
+    });
+    const duplicate = registerObservationBundleJson(JSON.stringify(older), {
+      importedAt: "2026-04-21T00:00:00.000Z",
+      evaluatedAt: "2026-04-21T00:00:00.000Z",
     });
 
     assert.equal(newerResult.isNew, true);
     assert.equal(olderResult.isNew, true);
     assert.notEqual(newerResult.record.registryId, olderResult.record.registryId);
+    assert.equal(imported.isNew, true);
+    assert.equal(imported.record.origin.kind, "external-import");
     assert.equal(duplicate.isNew, false);
-    assert.equal(duplicate.duplicateOf, olderResult.record.registryId);
-    assert.equal(duplicate.record.registryId, olderResult.record.registryId);
+    assert.equal(duplicate.duplicateOf, imported.record.registryId);
+    assert.equal(duplicate.record.registryId, imported.record.registryId);
 
     const listed = listObservations(
       { siteId: older.site.siteId, order: "asc" },
@@ -2161,21 +2190,21 @@ run("observation registry retains same-site observations chronologically and ded
       { evaluatedAt: "2026-04-16T00:00:00.000Z" }
     );
 
-    assert.equal(listed.length, 2);
+    assert.equal(listed.length, 3);
     assert.deepEqual(
       listed.map((entry) => entry.observationId),
-      [older.observationId, newer.observationId]
+      [older.observationId, older.observationId, newer.observationId]
     );
     assert.deepEqual(
       networkListed.map((entry) => entry.observationId),
-      [older.observationId, newer.observationId]
+      [older.observationId, older.observationId, newer.observationId]
     );
     assert.equal(duplicateLookup.registryId, olderResult.record.registryId);
 
     const index = JSON.parse(
       fs.readFileSync(path.join(process.cwd(), "data", "observations", "index.json"), "utf-8")
     );
-    assert.equal(Object.keys(index.observations).length, 2);
+    assert.equal(Object.keys(index.observations).length, 3);
   });
 });
 
@@ -2199,11 +2228,11 @@ run("observation registry dedupes by stable source run without collapsing reused
       computeObservationBundleContentHash(deterministic)
     );
 
-    const oldStyleResult = registerObservationBundle(oldStyle, {
+    const oldStyleResult = registerCanonicalObservationBundle(oldStyle, {
       importedAt: "2026-06-19T12:30:00.000Z",
       evaluatedAt: "2026-06-20T00:00:00.000Z",
     });
-    const deterministicResult = registerObservationBundle(deterministic, {
+    const deterministicResult = registerCanonicalObservationBundle(deterministic, {
       importedAt: "2026-06-20T12:30:00.000Z",
       evaluatedAt: "2026-06-21T00:00:00.000Z",
     });
@@ -2303,8 +2332,15 @@ run("observation registry sanitizes imports before persistence and omits unsafe 
     assert.equal(result.isNew, true);
     assert.equal(result.record.vantage.collectorHost, null);
     assert.equal(result.record.vantage.target, null);
-    assert.equal(result.record.bundle.sources[0].fileName, "ports_top200_open.xml");
-    assert.ok(result.record.bundle.sources[0].notes.includes("safe source note"));
+    assert.equal(
+      result.record.bundle.sources.some((source) => source.fileName === "ports_top200_open.xml"),
+      true
+    );
+    assert.ok(
+      result.record.bundle.normalization.losses.some(
+        (loss) => loss.code === "invalid-source-record-dropped"
+      )
+    );
     assert.ok(result.record.bundle.vantage.notes.includes("safe vantage note"));
     assert.ok(result.record.bundle.batch.notes.includes("safe batch note"));
     assert.ok(result.record.bundle.coverage.notes.includes("safe coverage note"));
@@ -2313,22 +2349,17 @@ run("observation registry sanitizes imports before persistence and omits unsafe 
     assert.equal(result.record.observationId, "obs-unknown");
     assert.equal(result.record.batch.batchId, "batch-unknown");
     assert.equal(result.record.batch.sourceRunUid, "run-unknown");
-    assert.equal(result.record.bundle.sources[0].sourceId, "src-unknown");
-    assert.equal(result.record.bundle.devices[0].deviceId, "dev-unknown");
-    assert.equal(result.record.bundle.devices[0].hostnames.includes(unsafePath), false);
     assert.equal(
-      result.record.bundle.devices[0].identityEvidence.some(
-        (evidence) => evidence.evidenceId === "ev-secret-marker"
-      ),
+      result.record.bundle.sources.some((source) => source.sourceId === "src-unknown"),
       false
     );
-    assert.equal(
-      result.record.bundle.devices[0].identityEvidence.some(
-        (evidence) => evidence.value === "raw-id-safe-value" && evidence.evidenceId !== rawScanBody
-      ),
-      true
-    );
-    assert.equal(result.record.bundle.devices[0].openPorts[0].product, null);
+    const sanitizedDevice = result.record.bundle.devices[0];
+    assert.equal(sanitizedDevice.hostnames.includes(unsafePath), false);
+    assert.equal(sanitizedDevice.identityEvidence.some(
+      (evidence) => evidence.evidenceId === "ev-secret-marker" || evidence.evidenceId === rawScanBody
+    ), false);
+    assert.equal(sanitizedDevice.openPorts.length, 0);
+    assert.ok(normalizationLossCount(result.record.bundle, "invalid-device-record-dropped") > 0);
     assertObservationRegistryOutputSafe(persistedRecord);
     assertObservationRegistryOutputSafe(persistedRegistry);
     assert.doesNotMatch(JSON.stringify(result.record), /nmaprun-host-address|192\.0\.2\.99/);
@@ -2345,7 +2376,7 @@ run("observation registry records preserve metadata and classify partial observa
       includeOptional: false,
       generatedAt: "2026-04-01T12:06:00.000Z",
     });
-    const result = registerObservationBundle(partial, {
+    const result = registerCanonicalObservationBundle(partial, {
       importedAt: "2026-04-01T12:07:00.000Z",
       evaluatedAt: "2026-04-02T00:00:00.000Z",
     });
@@ -2444,6 +2475,326 @@ run("observation freshness is deterministic at cadence and grace boundaries", as
   });
 });
 
+run("DB-01 slice 1 keeps canonical authority server-owned across registry and API boundaries", async () => {
+  const observationRoute = await import("../src/app/api/observations/route.ts");
+  const observationDetailRoute = await import("../src/app/api/observations/[registryId]/route.ts");
+  await withTempCwd(async () => {
+    const local = createObservationRegistryBundle({ runUid: "authority-local-run", network: "authority-lab" });
+    const evaluatedAt = "2026-04-02T00:00:00.000Z";
+    const canonical = registerCanonicalObservationBundle(local, { evaluatedAt });
+    assert.equal(canonical.record.origin.kind, "canonical-local-artifacts");
+    assert.equal(canonical.record.normalization.status, "complete");
+    const reopened = getObservationById(canonical.record.registryId, { evaluatedAt });
+    assert.equal(reopened.origin.kind, "canonical-local-artifacts");
+    const forged = createComparisonBundle({
+      observationId: "obs-forged-import-authority",
+      siteId: "site-forged-import",
+      networkName: "forged-import-lab",
+      devices: [{
+        deviceId: "forged-positive-device", ips: ["192.0.2.10"],
+        macs: ["02:00:00:00:65:10"], ports: [{ port: 443, protocol: "tcp" }],
+      }],
+    });
+    forged.origin = { kind: "canonical-local-artifacts", assignedBy: "server" };
+    forged.authority = { complete: true, canConcludeAbsence: true };
+    forged.collector.kind = "registered-scan-run";
+    forged.vantage.type = "active-scan-upload";
+    forged.coverage = { status: "complete", score: 1,
+      expectedSources: [...comparisonExpectedSources],
+      presentSources: [...comparisonExpectedSources], missingSources: [], notes: [] };
+    forged.batch.partial = false;
+    const request = createRawJsonRequest("/api/observations", "POST", JSON.stringify(forged));
+    const response = await observationRoute.POST(request);
+    const body = await response.json();
+    assert.equal(response.status, 200);
+    assert.deepEqual([body.observation.origin.kind, body.observation.normalization.status,
+      body.observation.coverage.status, body.observation.coverage.score],
+    ["external-import", "lossy", "minimal", 0]);
+    assert.deepEqual(body.observation.coverage.presentSources, []);
+    const params = Promise.resolve({ registryId: body.observation.registryId });
+    const detailResponse = await observationDetailRoute.GET(
+      new Request(`http://localhost/api/observations/${body.observation.registryId}`), { params }
+    );
+    const detail = await detailResponse.json();
+    assert.equal(detail.observation.bundle.devices[0].openPorts[0].port, 443);
+    assert.equal("authority" in detail.observation.bundle, false);
+    assert.throws(() => compareObservationBundlesV1(detail.observation.bundle,
+      cloneJson(detail.observation.bundle)),
+    (error) => isObservationComparisonError(error) && error.code === "review_only_observation");
+  });
+});
+run("DB-01 slice 1 keeps imported pairs review-only for negative conclusions", async () => {
+  await withTempCwd(async () => {
+    const makeImport = (observationId, observedAt, ports) =>
+      createComparisonBundle({
+        observationId, siteId: "site-import-review", networkName: "import-review-lab", observedAt,
+        devices: [{
+          deviceId: "import-review-device", ips: ["192.0.2.10"],
+          macs: ["02:00:00:00:65:20"], ports,
+        }],
+      });
+    const baseline = makeImport("obs-import-review-baseline", "2026-05-01T10:00:00.000Z",
+      [{ port: 443, protocol: "tcp", service: "https" }]);
+    registerObservationBundleJson(JSON.stringify(baseline),
+      { evaluatedAt: "2026-05-03T00:00:00.000Z" });
+    const current = makeImport("obs-import-review-current", "2026-05-02T10:00:00.000Z", []);
+    registerObservationBundleJson(JSON.stringify(current), {
+      evaluatedAt: "2026-05-03T00:00:00.000Z",
+    });
+    const activity = buildNetworkActivity({ evaluatedAt: "2026-05-03T00:00:00.000Z" });
+    assert.equal(activity.status, "no-comparison");
+    assert.equal(activity.events.length, 0);
+    assert.doesNotMatch(activity.summary, /stable|closed|removed|all.clear/i);
+    const imported = listObservations({ siteId: "site-import-review", order: "asc" }, {
+      evaluatedAt: "2026-05-03T00:00:00.000Z",
+    });
+    assert.equal(imported.length, 2);
+    assert.equal(imported.every((entry) => entry.origin.kind === "external-import"), true);
+    assert.equal(imported.every((entry) => entry.coverage.presentSources.length === 0), true);
+  });
+});
+const DB01_COLLECTION_CASES = [
+  ["sources", 50, "source-limit-exceeded", "invalid-source-record-dropped"], ["devices", 1000, "device-limit-exceeded", "invalid-device-record-dropped"], ["identity", 40, "identity-evidence-limit-exceeded", "invalid-identity-evidence-dropped"],
+  ["ports", 256, "open-port-limit-exceeded", "invalid-open-port-dropped"], ["coverage", 50, "port-coverage-limit-exceeded", "invalid-port-coverage-dropped"], ["ranges", 512, "port-range-limit-exceeded", "invalid-port-range-dropped"],
+  ["supplemental", 5, "supplemental-evidence-limit-exceeded", "invalid-supplemental-evidence-dropped"],
+];
+const createDb01Device = (index = 0) => ({
+  deviceId: `db01-device-${index}`, firstSeen: null, lastSeen: null,
+  ips: [], macs: [], hostnames: [], vendors: [], identityEvidence: [], openPorts: [], notes: []
+});
+function createDb01CollectionBundle(kind, count, invalidPosition = null) {
+  const raw = createComparisonBundle({ observationId: `obs-db01-${kind}`, devices: [] });
+  const packet = kind === "supplemental"
+    ? adaptPacketHighwayCaptureToObservationBundleV1({
+        capture: createPacketHighwayCapture(), site: { networkName: "db01-cap-lab" },
+        collectionVantage: "this-computer",
+      }).supplementalEvidence[0]
+    : null;
+  const factory = {
+    sources: (i) => ({ sourceId: `db01-source-${i}`, kind: "nmap-xml", artifactLabel: i ? `extra-${i}` : "ports", fileName: `source-${i}.xml`,
+      parsed: true, recordCount: 0, notes: [] }),
+    devices: (i) => createDb01Device(i),
+    identity: (i) => ({ evidenceId: `db01-evidence-${i}`, kind: "hostname", value: `db01-${i}.example`, sourceId: "src-1", confidence: "reported" }),
+    ports: (i) => ({ protocol: "tcp", port: i + 1, state: "open", service: null, product: null, version: null, sourceId: "src-1" }),
+    coverage: (i) => ({ sourceId: "src-1", protocol: "tcp", ranges: [{ start: i + 1, end: i + 1 }], stateEvidence: "complete" }),
+    ranges: (i) => ({ start: i * 2 + 1, end: i * 2 + 1 }),
+    supplemental: (i) => ({ ...cloneJson(packet), evidenceId: `db01-supplemental-${i}` }),
+  }[kind];
+  const records = Array.from({ length: count }, (_, index) => factory(index));
+  if (invalidPosition) records[invalidPosition === "before" ? "unshift" : "push"](null);
+  if (kind === "sources" || kind === "devices") raw[kind] = records;
+  else if (kind === "supplemental") raw.supplementalEvidence = records;
+  else {
+    const device = createDb01Device();
+    if (kind === "identity") device.identityEvidence = records;
+    if (kind === "ports") device.openPorts = records;
+    if (kind === "coverage") device.portCoverage = records;
+    if (kind === "ranges") device.portCoverage = [{
+      sourceId: "src-1", protocol: "tcp", ranges: records, stateEvidence: "complete",
+    }];
+    raw.devices = [device];
+  }
+  return raw;
+}
+function db01CollectionSize(kind, bundle) {
+  if (kind === "sources" || kind === "devices") return bundle[kind].length;
+  if (kind === "supplemental") return bundle.supplementalEvidence.length;
+  const device = bundle.devices[0];
+  return kind === "identity" ? device.identityEvidence.length : kind === "ports" ? device.openPorts.length
+    : kind === "coverage" ? device.portCoverage.length : device.portCoverage[0].ranges.length;
+}
+run("DB-01 slice 1 records every conclusion-bearing cap at cap plus one", () => {
+  for (const [kind, cap, capCode] of DB01_COLLECTION_CASES) {
+    const atCap = sanitizeCanonicalLocalObservationBundleV1(createDb01CollectionBundle(kind, cap));
+    const overCap = sanitizeCanonicalLocalObservationBundleV1(createDb01CollectionBundle(kind, cap + 1));
+    assert.deepEqual([db01CollectionSize(kind, atCap), normalizationLossCount(atCap, capCode),
+      db01CollectionSize(kind, overCap), normalizationLossCount(overCap, capCode)], [cap, 0, cap, 1], kind);
+  }
+});
+run("DB-01 slice 1 validates records before applying collection limits", () => {
+  for (const position of ["before", "after"]) {
+    for (const [kind, cap, capCode, dropCode] of DB01_COLLECTION_CASES) {
+      const sanitized = sanitizeCanonicalLocalObservationBundleV1(
+        createDb01CollectionBundle(kind, cap, position));
+      assert.deepEqual([db01CollectionSize(kind, sanitized), normalizationLossCount(sanitized, capCode),
+        normalizationLossCount(sanitized, dropCode)], [cap, 0, 1], `${kind} ${position}`);
+    }
+  }
+});
+run("DB-01 slice 1 requires explicit supported protocol and open state", () => {
+  const raw = createComparisonBundle({
+    observationId: "obs-strict-open-port",
+    devices: [{ deviceId: "strict-port-device", ips: [], macs: [] }],
+  });
+  const port = (protocol, number, state = "open") => ({
+    protocol, port: number, state, sourceId: "src-1",
+  });
+  raw.devices[0].openPorts = [
+    port("tcp", 1), port("udp", 65535), port("sctp", 2905),
+    port(undefined, 443), port("made-up", 443), port("tcp", 443, null),
+    port("tcp", 443, "closed"), port("tcp", "443"), port("tcp", 0), port("tcp", 65536),
+  ];
+  const sanitized = sanitizeImportedObservationBundleV1(raw);
+  assert.deepEqual(
+    sanitized.devices[0].openPorts.map(({ protocol, port: number }) => `${protocol}:${number}`),
+    ["tcp:1", "udp:65535", "sctp:2905"]
+  );
+  assert.equal(normalizationLossCount(sanitized, "unsupported-port-protocol"), 2);
+  assert.equal(normalizationLossCount(sanitized, "non-open-port-state"), 2);
+  assert.equal(normalizationLossCount(sanitized, "invalid-open-port-dropped"), 3);
+});
+run("DB-01 slice 1 preserves loss monotonically across repeated sanitation", () => {
+  const raw = createComparisonBundle({
+    observationId: "obs-monotonic-loss",
+    devices: [{ deviceId: "monotonic-device", ips: [], macs: [] }],
+  });
+  raw.normalization = { status: "lossy",
+    losses: [{ code: "open-port-limit-exceeded", count: 1 }] };
+  const first = sanitizeImportedObservationBundleV1(raw);
+  assert.deepEqual(sanitizeImportedObservationBundleV1(first).normalization, first.normalization);
+  let sanitized = first;
+  for (const [index, expected] of [[443, 1], [8443, 2]]) {
+    const next = cloneJson(sanitized);
+    next.devices[0].openPorts.push({ protocol: "tcp", port: index,
+      state: "closed", sourceId: "src-1" });
+    sanitized = sanitizeImportedObservationBundleV1(next);
+    assert.equal(normalizationLossCount(sanitized, "open-port-limit-exceeded"), 1);
+    assert.equal(normalizationLossCount(sanitized, "non-open-port-state"), expected);
+  }
+  assert.doesNotMatch(JSON.stringify(sanitized.normalization), /443|8443|192\.0\.2|02:00/);
+});
+run("DB-01 slice 1 registry reads preserve known loss and fail inconsistent metadata closed", async () => {
+  await withTempCwd(async () => {
+    const evaluatedAt = "2026-04-02T00:00:00.000Z";
+    const register = (suffix) => registerCanonicalObservationBundle(createObservationRegistryBundle({
+      runUid: `registry-authority-${suffix}`, network: `registry-authority-${suffix}`,
+    }), { evaluatedAt });
+    const mutateRecord = (registered, mutate) => {
+      const recordPath = observationRegistryRecordPath(registered.record.registryId);
+      const record = JSON.parse(fs.readFileSync(recordPath, "utf-8"));
+      mutate(record);
+      fs.writeFileSync(recordPath, JSON.stringify(record, null, 2));
+      return getObservationById(registered.record.registryId, { evaluatedAt });
+    };
+    const normalization = mutateRecord(register("normalization"), (record) => {
+      record.normalization = { status: "lossy", losses: [
+        { code: "artifact-read-failed", count: 2 }, { code: "unknown-private-reason", count: 99 }] };
+    });
+    assert.equal(normalizationLossCount(normalization.bundle, "artifact-read-failed"), 2);
+    assert.ok(normalizationLossCount(normalization.bundle, "normalization-metadata-invalid") > 0);
+    assert.throws(() => compareObservationBundlesV1(
+      normalization.bundle, cloneJson(normalization.bundle)
+    ), (error) => isObservationComparisonError(error) && error.code === "review_only_observation");
+    const origin = mutateRecord(register("origin"), (record) => {
+      record.origin = { kind: "external-import", assignedBy: "server" };
+    });
+    assert.equal(origin.origin.kind, "legacy-unknown");
+    assert.ok(normalizationLossCount(origin.bundle, "authority-metadata-invalid") > 0);
+    const legacy = mutateRecord(register("legacy"), (record) => {
+      delete record.origin;
+      delete record.normalization;
+      delete record.bundle.origin;
+      delete record.bundle.normalization;
+    });
+    assert.equal(legacy.origin.kind, "legacy-unknown");
+    assert.ok(normalizationLossCount(legacy.bundle, "authority-metadata-missing") > 0);
+    assert.ok(normalizationLossCount(legacy.bundle, "normalization-metadata-missing") > 0);
+    const indexCase = register("index");
+    const indexPath = path.join(process.cwd(), "data", "observations", "index.json");
+    const index = JSON.parse(fs.readFileSync(indexPath, "utf-8"));
+    index.observations[indexCase.record.registryId].origin = {
+      kind: "external-import", assignedBy: "server",
+    };
+    index.observations[indexCase.record.registryId].normalization = {
+      status: "lossy", losses: [{ code: "artifact-read-failed", count: 7 }],
+    };
+    fs.writeFileSync(indexPath, JSON.stringify(index, null, 2));
+    const indexRecord = getObservationById(indexCase.record.registryId, { evaluatedAt });
+    const listed = listObservations({ network: "registry-authority-index" }, { evaluatedAt });
+    assert.deepEqual([indexRecord.origin.kind, listed[0].origin.kind],
+      ["legacy-unknown", "legacy-unknown"]);
+    assert.equal(normalizationLossCount(indexRecord.bundle, "artifact-read-failed"), 7);
+    assert.equal(listed[0].normalization.losses.find(
+      (loss) => loss.code === "artifact-read-failed"
+    )?.count, 7);
+    assert.ok(normalizationLossCount(indexRecord.bundle, "authority-metadata-invalid") > 0);
+  });
+});
+run("DB-01 slice 1 keeps port coverage loss monotonic while merging local artifacts", async () => {
+  await withTempCwd(async () => {
+    const host = (withPort) => ['<host><status state="up" />',
+      '<address addr="192.0.2.10" addrtype="ipv4" /><address addr="02:00:00:00:65:50" addrtype="mac" />',
+      withPort ? '<ports><port protocol="tcp" portid="443"><state state="open" /></port></ports>' : "",
+      "</host>"].join("");
+    for (const reverse of [false, true]) {
+      const manifest = writeObservationRunFixture({
+        runUid: `coverage-merge-${reverse ? "reverse" : "forward"}`,
+        includeOptional: false,
+      });
+      const observations = reverse ? [host(false), host(true)] : [host(true), host(false)];
+      fs.writeFileSync(
+        manifest.keyFiles.ports[0],
+        `<nmaprun><scaninfo protocol="tcp" numservices="1" services="443" />${observations.join("")}</nmaprun>`
+      );
+      const bundle = adaptRunManifestToObservationBundleV1(manifest);
+      assert.equal(bundle.devices.length, 1, String(reverse));
+      assert.equal(bundle.devices[0].portCoverage[0].stateEvidence, "partial", String(reverse));
+    }
+  });
+});
+run("DB-01 slice 1 supplemental capability claims are server-owned and loss-aware", async () => {
+  await withTempCwd(async () => {
+    const forged = cloneJson(adaptPacketHighwayCaptureToObservationBundleV1({
+      capture: createPacketHighwayCapture({ truncated: true }),
+      site: { networkName: "supplemental-authority-lab" },
+      collectionVantage: "gateway-router",
+    }));
+    const template = forged.supplementalEvidence[0];
+    template.label = "Authoritative external reachability";
+    template.summary = "Complete external inventory.";
+    template.packetHighway.canSupport = ["Complete inventory and authoritative external reachability."];
+    template.packetHighway.cannotProve = [];
+    template.packetHighway.limitations = [];
+    const capture = template.packetHighway.capture;
+    capture.summary.headline = "Authoritative external reachability";
+    capture.summary.lines = Array.from({ length: 51 }, () => "Complete external inventory.");
+    capture.summary.stats.externalEndpointCount = 999999;
+    capture.devices[0].ips = Array.from({ length: 17 }, (_, index) => `198.51.100.${index + 1}`);
+    capture.flows.push({ ...cloneJson(capture.flows[0]), id: "forged-external-flow",
+      scope: "invalid", protocol: "invalid", category: "invalid" });
+    capture.flows.push({ ...cloneJson(capture.flows[0]), id: "forged-port-flow", port: 70000 });
+    capture.alerts.push({ id: "forged-alert", ruleId: "external-authority", level: "watch",
+      title: "Authoritative", detail: "Reachable", deviceIds: ["forged"], flowIds: ["forged"] });
+    forged.supplementalEvidence = Array.from({ length: 6 }, (_, index) => ({
+      ...cloneJson(template),
+      evidenceId: `forged-supplemental-${index}`,
+    }));
+    const evaluatedAt = "2026-05-04T12:00:00.000Z";
+    const result = registerObservationBundle(forged, { evaluatedAt });
+    const bundle = result.record.bundle;
+    const claims = bundle.supplementalEvidence[0].packetHighway;
+    assert.equal(bundle.origin.kind, "external-import");
+    assert.equal(bundle.supplementalEvidence.length, 5);
+    const expectedLosses = ["supplemental-evidence-limit-exceeded", "untrusted-supplemental-claim-ignored",
+      "packet-highway-capture-truncated", "packet-highway-records-ignored"];
+    for (const code of expectedLosses) {
+      assert.ok(normalizationLossCount(bundle, code) > 0, code);
+    }
+    assert.doesNotMatch(claims.canSupport.join("\n"), /complete inventory|reachability/i);
+    assert.match(claims.cannotProve.join("\n"), /identity continuity/i);
+    assert.match(claims.limitations.join("\n"), /supplemental review context/i);
+    assert.match(bundle.supplementalEvidence[0].label, /imported packet highway/i);
+    assert.doesNotMatch(JSON.stringify(claims.capture.summary), /authoritative|complete external/i);
+    assert.equal(claims.capture.summary.stats.flowCount, claims.capture.flows.length);
+    assert.equal(claims.capture.devices[0].ips.length, 16);
+    assert.equal(claims.capture.flows.some((flow) => /forged/.test(flow.id)), false);
+    assert.deepEqual(claims.capture.alerts, []);
+    const reopened = getObservationById(result.record.registryId, { evaluatedAt });
+    assert.deepEqual(reopened.bundle.normalization, bundle.normalization);
+    assert.doesNotMatch(JSON.stringify(reopened.bundle.normalization),
+      /inventory|reachability|192\.0\.2|02:00|home\.pcap/i);
+  });
+});
 run("observation comparison matches strong MAC identity across changed IP", () => {
   const baseline = createComparisonBundle({
     observationId: "obs-mac-baseline",
@@ -3350,7 +3701,7 @@ run("packet highway analysis saves as supplemental metadata-only observation", a
     assert.equal(bundle.supplementalEvidence[0].packetHighway.capture.meta.truncated, true);
     assert.match(bundle.coverage.notes.join("\n"), /Partial analysis flag/);
 
-    const result = registerObservationBundle(bundle, {
+    const result = registerSupplementalObservationBundle(bundle, {
       importedAt: "2026-05-04T11:01:00.000Z",
       evaluatedAt: "2026-05-04T11:02:00.000Z",
     });
@@ -3364,7 +3715,7 @@ run("packet highway analysis saves as supplemental metadata-only observation", a
     assert.equal(reopened.bundle.supplementalEvidence[0].packetHighway.capture.meta.truncated, true);
     assert.match(
       reopened.bundle.supplementalEvidence[0].packetHighway.limitations.join("\n"),
-      /Endpoint capture/
+      /supplemental review context/
     );
 
     const persisted = readObservationRegistryFilesText();
@@ -3503,15 +3854,15 @@ run("network activity links packet highway evidence without using it as primary 
 
     assert.notEqual(packetHighway.site.siteId, "site-ph-activity");
 
-    registerObservationBundle(baseline, {
+    registerCanonicalObservationBundle(baseline, {
       importedAt: "2026-05-04T09:05:00.000Z",
       evaluatedAt: "2026-05-04T12:00:00.000Z",
     });
-    registerObservationBundle(current, {
+    registerCanonicalObservationBundle(current, {
       importedAt: "2026-05-04T10:05:00.000Z",
       evaluatedAt: "2026-05-04T12:00:00.000Z",
     });
-    registerObservationBundle(packetHighway, {
+    registerSupplementalObservationBundle(packetHighway, {
       importedAt: "2026-05-04T11:05:00.000Z",
       evaluatedAt: "2026-05-04T12:00:00.000Z",
     });
@@ -3580,7 +3931,7 @@ run("network activity guided scenario is synthetic, evidence-linked, and redacte
 
 run("network activity chooses the latest valid same-site observation comparison", async () => {
   await withTempCwd(async () => {
-    registerObservationBundle(
+    registerCanonicalObservationBundle(
       createComparisonBundle({
         observationId: "obs-other-site",
         siteId: "site-other-activity",
@@ -3596,7 +3947,7 @@ run("network activity chooses the latest valid same-site observation comparison"
       }),
       { importedAt: "2026-05-02T10:05:00.000Z", evaluatedAt: "2026-05-05T00:00:00.000Z" }
     );
-    registerObservationBundle(
+    registerCanonicalObservationBundle(
       createComparisonBundle({
         observationId: "obs-activity-baseline",
         siteId: "site-activity-lab",
@@ -3613,7 +3964,7 @@ run("network activity chooses the latest valid same-site observation comparison"
       }),
       { importedAt: "2026-05-01T10:05:00.000Z", evaluatedAt: "2026-05-05T00:00:00.000Z" }
     );
-    registerObservationBundle(
+    registerCanonicalObservationBundle(
       createComparisonBundle({
         observationId: "obs-activity-current",
         siteId: "site-activity-lab",
@@ -3680,11 +4031,11 @@ run("network activity preserves comparison order for same-priority events", asyn
         },
       ],
     });
-    const baselineRecord = registerObservationBundle(baseline, {
+    const baselineRecord = registerCanonicalObservationBundle(baseline, {
       importedAt: "2026-05-01T10:05:00.000Z",
       evaluatedAt: "2026-05-03T00:00:00.000Z",
     }).record;
-    const currentRecord = registerObservationBundle(current, {
+    const currentRecord = registerCanonicalObservationBundle(current, {
       importedAt: "2026-05-02T10:05:00.000Z",
       evaluatedAt: "2026-05-03T00:00:00.000Z",
     }).record;
@@ -3735,7 +4086,7 @@ run("network activity states cover empty, one-observation, and no-change cases t
     assert.match(empty.summary, /No observations/);
     assert.equal(empty.reviewCount, 0);
 
-    registerObservationBundle(
+    registerCanonicalObservationBundle(
       createComparisonBundle({
         observationId: "obs-activity-single",
         siteId: "site-single-activity",
@@ -3782,11 +4133,11 @@ run("network activity states cover empty, one-observation, and no-change cases t
         },
       ],
     });
-    registerObservationBundle(baseline, {
+    registerCanonicalObservationBundle(baseline, {
       importedAt: "2026-05-01T10:05:00.000Z",
       evaluatedAt: "2026-05-03T00:00:00.000Z",
     });
-    registerObservationBundle(current, {
+    registerCanonicalObservationBundle(current, {
       importedAt: "2026-05-02T10:05:00.000Z",
       evaluatedAt: "2026-05-03T00:00:00.000Z",
     });
@@ -3805,7 +4156,7 @@ run("network activity states cover empty, one-observation, and no-change cases t
 
 run("network activity surfaces partial and stale limitations near no-change results", async () => {
   await withTempCwd(async () => {
-    registerObservationBundle(
+    registerCanonicalObservationBundle(
       createComparisonBundle({
         observationId: "obs-limited-baseline",
         siteId: "site-limited-activity",
@@ -3822,7 +4173,7 @@ run("network activity surfaces partial and stale limitations near no-change resu
       }),
       { importedAt: "2026-01-01T10:05:00.000Z", evaluatedAt: "2026-03-15T00:00:00.000Z" }
     );
-    registerObservationBundle(
+    registerCanonicalObservationBundle(
       createComparisonBundle({
         observationId: "obs-limited-current",
         siteId: "site-limited-activity",
@@ -3888,11 +4239,11 @@ run("network statement uses weekly title only when observations span the request
       ],
     });
 
-    registerObservationBundle(baseline, {
+    registerCanonicalObservationBundle(baseline, {
       importedAt: "2026-05-01T10:05:00.000Z",
       evaluatedAt: "2026-05-08T00:00:00.000Z",
     });
-    registerObservationBundle(current, {
+    registerCanonicalObservationBundle(current, {
       importedAt: "2026-05-07T10:05:00.000Z",
       evaluatedAt: "2026-05-08T00:00:00.000Z",
     });
@@ -3952,11 +4303,11 @@ run("network statement keeps stale and partial no-change periods bounded", async
       ],
     });
 
-    registerObservationBundle(baseline, {
+    registerCanonicalObservationBundle(baseline, {
       importedAt: "2026-01-01T10:05:00.000Z",
       evaluatedAt: "2026-03-15T00:00:00.000Z",
     });
-    registerObservationBundle(current, {
+    registerCanonicalObservationBundle(current, {
       importedAt: "2026-01-07T10:05:00.000Z",
       evaluatedAt: "2026-03-15T00:00:00.000Z",
     });
@@ -4057,11 +4408,11 @@ run("network statement reports change categories and unresolved user responses",
       "Visitor tablet",
       { now: "2026-05-07T11:05:00.000Z" }
     );
-    registerObservationBundle(baseline, {
+    registerCanonicalObservationBundle(baseline, {
       importedAt: "2026-05-01T10:05:00.000Z",
       evaluatedAt: "2026-05-08T00:00:00.000Z",
     });
-    registerObservationBundle(current, {
+    registerCanonicalObservationBundle(current, {
       importedAt: "2026-05-07T10:05:00.000Z",
       evaluatedAt: "2026-05-08T00:00:00.000Z",
     });
@@ -4127,15 +4478,15 @@ run("network statement downgrades insufficient week coverage and labels Packet H
       collectionVantage: "this-computer",
     });
 
-    registerObservationBundle(baseline, {
+    registerCanonicalObservationBundle(baseline, {
       importedAt: "2026-05-05T10:05:00.000Z",
       evaluatedAt: "2026-05-08T00:00:00.000Z",
     });
-    registerObservationBundle(current, {
+    registerCanonicalObservationBundle(current, {
       importedAt: "2026-05-07T10:05:00.000Z",
       evaluatedAt: "2026-05-08T00:00:00.000Z",
     });
-    registerObservationBundle(packetHighway, {
+    registerSupplementalObservationBundle(packetHighway, {
       importedAt: "2026-05-06T11:05:00.000Z",
       evaluatedAt: "2026-05-08T00:00:00.000Z",
     });
@@ -4211,15 +4562,15 @@ run("network statement matches Packet Highway with raw redaction-sensitive site 
       collectionVantage: "gateway-router",
     });
 
-    registerObservationBundle(baseline, {
+    registerCanonicalObservationBundle(baseline, {
       importedAt: "2026-05-05T10:05:00.000Z",
       evaluatedAt: "2026-05-08T00:00:00.000Z",
     });
-    registerObservationBundle(current, {
+    registerCanonicalObservationBundle(current, {
       importedAt: "2026-05-07T10:05:00.000Z",
       evaluatedAt: "2026-05-08T00:00:00.000Z",
     });
-    registerObservationBundle(packetHighway, {
+    registerSupplementalObservationBundle(packetHighway, {
       importedAt: "2026-05-06T11:05:00.000Z",
       evaluatedAt: "2026-05-08T00:00:00.000Z",
     });
@@ -4266,7 +4617,7 @@ run("network statement omits weekly collection warnings for non-week ranges", as
       { id: "day-3", observedAt: "2026-05-03T10:00:00.000Z" },
       { id: "day-15", observedAt: "2026-05-15T10:00:00.000Z" },
     ]) {
-      registerObservationBundle(
+      registerCanonicalObservationBundle(
         createComparisonBundle({
           observationId: `obs-statement-nonweek-${observation.id}`,
           siteId: "site-statement-nonweek",
@@ -4377,11 +4728,11 @@ run("network statement API Markdown matches print sections and redacts export-se
       "Visitor 192.168.1.9 aa-bb-cc-dd-ee-13 rule watch-1 count 12",
       { now: "2026-06-07T11:00:00.000Z" }
     );
-    registerObservationBundle(baseline, {
+    registerCanonicalObservationBundle(baseline, {
       importedAt: "2026-06-01T10:05:00.000Z",
       evaluatedAt: "2026-06-08T00:00:00.000Z",
     });
-    registerObservationBundle(current, {
+    registerCanonicalObservationBundle(current, {
       importedAt: "2026-06-07T10:05:00.000Z",
       evaluatedAt: "2026-06-08T00:00:00.000Z",
     });
@@ -4460,11 +4811,11 @@ run("device responses carry forward across changed IP only with strong identity 
       "Kitchen laptop",
       { now: "2026-05-01T11:00:00.000Z" }
     );
-    registerObservationBundle(baseline, {
+    registerCanonicalObservationBundle(baseline, {
       importedAt: "2026-05-01T10:05:00.000Z",
       evaluatedAt: "2026-05-03T00:00:00.000Z",
     });
-    registerObservationBundle(current, {
+    registerCanonicalObservationBundle(current, {
       importedAt: "2026-05-02T10:05:00.000Z",
       evaluatedAt: "2026-05-03T00:00:00.000Z",
     });
@@ -4539,11 +4890,11 @@ run("device responses do not inherit across low-confidence IP continuity", async
       "Visitor tablet",
       { now: "2026-05-01T11:00:00.000Z" }
     );
-    registerObservationBundle(baseline, {
+    registerCanonicalObservationBundle(baseline, {
       importedAt: "2026-05-01T10:05:00.000Z",
       evaluatedAt: "2026-05-03T00:00:00.000Z",
     });
-    registerObservationBundle(current, {
+    registerCanonicalObservationBundle(current, {
       importedAt: "2026-05-02T10:05:00.000Z",
       evaluatedAt: "2026-05-03T00:00:00.000Z",
     });
@@ -4607,11 +4958,11 @@ run("device responses do not inherit across competing identity candidates", asyn
       "Shared MAC device",
       { now: "2026-05-01T11:00:00.000Z" }
     );
-    registerObservationBundle(baseline, {
+    registerCanonicalObservationBundle(baseline, {
       importedAt: "2026-05-01T10:05:00.000Z",
       evaluatedAt: "2026-05-03T00:00:00.000Z",
     });
-    registerObservationBundle(current, {
+    registerCanonicalObservationBundle(current, {
       importedAt: "2026-05-02T10:05:00.000Z",
       evaluatedAt: "2026-05-03T00:00:00.000Z",
     });
@@ -4672,11 +5023,11 @@ run("activity device response API edits and clears without deleting observations
       ],
     });
 
-    registerObservationBundle(baseline, {
+    registerCanonicalObservationBundle(baseline, {
       importedAt: "2026-05-01T10:05:00.000Z",
       evaluatedAt: "2026-05-03T00:00:00.000Z",
     });
-    registerObservationBundle(current, {
+    registerCanonicalObservationBundle(current, {
       importedAt: "2026-05-02T10:05:00.000Z",
       evaluatedAt: "2026-05-03T00:00:00.000Z",
     });
@@ -4971,7 +5322,7 @@ run("observations API applies default and explicit list bounds", async () => {
         timestamp: `2026-04-${day}T12:00:00.000Z`,
         generatedAt: `2026-04-${day}T12:06:00.000Z`,
       });
-      registerObservationBundle(bundle, {
+      registerCanonicalObservationBundle(bundle, {
         importedAt: `2026-04-${day}T12:07:00.000Z`,
         evaluatedAt: "2026-05-01T00:00:00.000Z",
       });
@@ -5742,7 +6093,7 @@ run("ingest POST dedupes old-style observations by source run identity", async (
         "old wall-clock generatedAt must reproduce the compatibility gap"
       );
 
-      const oldStyleResult = registerObservationBundle(oldStyleBundle, {
+      const oldStyleResult = registerCanonicalObservationBundle(oldStyleBundle, {
         importedAt: "2026-06-19T12:30:00.000Z",
         evaluatedAt: "2026-06-19T12:30:00.000Z",
       });

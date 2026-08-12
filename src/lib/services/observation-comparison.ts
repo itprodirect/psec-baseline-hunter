@@ -32,7 +32,8 @@ export type ObservationComparisonErrorCode =
   | "identical_observations"
   | "missing_timestamp"
   | "reversed_chronology"
-  | "ambiguous_comparison";
+  | "ambiguous_comparison"
+  | "review_only_observation";
 
 export class ObservationComparisonError extends Error {
   code: ObservationComparisonErrorCode;
@@ -231,6 +232,13 @@ function validateComparisonInputs(
   baselineRef: ObservationComparisonObservationRef,
   currentRef: ObservationComparisonObservationRef
 ): void {
+  if (!canAuthorizeComparison(baseline) || !canAuthorizeComparison(current)) {
+    throw new ObservationComparisonError(
+      "review_only_observation",
+      "Observation comparison requires complete server-derived canonical local evidence."
+    );
+  }
+
   if (baseline.site.siteId.toLowerCase() !== current.site.siteId.toLowerCase()) {
     throw new ObservationComparisonError(
       "different_sites",
@@ -268,6 +276,16 @@ function validateComparisonInputs(
       "Observation comparison is ambiguous because both observations have the same collection timestamp."
     );
   }
+}
+
+function canAuthorizeComparison(bundle: ObservationBundleV1): boolean {
+  return (
+    (bundle.origin.kind === "canonical-local-artifacts" ||
+      bundle.origin.kind === "server-synthetic-demo") &&
+    bundle.origin.assignedBy === "server" &&
+    bundle.normalization.status === "complete" &&
+    bundle.normalization.losses.length === 0
+  );
 }
 
 function planDeviceMatches(

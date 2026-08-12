@@ -215,6 +215,8 @@ function observationEntryFromRecord(
     observationId: record.observationId,
     contentHash: record.contentHash,
     importedAt: record.importedAt,
+    origin: record.origin,
+    normalization: record.normalization,
     site: record.site,
     networkName: record.networkName,
     batch: record.batch,

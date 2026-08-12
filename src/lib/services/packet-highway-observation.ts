@@ -1,5 +1,5 @@
 import { parseNormalizedCaptureFixture } from "./capture-upload-safety";
-import { sanitizeObservationBundleV1 } from "./observation-bundle";
+import { sanitizeSupplementalObservationBundleV1 } from "./observation-bundle";
 import { hashString } from "@/lib/utils/hash";
 import type {
   CollectionVantage,
@@ -96,7 +96,7 @@ export function adaptPacketHighwayCaptureToObservationBundleV1(
   );
   const coverage = buildPacketHighwayCoverage(capture, input.collectionVantage);
 
-  return sanitizeObservationBundleV1({
+  return sanitizeSupplementalObservationBundleV1({
     schemaVersion: "psec.observation-bundle.v1",
     observationId: `obs-packet-highway-${captureHash.slice(0, 24)}`,
     site: {
