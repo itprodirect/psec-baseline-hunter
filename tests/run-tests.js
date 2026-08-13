@@ -2778,6 +2778,172 @@ run("DB-01 slice 1 registry reads preserve known loss and fail inconsistent meta
     assert.ok(normalizationLossCount(indexRecord.bundle, "authority-metadata-invalid") > 0);
   });
 });
+run("DB-01 slice 1 reapplies fail-closed sanitation after authority reconciliation", async () => {
+  await withTempCwd(async () => {
+    const evaluatedAt = "2026-05-08T00:00:00.000Z";
+    const requestedSiteId = "site-reconciled-statement";
+    const from = "2026-05-01T00:00:00.000Z";
+    const to = "2026-05-07T23:59:59.999Z";
+    const privateAuthorityValue = "C:\\private\\authority-source.json";
+    const hostileClaim = "CLIENT CLAIM: confirmed external reachability";
+    const emptyStatement = buildNetworkStatement({
+      siteId: requestedSiteId,
+      from,
+      to,
+      evaluatedAt,
+    });
+
+    const authorityBundle = (suffix, siteId = `site-authority-${suffix}`) => {
+      const bundle = createComparisonBundle({
+        observationId: `obs-authority-${suffix}`,
+        siteId,
+        networkName: suffix === "wrapper-disagrees" ? hostileClaim : `authority-${suffix}`,
+        sourceRunUid: `run-authority-${suffix}`,
+        batchId: `batch-authority-${suffix}`,
+        observedAt: "2026-05-04T12:00:00.000Z",
+        coverageNotes: suffix === "wrapper-disagrees" ? [hostileClaim] : [],
+        devices: [{
+          deviceId: `device-authority-${suffix}`,
+          ips: ["192.0.2.44"],
+          macs: ["02:00:00:00:00:44"],
+        }],
+      });
+      bundle.vantage.runType = suffix === "wrapper-disagrees" ? hostileClaim : "trusted-local-scan";
+      bundle.sources.forEach((source, index) => {
+        source.parsed = true;
+        source.recordCount = 999999 - index;
+      });
+      return bundle;
+    };
+
+    const assertLegacyReopen = (registryId, expectedAuthorityLoss, beforeRead) => {
+      const reopened = getObservationById(registryId, { evaluatedAt });
+      const reopenedAgain = getObservationById(registryId, { evaluatedAt });
+      assert.ok(reopened);
+      assert.ok(reopenedAgain);
+      assert.equal(reopened.origin.kind, "legacy-unknown");
+      assert.ok(reopened.sources.every((source) => source.parsed === false));
+      assert.ok(reopened.sources.every((source) => source.recordCount === 0));
+      assert.equal(reopened.batch.partial, true);
+      assert.equal(reopened.coverage.status, "minimal");
+      assert.equal(reopened.coverage.score, 0);
+      assert.deepEqual(reopened.coverage.presentSources, []);
+      assert.deepEqual(reopened.coverage.expectedSources, []);
+      assert.deepEqual(reopened.coverage.missingSources, []);
+      assert.ok(normalizationLossCount(reopened.bundle, expectedAuthorityLoss) > 0);
+      assert.equal(
+        normalizationLossCount(reopened.bundle, "untrusted-source-claim-ignored"),
+        reopened.sources.length
+      );
+      assert.deepEqual(reopenedAgain.normalization, reopened.normalization);
+      assert.deepEqual(
+        sanitizeStoredObservationBundleV1(reopened.bundle).normalization,
+        reopened.normalization
+      );
+      assert.equal(
+        reopened.contentHash,
+        computeObservationBundleContentHash(reopened.bundle)
+      );
+      assert.throws(
+        () => compareObservationBundlesV1(reopened.bundle, cloneJson(reopened.bundle)),
+        (error) => isObservationComparisonError(error) && error.code === "review_only_observation"
+      );
+      assert.doesNotMatch(JSON.stringify(reopened.normalization), /private|authority-source|[A-Za-z]:\\\\/i);
+      assert.equal(fs.readFileSync(observationRegistryRecordPath(registryId), "utf-8"), beforeRead);
+      return reopened;
+    };
+
+    const wrapperMismatch = registerCanonicalObservationBundle(
+      authorityBundle("wrapper-disagrees", requestedSiteId),
+      { importedAt: "2026-05-04T12:05:00.000Z", evaluatedAt }
+    );
+    const wrapperMismatchPath = observationRegistryRecordPath(wrapperMismatch.record.registryId);
+    const wrapperMismatchRaw = JSON.parse(fs.readFileSync(wrapperMismatchPath, "utf-8"));
+    wrapperMismatchRaw.origin = { kind: "external-import", assignedBy: "server" };
+    fs.writeFileSync(wrapperMismatchPath, JSON.stringify(wrapperMismatchRaw, null, 2));
+    const wrapperMismatchText = fs.readFileSync(wrapperMismatchPath, "utf-8");
+    assertLegacyReopen(
+      wrapperMismatch.record.registryId,
+      "authority-metadata-invalid",
+      wrapperMismatchText
+    );
+    const reconciledStatement = buildNetworkStatement({
+      siteId: requestedSiteId,
+      from,
+      to,
+      evaluatedAt,
+    });
+    assert.deepEqual(reconciledStatement, emptyStatement);
+    assert.doesNotMatch(renderNetworkStatementMarkdown(reconciledStatement), /CLIENT CLAIM/i);
+
+    const indexMismatch = registerCanonicalObservationBundle(
+      authorityBundle("index-disagrees"),
+      { importedAt: "2026-05-04T12:06:00.000Z", evaluatedAt }
+    );
+    const indexPath = path.join(process.cwd(), "data", "observations", "index.json");
+    const index = JSON.parse(fs.readFileSync(indexPath, "utf-8"));
+    index.observations[indexMismatch.record.registryId].origin = {
+      kind: "external-import",
+      assignedBy: "server",
+    };
+    fs.writeFileSync(indexPath, JSON.stringify(index, null, 2));
+    const indexText = fs.readFileSync(indexPath, "utf-8");
+    const indexRecordText = fs.readFileSync(
+      observationRegistryRecordPath(indexMismatch.record.registryId),
+      "utf-8"
+    );
+    assertLegacyReopen(
+      indexMismatch.record.registryId,
+      "authority-metadata-invalid",
+      indexRecordText
+    );
+    assert.equal(fs.readFileSync(indexPath, "utf-8"), indexText);
+
+    const missingWrapper = registerCanonicalObservationBundle(
+      authorityBundle("wrapper-missing"),
+      { importedAt: "2026-05-04T12:07:00.000Z", evaluatedAt }
+    );
+    const missingWrapperPath = observationRegistryRecordPath(missingWrapper.record.registryId);
+    const missingWrapperRaw = JSON.parse(fs.readFileSync(missingWrapperPath, "utf-8"));
+    delete missingWrapperRaw.origin;
+    fs.writeFileSync(missingWrapperPath, JSON.stringify(missingWrapperRaw, null, 2));
+    assertLegacyReopen(
+      missingWrapper.record.registryId,
+      "authority-metadata-missing",
+      fs.readFileSync(missingWrapperPath, "utf-8")
+    );
+
+    const malformedBundle = registerCanonicalObservationBundle(
+      authorityBundle("bundle-malformed"),
+      { importedAt: "2026-05-04T12:08:00.000Z", evaluatedAt }
+    );
+    const malformedBundlePath = observationRegistryRecordPath(malformedBundle.record.registryId);
+    const malformedBundleRaw = JSON.parse(fs.readFileSync(malformedBundlePath, "utf-8"));
+    malformedBundleRaw.bundle.origin = {
+      kind: "canonical-local-artifacts",
+      assignedBy: privateAuthorityValue,
+    };
+    fs.writeFileSync(malformedBundlePath, JSON.stringify(malformedBundleRaw, null, 2));
+    assertLegacyReopen(
+      malformedBundle.record.registryId,
+      "authority-metadata-invalid",
+      fs.readFileSync(malformedBundlePath, "utf-8")
+    );
+
+    const canonical = registerCanonicalObservationBundle(
+      authorityBundle("canonical-consistent"),
+      { importedAt: "2026-05-04T12:09:00.000Z", evaluatedAt }
+    );
+    const canonicalReopened = getObservationById(canonical.record.registryId, { evaluatedAt });
+    assert.ok(canonicalReopened);
+    assert.equal(canonicalReopened.origin.kind, "canonical-local-artifacts");
+    assert.equal(canonicalReopened.normalization.status, "complete");
+    assert.deepEqual(
+      canonicalReopened.sources.map((source) => [source.parsed, source.recordCount]),
+      canonical.record.sources.map((source) => [source.parsed, source.recordCount])
+    );
+  });
+});
 run("DB-01 slice 1 keeps port coverage loss monotonic while merging local artifacts", async () => {
   await withTempCwd(async () => {
     const host = (withPort) => ['<host><status state="up" />',
@@ -4394,6 +4560,120 @@ run("network activity surfaces partial and stale limitations near no-change resu
     assert.ok(limitationCodes.has("current-missing-sources"));
     assert.match(limitationText, /missing port scan, host-up list/);
     assert.doesNotMatch(activity.summary, /all clear/i);
+  });
+});
+
+run("network statement excludes hostile external review narrative from every primary input", async () => {
+  await withTempCwd(async () => {
+    const siteId = "site-statement-review-only";
+    const from = "2026-05-01T00:00:00.000Z";
+    const to = "2026-05-07T23:59:59.999Z";
+    const evaluatedAt = "2026-05-08T00:00:00.000Z";
+    const hostileClaims = [
+      "CLIENT CLAIM: complete network coverage",
+      "CLIENT CLAIM: network is safe",
+      "CLIENT CLAIM: confirmed external reachability",
+      "CLIENT CLAIM: successfully parsed 999999 records.",
+    ];
+    const emptyStatement = buildNetworkStatement({ siteId, from, to, evaluatedAt });
+    const emptyMarkdown = renderNetworkStatementMarkdown(emptyStatement);
+    const hostile = createComparisonBundle({
+      observationId: "obs-statement-hostile-import",
+      siteId,
+      networkName: hostileClaims[1],
+      sourceRunUid: "run-statement-hostile-import",
+      batchId: "batch-statement-hostile-import",
+      observedAt: "2026-05-04T12:00:00.000Z",
+      coverageNotes: hostileClaims,
+      devices: [{
+        deviceId: "device-statement-hostile-import",
+        ips: ["192.0.2.99"],
+        macs: ["02:00:00:00:00:99"],
+        ports: [{ port: 443, protocol: "tcp", service: "https" }],
+      }],
+    });
+    hostile.collector.name = hostileClaims[3];
+    hostile.batch.notes = hostileClaims;
+    hostile.vantage.runType = hostileClaims[2];
+    hostile.vantage.notes = hostileClaims;
+    hostile.sources.forEach((source, index) => {
+      source.artifactLabel = hostileClaims[index % hostileClaims.length];
+      source.notes = hostileClaims;
+      source.parsed = true;
+      source.recordCount = 999999;
+    });
+    hostile.devices[0].notes = hostileClaims;
+    hostile.notes = hostileClaims;
+
+    const imported = registerObservationBundle(hostile, {
+      importedAt: "2026-05-04T12:05:00.000Z",
+      evaluatedAt,
+    });
+    const reopened = getObservationById(imported.record.registryId, { evaluatedAt });
+    const listed = listObservations({ siteId }, { evaluatedAt });
+    assert.ok(reopened);
+    assert.equal(reopened.origin.kind, "external-import");
+    assert.equal(reopened.batch.partial, true);
+    assert.equal(reopened.coverage.status, "minimal");
+    assert.equal(listed.length, 1);
+    assert.equal(listed[0].registryId, reopened.registryId);
+    assert.match(JSON.stringify(reopened.bundle), /CLIENT CLAIM/);
+    assert.throws(
+      () => compareObservationBundlesV1(reopened.bundle, cloneJson(reopened.bundle)),
+      (error) => isObservationComparisonError(error) && error.code === "review_only_observation"
+    );
+
+    const reviewOnlyStatement = buildNetworkStatement({ siteId, from, to, evaluatedAt });
+    const reviewOnlyMarkdown = renderNetworkStatementMarkdown(reviewOnlyStatement);
+    assert.deepEqual(reviewOnlyStatement, emptyStatement);
+    assert.equal(reviewOnlyMarkdown, emptyMarkdown);
+    assert.equal(reviewOnlyStatement.status, "insufficient-evidence");
+    assert.equal(reviewOnlyStatement.title, "Network Statement");
+    assert.equal(reviewOnlyStatement.site.siteId, siteId);
+    assert.equal(reviewOnlyStatement.site.networkName, siteId);
+    assert.equal(reviewOnlyStatement.site.networkScopeRecorded, false);
+    assert.equal(reviewOnlyStatement.coverageSummary.primaryObservationCount, 0);
+    assert.equal(reviewOnlyStatement.coverageSummary.comparisonCount, 0);
+    assert.equal(reviewOnlyStatement.coverageSummary.hasPartialCoverage, false);
+    assert.equal(reviewOnlyStatement.coverageSummary.hasStaleEvidence, false);
+    for (const claim of hostileClaims) {
+      assert.doesNotMatch(JSON.stringify(reviewOnlyStatement), new RegExp(escapeRegExp(claim), "i"));
+      assert.doesNotMatch(reviewOnlyMarkdown, new RegExp(escapeRegExp(claim), "i"));
+    }
+
+    const canonical = createComparisonBundle({
+      observationId: "obs-statement-trusted-canonical",
+      siteId,
+      networkName: "trusted-canonical-network",
+      sourceRunUid: "run-statement-trusted-canonical",
+      batchId: "batch-statement-trusted-canonical",
+      observedAt: "2026-05-05T12:00:00.000Z",
+      coverageNotes: ["Trusted server-owned coverage note"],
+      devices: [{
+        deviceId: "device-statement-trusted-canonical",
+        ips: ["192.0.2.10"],
+        macs: ["02:00:00:00:00:10"],
+      }],
+    });
+    canonical.vantage.runType = "trusted local scan";
+    registerCanonicalObservationBundle(canonical, {
+      importedAt: "2026-05-05T12:05:00.000Z",
+      evaluatedAt,
+    });
+
+    const canonicalStatement = buildNetworkStatement({ siteId, from, to, evaluatedAt });
+    const canonicalMarkdown = renderNetworkStatementMarkdown(canonicalStatement);
+    const canonicalExport = `${JSON.stringify(canonicalStatement)}\n${canonicalMarkdown}`;
+    assert.equal(canonicalStatement.status, "insufficient-evidence");
+    assert.equal(canonicalStatement.coverageSummary.primaryObservationCount, 1);
+    assert.equal(canonicalStatement.coverageSummary.comparisonCount, 0);
+    assert.equal(canonicalStatement.site.siteId, siteId);
+    assert.equal(canonicalStatement.site.networkName, "trusted-canonical-network");
+    assert.match(canonicalExport, /Active scan upload \(trusted local scan\)/);
+    assert.match(canonicalExport, /Trusted server-owned coverage note/);
+    for (const claim of hostileClaims) {
+      assert.doesNotMatch(canonicalExport, new RegExp(escapeRegExp(claim), "i"));
+    }
   });
 });
 

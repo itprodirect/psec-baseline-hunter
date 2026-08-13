@@ -377,7 +377,7 @@ function reconcileStoredRecordAuthority(
   }
 
   const lossy = normalization.status === "lossy";
-  return {
+  const reconciled: ObservationBundleV1 = {
     ...sanitizedBundle,
     origin,
     normalization,
@@ -390,6 +390,7 @@ function reconcileStoredRecordAuthority(
         ? { ...sanitizedBundle.coverage, status: "partial" }
         : sanitizedBundle.coverage,
   };
+  return sanitizeReconciledStoredBundle(reconciled);
 }
 
 function reconcileRecordWithIndex(
@@ -416,7 +417,7 @@ function reconcileRecordWithIndex(
   if (!normalizationMatches) {
     normalization = mergeIndexLoss(normalization, "normalization-metadata-invalid");
   }
-  const bundle: ObservationBundleV1 = {
+  const bundle = sanitizeReconciledStoredBundle({
     ...record.bundle,
     origin: { kind: "legacy-unknown", assignedBy: "server" },
     normalization,
@@ -425,7 +426,7 @@ function reconcileRecordWithIndex(
       record.bundle.coverage.status === "complete"
         ? { ...record.bundle.coverage, status: "partial" }
         : record.bundle.coverage,
-  };
+  });
   return buildObservationRecord(
     record.registryId,
     bundle,
@@ -433,6 +434,14 @@ function reconcileRecordWithIndex(
     record.importedAt,
     options
   );
+}
+
+function sanitizeReconciledStoredBundle(
+  bundle: ObservationBundleV1
+): ObservationBundleV1 {
+  return bundle.origin.kind === "legacy-unknown"
+    ? sanitizeStoredObservationBundleV1(bundle)
+    : bundle;
 }
 
 function buildObservationRecord(
