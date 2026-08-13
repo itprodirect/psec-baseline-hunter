@@ -865,6 +865,17 @@ run("packet highway trust notices explain partial results and export metadata", 
       isDemo: false,
     })
   );
+  const pluralLossyFixture = JSON.parse(JSON.stringify(buildDemoCapture()));
+  pluralLossyFixture.devices[0].ips = Array.from(
+    { length: 18 },
+    (_, index) => `198.51.100.${index + 1}`
+  );
+  const pluralLossyImportedMarkup = renderToStaticMarkup(
+    React.createElement(AnalysisSourceNotice, {
+      capture: parseNormalizedCaptureFixture(JSON.stringify(pluralLossyFixture)),
+      isDemo: false,
+    })
+  );
 
   assert.match(partialMarkup, /Partial analysis/);
   assert.match(partialMarkup, /analysis limit or ended after a malformed or truncated tail/);
@@ -879,7 +890,8 @@ run("packet highway trust notices explain partial results and export metadata", 
   assert.match(importedMarkup, /Saved analysis JSON/);
   assert.match(importedMarkup, /not raw-capture evidence/);
   assert.match(importedMarkup, /CSV inventory is not reapplied/);
-  assert.match(lossyImportedMarkup, /1 fixture records or fields/);
+  assert.match(lossyImportedMarkup, /1 fixture record or field was/);
+  assert.match(pluralLossyImportedMarkup, /2 fixture records or fields were/);
   assert.match(lossyImportedMarkup, /sanitation loss, not ignored packet loss/);
 });
 

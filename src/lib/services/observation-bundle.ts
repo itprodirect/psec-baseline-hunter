@@ -1781,7 +1781,27 @@ function sanitizeSupplementalEvidence(
     );
   }
 
-  return evidence.length > 0 ? evidence.slice(0, MAX_SUPPLEMENTAL_EVIDENCE) : undefined;
+  const retainedEvidence = evidence.slice(0, MAX_SUPPLEMENTAL_EVIDENCE);
+  const fixtureSanitizationLoss = retainedEvidence.reduce(
+    (total, item) => saturatingAddNormalizationLoss(
+      total,
+      item.packetHighway?.capture.meta.fixtureSanitizationLoss.count ?? 0
+    ),
+    0
+  );
+  recordRetainedLoss(
+    normalization,
+    "packet-highway-fixture-sanitization-loss",
+    fixtureSanitizationLoss
+  );
+
+  return retainedEvidence.length > 0 ? retainedEvidence : undefined;
+}
+
+function saturatingAddNormalizationLoss(total: number, count: number): number {
+  const boundedTotal = Math.min(MAX_NORMALIZATION_LOSS_COUNT, Math.max(0, Math.floor(total)));
+  const boundedCount = Math.min(MAX_NORMALIZATION_LOSS_COUNT, Math.max(0, Math.floor(count)));
+  return Math.min(MAX_NORMALIZATION_LOSS_COUNT, boundedTotal + boundedCount);
 }
 
 function isUntrustedPacketHighwayOrigin(origin: ObservationOriginKind): boolean {
@@ -1846,13 +1866,6 @@ function sanitizePacketHighwayEvidence(
         normalization,
         "packet-highway-records-ignored",
         capture.meta.ignoredPackets
-      );
-    }
-    if (capture.meta.fixtureSanitizationLoss.count > 0) {
-      recordRetainedLoss(
-        normalization,
-        "packet-highway-fixture-sanitization-loss",
-        capture.meta.fixtureSanitizationLoss.count
       );
     }
     if (

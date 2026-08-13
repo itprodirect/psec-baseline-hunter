@@ -278,8 +278,11 @@ function buildPacketHighwayCoverage(
   }
   if (capture.meta.fixtureSanitizationLoss.count > 0) {
     score -= 0.05;
+    const subject = capture.meta.fixtureSanitizationLoss.count === 1
+      ? "fixture record or field was"
+      : "fixture records or fields were";
     notes.push(
-      `${capture.meta.fixtureSanitizationLoss.count} fixture records or fields were discarded or replaced during validation.`
+      `${capture.meta.fixtureSanitizationLoss.count} ${subject} discarded or replaced during validation.`
     );
   }
   if (missingSources.includes("capture_timing")) {

@@ -4212,6 +4212,13 @@ run("TV-02 fixture sanitation loss stays separate from parser packet loss throug
         },
         expectedLoss: 1,
       },
+      {
+        name: "existing plural sanitation loss",
+        mutate: (capture) => {
+          capture.meta.fixtureSanitizationLoss = { count: 2 };
+        },
+        expectedLoss: 2,
+      },
     ];
 
     for (const testCase of cases) {
@@ -4247,7 +4254,7 @@ run("TV-02 fixture sanitation loss stays separate from parser packet loss throug
           0,
           testCase.name
         );
-        assert.doesNotMatch(coverageNotes, /fixture records or fields/i, testCase.name);
+        assert.doesNotMatch(coverageNotes, /fixture record|fixture records/i, testCase.name);
       } else {
         assert.equal(
           normalizationLossCount(bundle, "packet-highway-fixture-sanitization-loss"),
@@ -4256,8 +4263,10 @@ run("TV-02 fixture sanitation loss stays separate from parser packet loss throug
         );
         assert.equal(bundle.normalization.status, "lossy", testCase.name);
         assert.equal(bundle.batch.partial, true, testCase.name);
-        assert.match(coverageNotes, /fixture records or fields were discarded or replaced/i,
-          testCase.name);
+        const lossCopy = testCase.expectedLoss === 1
+          ? /1 fixture record or field was discarded or replaced/i
+          : /2 fixture records or fields were discarded or replaced/i;
+        assert.match(coverageNotes, lossCopy, testCase.name);
       }
 
       const result = registerSupplementalObservationBundle(bundle, {
@@ -4286,6 +4295,86 @@ run("TV-02 fixture sanitation loss stays separate from parser packet loss throug
         testCase.name
       );
     }
+  });
+});
+
+run("TV-02 aggregates fixture sanitation loss across retained supplemental captures", async () => {
+  await withTempCwd(async () => {
+    const fixtureLossCode = "packet-highway-fixture-sanitization-loss";
+    const buildMultiCaptureBundle = (
+      fixtureLossCounts,
+      { inheritedCount, ignoredPacketCounts = [] } = {}
+    ) => {
+      const seed = createPacketHighwayCapture();
+      seed.meta.fixtureSanitizationLoss = { count: 0 };
+      seed.meta.ignoredPackets = 0;
+      seed.meta.truncated = false;
+      const bundle = adaptPacketHighwayCaptureToObservationBundleV1({
+        capture: seed,
+        site: { networkName: "tv-02-multi-capture-loss" },
+        collectionVantage: "gateway-router",
+      });
+      const template = bundle.supplementalEvidence[0];
+      bundle.supplementalEvidence = fixtureLossCounts.map((count, index) => {
+        const evidence = cloneJson(template);
+        evidence.evidenceId = `synthetic-fixture-loss-${index + 1}`;
+        evidence.packetHighway.capture.meta.fixtureSanitizationLoss = { count };
+        evidence.packetHighway.capture.meta.ignoredPackets = ignoredPacketCounts[index] ?? 0;
+        return evidence;
+      });
+      bundle.normalization = inheritedCount === undefined
+        ? { status: "complete", losses: [] }
+        : { status: "lossy", losses: [{ code: fixtureLossCode, count: inheritedCount }] };
+      return sanitizeSupplementalObservationBundleV1(bundle);
+    };
+    const retainedFixtureCounts = (bundle) => bundle.supplementalEvidence.map(
+      (evidence) => evidence.packetHighway.capture.meta.fixtureSanitizationLoss.count
+    );
+
+    const onePlusOne = buildMultiCaptureBundle([1, 1]);
+    assert.deepEqual(retainedFixtureCounts(onePlusOne), [1, 1]);
+    assert.equal(normalizationLossCount(onePlusOne, fixtureLossCode), 2);
+
+    const twoPlusThree = buildMultiCaptureBundle([2, 3]);
+    assert.deepEqual(retainedFixtureCounts(twoPlusThree), [2, 3]);
+    assert.equal(normalizationLossCount(twoPlusThree, fixtureLossCode), 5);
+
+    const persisted = registerSupplementalObservationBundle(twoPlusThree, {
+      importedAt: "2026-05-04T11:01:00.000Z",
+      evaluatedAt: "2026-05-04T11:02:00.000Z",
+    });
+    const reopened = getObservationById(persisted.record.registryId, {
+      evaluatedAt: "2026-05-04T11:02:00.000Z",
+    });
+    assert.ok(reopened);
+    assert.deepEqual(retainedFixtureCounts(reopened.bundle), [2, 3]);
+    assert.equal(normalizationLossCount(reopened.bundle, fixtureLossCode), 5);
+
+    const inheritedBelowAggregate = buildMultiCaptureBundle([2, 3], { inheritedCount: 2 });
+    assert.equal(normalizationLossCount(inheritedBelowAggregate, fixtureLossCode), 5);
+
+    const inheritedEqualAggregate = buildMultiCaptureBundle([2, 3], { inheritedCount: 5 });
+    assert.equal(normalizationLossCount(inheritedEqualAggregate, fixtureLossCode), 5);
+
+    const saturated = buildMultiCaptureBundle([600_000, 600_000]);
+    assert.deepEqual(retainedFixtureCounts(saturated), [600_000, 600_000]);
+    assert.equal(normalizationLossCount(saturated, fixtureLossCode), 1_000_000);
+
+    const retentionLimited = buildMultiCaptureBundle([1, 1, 1, 1, 1, 99]);
+    assert.deepEqual(retainedFixtureCounts(retentionLimited), [1, 1, 1, 1, 1]);
+    assert.equal(normalizationLossCount(retentionLimited, fixtureLossCode), 5);
+
+    const independentPacketLoss = buildMultiCaptureBundle([2, 3], {
+      ignoredPacketCounts: [7, 0],
+    });
+    assert.deepEqual(
+      independentPacketLoss.supplementalEvidence.map(
+        (evidence) => evidence.packetHighway.capture.meta.ignoredPackets
+      ),
+      [7, 0]
+    );
+    assert.equal(normalizationLossCount(independentPacketLoss, fixtureLossCode), 5);
+    assert.equal(normalizationLossCount(independentPacketLoss, "packet-highway-records-ignored"), 7);
   });
 });
 
