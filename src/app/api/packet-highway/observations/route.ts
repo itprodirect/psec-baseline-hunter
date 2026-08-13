@@ -3,7 +3,7 @@ import { MAX_FIXTURE_BYTES } from "@/lib/services/capture-upload-safety";
 import { getSafeErrorMessage } from "@/lib/services/api-response-safety";
 import { adaptPacketHighwayCaptureToObservationBundleV1 } from "@/lib/services/packet-highway-observation";
 import { isObservationBundleValidationError } from "@/lib/services/observation-bundle";
-import { registerObservationBundle } from "@/lib/services/observation-registry";
+import { registerSupplementalObservationBundle } from "@/lib/services/observation-registry";
 import type { PacketHighwayCollectionVantage } from "@/lib/services/packet-highway-observation";
 import type { NormalizedCapture } from "@/lib/types/packet-highway";
 import type {
@@ -73,7 +73,7 @@ export async function POST(
       },
       collectionVantage: body.collectionVantage,
     });
-    const result = registerObservationBundle(bundle);
+    const result = registerSupplementalObservationBundle(bundle);
 
     return NextResponse.json({
       success: true,
@@ -144,6 +144,8 @@ function observationEntryFromRecord(
     observationId: record.observationId,
     contentHash: record.contentHash,
     importedAt: record.importedAt,
+    origin: record.origin,
+    normalization: record.normalization,
     site: record.site,
     networkName: record.networkName,
     batch: record.batch,

@@ -18,6 +18,7 @@ import type {
   ObservationBundleV1,
   ObservationDevice,
   ObservationOpenPort,
+  ObservationPortProtocol,
   ObservationSourceKind,
   ObservationSourceRef,
 } from "@/lib/types/observation-bundle";
@@ -929,6 +930,8 @@ function createSyntheticObservationBundle(input: {
   return {
     schemaVersion: "psec.observation-bundle.v1",
     observationId: input.observationId,
+    origin: { kind: "server-synthetic-demo", assignedBy: "server" },
+    normalization: { status: "complete", losses: [] },
     site: {
       siteId: "site-guided-home",
       networkName: "Guided home network",
@@ -980,6 +983,8 @@ function syntheticRecord(
     observationId: bundle.observationId,
     contentHash: `synthetic-${bundle.observationId}`,
     importedAt: bundle.batch.generatedAt,
+    origin: bundle.origin,
+    normalization: bundle.normalization,
     site: bundle.site,
     networkName: bundle.site.networkName,
     batch: bundle.batch,
@@ -1045,7 +1050,7 @@ function syntheticDevice(input: {
 
 function syntheticPort(
   port: number,
-  protocol: string,
+  protocol: ObservationPortProtocol,
   service: string
 ): ObservationOpenPort {
   return {

@@ -28,6 +28,77 @@ export type ObservationEvidenceConfidence = "observed" | "reported" | "weak";
 
 export type ObservationCoverageStatus = "complete" | "partial" | "minimal";
 
+/**
+ * Authority assigned by a server-controlled construction or import boundary.
+ * Bundle input may contain a field with this shape, but sanitizers must replace
+ * it with the classification supplied by the server call site.
+ */
+export type ObservationOriginKind =
+  | "canonical-local-artifacts"
+  | "server-synthetic-demo"
+  | "external-import"
+  | "supplemental-review"
+  | "legacy-unknown";
+
+export interface ObservationOrigin {
+  kind: ObservationOriginKind;
+  assignedBy: "server";
+}
+
+export const OBSERVATION_NORMALIZATION_LOSS_CODES = [
+  "authority-metadata-missing",
+  "authority-metadata-invalid",
+  "normalization-metadata-missing",
+  "normalization-metadata-invalid",
+  "untrusted-coverage-claim-ignored",
+  "untrusted-supplemental-claim-ignored",
+  "untrusted-source-claim-ignored",
+  "source-limit-exceeded",
+  "device-limit-exceeded",
+  "identity-evidence-limit-exceeded",
+  "open-port-limit-exceeded",
+  "port-coverage-limit-exceeded",
+  "port-range-limit-exceeded",
+  "supplemental-evidence-limit-exceeded",
+  "invalid-source-record-dropped",
+  "source-id-collision",
+  "invalid-device-record-dropped",
+  "device-id-collision",
+  "invalid-identity-evidence-dropped",
+  "invalid-open-port-dropped",
+  "invalid-port-coverage-dropped",
+  "invalid-port-range-dropped",
+  "invalid-supplemental-evidence-dropped",
+  "invalid-ip-address-dropped",
+  "invalid-mac-address-dropped",
+  "invalid-source-reference",
+  "invalid-source-kind",
+  "invalid-collector-kind",
+  "invalid-vantage-type",
+  "unsupported-port-protocol",
+  "non-open-port-state",
+  "invalid-target-scope",
+  "conflicting-target-scope",
+  "invalid-timestamp",
+  "artifact-read-failed",
+  "artifact-limit-exceeded",
+  "packet-highway-capture-truncated",
+  "packet-highway-records-ignored",
+] as const;
+export type ObservationNormalizationLossCode =
+  (typeof OBSERVATION_NORMALIZATION_LOSS_CODES)[number];
+
+export interface ObservationNormalizationLoss {
+  code: ObservationNormalizationLossCode;
+  /** Bounded count; no discarded raw values are retained. */
+  count: number;
+}
+
+export interface ObservationNormalization {
+  status: "complete" | "lossy";
+  losses: ObservationNormalizationLoss[];
+}
+
 export interface SiteRef {
   siteId: string;
   networkName: string;
@@ -36,7 +107,7 @@ export interface SiteRef {
 
 export interface CollectorRef {
   collectorId: string;
-  kind: "registered-scan-run" | "packet-highway-analysis";
+  kind: "registered-scan-run" | "packet-highway-analysis" | "unknown";
   name: string;
   version: string | null;
 }
@@ -67,7 +138,8 @@ export interface CollectionVantage {
     | "packet-highway-this-computer"
     | "packet-highway-gateway-router"
     | "packet-highway-mirror-tap"
-    | "packet-highway-unknown";
+    | "packet-highway-unknown"
+    | "unknown";
   runType: string | null;
   networkName: string;
   collectorHost: string | null;
@@ -93,13 +165,31 @@ export interface DeviceIdentityEvidence {
 }
 
 export interface ObservationOpenPort {
-  protocol: string;
+  protocol: ObservationPortProtocol;
   port: number;
   state: "open";
   service: string | null;
   product: string | null;
   version: string | null;
   sourceId: string;
+}
+
+export type ObservationPortProtocol = "tcp" | "udp" | "sctp";
+
+export interface ObservationPortRange {
+  start: number;
+  end: number;
+}
+
+/**
+ * Normalized collection metadata only. Slice 2 decides whether a retained
+ * range is sufficient for any particular conclusion.
+ */
+export interface ObservationPortCoverage {
+  sourceId: string;
+  protocol: ObservationPortProtocol;
+  ranges: ObservationPortRange[];
+  stateEvidence: "complete" | "partial" | "unknown";
 }
 
 export interface ObservationDevice {
@@ -112,6 +202,7 @@ export interface ObservationDevice {
   vendors: string[];
   identityEvidence: DeviceIdentityEvidence[];
   openPorts: ObservationOpenPort[];
+  portCoverage?: ObservationPortCoverage[];
   notes: string[];
 }
 
@@ -133,6 +224,8 @@ export interface ObservationSupplementalEvidence {
 export interface ObservationBundleV1 {
   schemaVersion: ObservationBundleSchemaVersion;
   observationId: string;
+  origin: ObservationOrigin;
+  normalization: ObservationNormalization;
   site: SiteRef;
   collector: CollectorRef;
   batch: ObservationBatch;

@@ -1,5 +1,5 @@
 import { parseNormalizedCaptureFixture } from "./capture-upload-safety";
-import { sanitizeObservationBundleV1 } from "./observation-bundle";
+import { sanitizeSupplementalObservationBundleV1 } from "./observation-bundle";
 import { hashString } from "@/lib/utils/hash";
 import type {
   CollectionVantage,
@@ -81,7 +81,9 @@ export function adaptPacketHighwayCaptureToObservationBundleV1(
     throw new Error("Packet Highway collection vantage is required before saving.");
   }
 
-  const capture = parseNormalizedCaptureFixture(JSON.stringify(input.capture));
+  const capture = parseNormalizedCaptureFixture(JSON.stringify(input.capture), {
+    dropInvalidFlows: true,
+  });
   const networkName = safeText(input.site.networkName, 120) || "packet-highway-site";
   const networkScope = safeTextOrNull(input.site.networkScope, 120);
   const siteId = safeId(
@@ -96,7 +98,7 @@ export function adaptPacketHighwayCaptureToObservationBundleV1(
   );
   const coverage = buildPacketHighwayCoverage(capture, input.collectionVantage);
 
-  return sanitizeObservationBundleV1({
+  return sanitizeSupplementalObservationBundleV1({
     schemaVersion: "psec.observation-bundle.v1",
     observationId: `obs-packet-highway-${captureHash.slice(0, 24)}`,
     site: {
@@ -126,14 +128,11 @@ export function adaptPacketHighwayCaptureToObservationBundleV1(
         artifactLabel: "packet_highway_analysis",
         fileName: capture.meta.fileName,
         parsed: true,
-        recordCount:
-          capture.devices.length +
-          capture.flows.length +
-          capture.dnsQueries.length +
-          capture.alerts.length,
+        recordCount: packetHighwayRetainedRecordCount(capture),
         notes: [
           "Saved normalized Packet Highway metadata only; no raw capture file or packet payload is stored.",
           "Traffic flows are visual evidence and are not converted into open-service claims.",
+          "recordCount covers retained devices, external endpoints, flows, animation events, and DNS records only.",
         ],
       },
     ],
@@ -162,8 +161,8 @@ export function adaptPacketHighwayCaptureToObservationBundleV1(
         packetHighway: {
           capture,
           canSupport: [
-            "Visual drill-down into normalized devices, flows, DNS names, watch items, timing, and parser limits from the saved analysis.",
-            "Context for traffic observed from the selected collection vantage and capture window.",
+            "Review of retained, normalized traffic metadata from the selected capture window and vantage.",
+            "Bounded positive observations of retained devices, external endpoints, flows, animation events, and DNS records.",
           ],
           cannotProve: [
             "It cannot prove complete network inventory or absence of devices outside the captured vantage and time window.",
@@ -265,7 +264,7 @@ function buildPacketHighwayCoverage(
     capture.meta.durationMs !== null
       ? `Capture duration: ${Math.round(capture.meta.durationMs / 1000)} seconds.`
       : "Capture duration was not available in the normalized analysis.",
-    `Supported normalized metadata: ${capture.devices.length} devices, ${capture.flows.length} flows, ${capture.dnsQueries.length} DNS names, ${capture.alerts.length} watch items.`,
+    `Retained record set: devices=${capture.devices.length}; externalEndpoints=${capture.externalEndpoints.length}; flows=${capture.flows.length}; animationEvents=${capture.animationEvents.length}; dnsRecords=${capture.dnsQueries.length}.`,
   ];
 
   let score = details.score;
@@ -290,6 +289,11 @@ function buildPacketHighwayCoverage(
     missingSources,
     notes,
   };
+}
+
+function packetHighwayRetainedRecordCount(capture: NormalizedCapture): number {
+  return capture.devices.length + capture.externalEndpoints.length + capture.flows.length +
+    capture.animationEvents.length + capture.dnsQueries.length;
 }
 
 function safeText(value: unknown, maxLength: number): string {

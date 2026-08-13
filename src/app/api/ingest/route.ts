@@ -7,7 +7,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { extractZip, detectRunFolders, getDataDir } from "@/lib/services/ingest";
 import { registerRun, RunManifest } from "@/lib/services/run-registry";
 import { adaptRunManifestToObservationBundleV1 } from "@/lib/services/observation-bundle";
-import { registerObservationBundle } from "@/lib/services/observation-registry";
+import { registerCanonicalObservationBundle } from "@/lib/services/observation-registry";
 import { IngestResponseV2 } from "@/lib/types";
 import { shortId } from "@/lib/utils/hash";
 import * as fs from "fs";
@@ -134,7 +134,7 @@ function registerRunObservation(
 
   try {
     const bundle = adaptRunManifestToObservationBundleV1(manifest);
-    const result = registerObservationBundle(bundle);
+    const result = registerCanonicalObservationBundle(bundle);
 
     if (result.isNew) {
       summary.created++;

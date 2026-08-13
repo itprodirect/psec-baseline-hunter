@@ -9,7 +9,11 @@ import { getDataDir, ensureDir } from "./ingest";
 import {
   MAX_OBSERVATION_BUNDLE_JSON_BYTES,
   ObservationBundleValidationError,
-  sanitizeObservationBundleV1,
+  isObservationNormalizationLossCode,
+  sanitizeCanonicalLocalObservationBundleV1,
+  sanitizeImportedObservationBundleV1,
+  sanitizeStoredObservationBundleV1,
+  sanitizeSupplementalObservationBundleV1,
 } from "./observation-bundle";
 import { hashString } from "@/lib/utils/hash";
 import type {
@@ -28,6 +32,10 @@ import type {
   CoverageRecord,
   ObservationBatch,
   ObservationBundleV1,
+  ObservationNormalization,
+  ObservationNormalizationLossCode,
+  ObservationOrigin,
+  ObservationOriginKind,
 } from "@/lib/types/observation-bundle";
 
 const REGISTRY_VERSION = 1;
@@ -75,8 +83,42 @@ export function registerObservationBundle(
   rawBundle: unknown,
   options: ObservationRegistryImportOptions = {}
 ): RegisterObservationResult {
+  return registerSanitizedObservationBundle(
+    rawBundle,
+    sanitizeImportedObservationBundleV1,
+    options
+  );
+}
+
+export function registerCanonicalObservationBundle(
+  rawBundle: unknown,
+  options: ObservationRegistryImportOptions = {}
+): RegisterObservationResult {
+  return registerSanitizedObservationBundle(
+    rawBundle,
+    sanitizeCanonicalLocalObservationBundleV1,
+    options
+  );
+}
+
+export function registerSupplementalObservationBundle(
+  rawBundle: unknown,
+  options: ObservationRegistryImportOptions = {}
+): RegisterObservationResult {
+  return registerSanitizedObservationBundle(
+    rawBundle,
+    sanitizeSupplementalObservationBundleV1,
+    options
+  );
+}
+
+function registerSanitizedObservationBundle(
+  rawBundle: unknown,
+  sanitize: (raw: unknown) => ObservationBundleV1,
+  options: ObservationRegistryImportOptions
+): RegisterObservationResult {
   assertRegistryImportTimestamps(rawBundle);
-  const bundle = sanitizeObservationBundleV1(rawBundle);
+  const bundle = sanitize(rawBundle);
   return saveSanitizedObservationBundle(bundle, options);
 }
 
@@ -94,7 +136,13 @@ export function getObservationById(
   const safeId = normalizeRegistryId(registryId);
   if (!safeId) return null;
 
-  return readObservationRecord(safeId, options);
+  const record = readObservationRecord(safeId, options);
+  if (!record) return null;
+  return reconcileRecordWithIndex(
+    record,
+    loadObservationRegistry().observations[safeId],
+    options
+  );
 }
 
 export function isObservationRegistryId(value: string): boolean {
@@ -106,7 +154,12 @@ export function listObservations(
   freshnessOptions: ObservationFreshnessOptions = {}
 ): ObservationRegistryEntry[] {
   const registry = loadObservationRegistry();
-  let entries = Object.values(registry.observations);
+  let entries = Object.values(registry.observations).map((entry) => {
+    const record = readObservationRecord(entry.registryId, freshnessOptions);
+    return record
+      ? entryFromRecord(reconcileRecordWithIndex(record, entry, freshnessOptions))
+      : reviewOnlyIndexEntry(entry, "normalization-metadata-invalid");
+  });
 
   if (filters.siteId) {
     const siteId = filters.siteId.toLowerCase();
@@ -136,7 +189,8 @@ export function findDuplicateObservation(
     Object.values(registry.observations).find((entry) => entry.contentHash === contentHash)
       ?.registryId;
 
-  return registryId ? readObservationRecord(registryId, options) : null;
+  const record = registryId ? getObservationById(registryId, options) : null;
+  return record?.contentHash === contentHash ? record : null;
 }
 
 export function computeObservationBundleContentHash(bundle: ObservationBundleV1): string {
@@ -162,17 +216,28 @@ function saveSanitizedObservationBundle(
       ?.registryId;
 
   if (existingId) {
-    const existing = readObservationRecord(existingId, options);
-    if (existing) {
+    const rawExisting = readObservationRecord(existingId, options);
+    const existing = rawExisting
+      ? reconcileRecordWithIndex(
+          rawExisting,
+          registry.observations[existingId],
+          options
+        )
+      : null;
+    if (
+      existing &&
+      existing.contentHash === contentHash &&
+      (bundle.origin.kind !== "canonical-local-artifacts" ||
+        existing.origin.kind === "canonical-local-artifacts")
+    ) {
       return { record: existing, isNew: false, duplicateOf: existingId };
     }
   }
 
-  const existingSourceRunObservation = findExistingObservationBySourceRunIdentity(
-    registry,
-    bundle,
-    options
-  );
+  const existingSourceRunObservation =
+    bundle.origin.kind === "canonical-local-artifacts"
+      ? findExistingObservationBySourceRunIdentity(registry, bundle, options)
+      : null;
   if (existingSourceRunObservation) {
     return {
       record: existingSourceRunObservation,
@@ -206,6 +271,9 @@ function findExistingObservationBySourceRunIdentity(
   if (!sourceRunUid && !observationId) return null;
 
   for (const entry of Object.values(registry.observations)) {
+    if (entry.origin.kind !== "canonical-local-artifacts") {
+      continue;
+    }
     const entrySourceRunUid = stableSourceIdentityPart(
       entry.batch.sourceRunUid,
       "run-unknown"
@@ -221,8 +289,11 @@ function findExistingObservationBySourceRunIdentity(
 
     if (!matchesSourceRunUid && !matchesObservationIdWithoutRunUid) continue;
 
-    const existing = readObservationRecord(entry.registryId, options);
-    if (existing) return existing;
+    const rawExisting = readObservationRecord(entry.registryId, options);
+    const existing = rawExisting
+      ? reconcileRecordWithIndex(rawExisting, entry, options)
+      : null;
+    if (existing?.origin.kind === "canonical-local-artifacts") return existing;
   }
 
   return null;
@@ -252,14 +323,125 @@ function readObservationRecord(
     const raw = JSON.parse(fs.readFileSync(recordPath, "utf-8"));
     if (!isRecord(raw)) return null;
 
-    assertRegistryImportTimestamps(raw.bundle);
-    const bundle = sanitizeObservationBundleV1(raw.bundle);
+    const bundle = reconcileStoredRecordAuthority(
+      raw,
+      sanitizeStoredObservationBundleV1(raw.bundle)
+    );
     const contentHash = computeObservationBundleContentHash(bundle);
     const importedAt = isoOrNull(raw.importedAt) ?? new Date().toISOString();
     return buildObservationRecord(safeId, bundle, contentHash, importedAt, options);
   } catch {
     return null;
   }
+}
+
+function reconcileStoredRecordAuthority(
+  rawRecord: Record<string, unknown>,
+  sanitizedBundle: ObservationBundleV1
+): ObservationBundleV1 {
+  const rawBundle = isRecord(rawRecord.bundle) ? rawRecord.bundle : {};
+  const wrapperOrigin = normalizeIndexOrigin(rawRecord.origin);
+  const bundleOrigin = normalizeIndexOrigin(rawBundle.origin);
+  let origin = sanitizedBundle.origin;
+  let normalization = mergeNormalizationCopies(
+    sanitizedBundle.normalization,
+    normalizeIndexNormalization(rawRecord.normalization)
+  );
+
+  if (
+    !wrapperOrigin.valid ||
+    !bundleOrigin.valid ||
+    wrapperOrigin.value.kind !== bundleOrigin.value.kind
+  ) {
+    origin = { kind: "legacy-unknown", assignedBy: "server" };
+    const missing = rawRecord.origin === undefined || rawBundle.origin === undefined;
+    normalization = mergeIndexLoss(
+      normalization,
+      missing ? "authority-metadata-missing" : "authority-metadata-invalid"
+    );
+  }
+
+  const wrapperNormalization = normalizeIndexNormalization(rawRecord.normalization);
+  const bundleNormalization = normalizeIndexNormalization(rawBundle.normalization);
+  if (
+    !isValidNormalizationMetadata(rawRecord.normalization) ||
+    !isValidNormalizationMetadata(rawBundle.normalization) ||
+    !sameNormalization(wrapperNormalization, bundleNormalization)
+  ) {
+    const missing =
+      rawRecord.normalization === undefined || rawBundle.normalization === undefined;
+    normalization = mergeIndexLoss(
+      mergeNormalizationCopies(normalization, bundleNormalization),
+      missing ? "normalization-metadata-missing" : "normalization-metadata-invalid"
+    );
+  }
+
+  const lossy = normalization.status === "lossy";
+  const reconciled: ObservationBundleV1 = {
+    ...sanitizedBundle,
+    origin,
+    normalization,
+    batch: {
+      ...sanitizedBundle.batch,
+      partial: sanitizedBundle.batch.partial || lossy || origin.kind === "legacy-unknown",
+    },
+    coverage:
+      lossy && sanitizedBundle.coverage.status === "complete"
+        ? { ...sanitizedBundle.coverage, status: "partial" }
+        : sanitizedBundle.coverage,
+  };
+  return sanitizeReconciledStoredBundle(reconciled);
+}
+
+function reconcileRecordWithIndex(
+  record: ObservationRegistryRecord,
+  indexEntry: ObservationRegistryEntry | undefined,
+  options: ObservationFreshnessOptions
+): ObservationRegistryRecord {
+  const originMatches = Boolean(
+    indexEntry &&
+      indexEntry.origin.kind === record.origin.kind &&
+      indexEntry.origin.assignedBy === record.origin.assignedBy
+  );
+  const normalizationMatches = Boolean(
+    indexEntry && sameNormalization(indexEntry.normalization, record.normalization)
+  );
+  if (originMatches && normalizationMatches) return record;
+
+  let normalization = indexEntry
+    ? mergeNormalizationCopies(record.normalization, indexEntry.normalization)
+    : record.normalization;
+  if (!originMatches) {
+    normalization = mergeIndexLoss(normalization, "authority-metadata-invalid");
+  }
+  if (!normalizationMatches) {
+    normalization = mergeIndexLoss(normalization, "normalization-metadata-invalid");
+  }
+  const bundle = sanitizeReconciledStoredBundle({
+    ...record.bundle,
+    origin: { kind: "legacy-unknown", assignedBy: "server" },
+    normalization,
+    batch: { ...record.bundle.batch, partial: true },
+    coverage:
+      record.bundle.coverage.status === "complete"
+        ? { ...record.bundle.coverage, status: "partial" }
+        : record.bundle.coverage,
+  });
+  return buildObservationRecord(
+    record.registryId,
+    bundle,
+    computeObservationBundleContentHash(bundle),
+    record.importedAt,
+    options
+  );
+}
+
+function sanitizeReconciledStoredBundle(
+  bundle: ObservationBundleV1
+): ObservationBundleV1 {
+  return bundle.origin.kind === "legacy-unknown"
+    ? sanitizeStoredObservationBundleV1(bundle)
+    : bundle;
 }
 
 function buildObservationRecord(
@@ -276,6 +458,8 @@ function buildObservationRecord(
     observationId: bundle.observationId,
     contentHash,
     importedAt,
+    origin: bundle.origin,
+    normalization: bundle.normalization,
     site: bundle.site,
     networkName: bundle.site.networkName,
     batch: bundle.batch,
@@ -379,6 +563,8 @@ function entryFromRecord(record: ObservationRegistryRecord): ObservationRegistry
     observationId: record.observationId,
     contentHash: record.contentHash,
     importedAt: record.importedAt,
+    origin: record.origin,
+    normalization: record.normalization,
     site: record.site,
     networkName: record.networkName,
     batch: record.batch,
@@ -399,6 +585,22 @@ function refreshEntryFreshness(
   return {
     ...entry,
     freshness: evaluateFreshnessParts(entry.batch, entry.coverage, entry.timeRange, options),
+  };
+}
+
+function reviewOnlyIndexEntry(
+  entry: ObservationRegistryEntry,
+  code: ObservationNormalizationLossCode
+): ObservationRegistryEntry {
+  return {
+    ...entry,
+    origin: { kind: "legacy-unknown", assignedBy: "server" },
+    normalization: mergeIndexLoss(entry.normalization, code),
+    batch: { ...entry.batch, partial: true },
+    coverage:
+      entry.coverage.status === "complete"
+        ? { ...entry.coverage, status: "partial" }
+        : entry.coverage,
   };
 }
 
@@ -429,11 +631,12 @@ function normalizeRegistryIndex(raw: unknown): ObservationRegistryIndex {
 
   for (const [id, entry] of Object.entries(raw.observations)) {
     const safeId = normalizeRegistryId(id);
-    if (!safeId || !isObservationEntry(entry)) continue;
+    const normalizedEntry = normalizeObservationEntry(entry);
+    if (!safeId || !normalizedEntry) continue;
 
-    observations[safeId] = entry;
-    if (isSha256(entry.contentHash)) {
-      contentHashes[entry.contentHash] = safeId;
+    observations[safeId] = normalizedEntry;
+    if (isSha256(normalizedEntry.contentHash)) {
+      contentHashes[normalizedEntry.contentHash] = safeId;
     }
   }
 
@@ -454,7 +657,24 @@ function normalizeRegistryIndex(raw: unknown): ObservationRegistryIndex {
   };
 }
 
-function isObservationEntry(value: unknown): value is ObservationRegistryEntry {
+function normalizeObservationEntry(value: unknown): ObservationRegistryEntry | null {
+  if (!isObservationEntryShape(value)) return null;
+  const origin = normalizeIndexOrigin(value.origin);
+  const normalization = normalizeIndexNormalization(value.normalization);
+  if (origin.valid) {
+    return { ...(value as unknown as ObservationRegistryEntry), origin: origin.value, normalization };
+  }
+  return {
+    ...(value as unknown as ObservationRegistryEntry),
+    origin: origin.value,
+    normalization: mergeIndexLoss(
+      normalization,
+      value.origin === undefined ? "authority-metadata-missing" : "authority-metadata-invalid"
+    ),
+  };
+}
+
+function isObservationEntryShape(value: unknown): value is Record<string, unknown> {
   if (!isRecord(value)) return false;
   return (
     typeof value.registryId === "string" &&
@@ -474,6 +694,162 @@ function isObservationEntry(value: unknown): value is ObservationRegistryEntry {
     Array.isArray(value.notes)
   );
 }
+
+function normalizeIndexOrigin(value: unknown): { value: ObservationOrigin; valid: boolean } {
+  if (
+    isRecord(value) &&
+    value.assignedBy === "server" &&
+    INDEX_ORIGIN_KIND_SET.has(value.kind as ObservationOriginKind)
+  ) {
+    return {
+      value: { kind: value.kind as ObservationOriginKind, assignedBy: "server" },
+      valid: true,
+    };
+  }
+  return {
+    value: { kind: "legacy-unknown", assignedBy: "server" },
+    valid: false,
+  };
+}
+
+function normalizeIndexNormalization(value: unknown): ObservationNormalization {
+  if (value === undefined || value === null) {
+    return {
+      status: "lossy",
+      losses: [{ code: "normalization-metadata-missing", count: 1 }],
+    };
+  }
+  if (!isRecord(value)) {
+    return {
+      status: "lossy",
+      losses: [{ code: "normalization-metadata-invalid", count: 1 }],
+    };
+  }
+
+  const byCode = new Map<ObservationNormalizationLossCode, number>();
+  let invalid =
+    (value.status !== "complete" && value.status !== "lossy") ||
+    !Array.isArray(value.losses);
+  if (Array.isArray(value.losses)) {
+    for (const loss of value.losses) {
+      if (
+        !isRecord(loss) ||
+        typeof loss.code !== "string" ||
+        !isObservationNormalizationLossCode(loss.code) ||
+        typeof loss.count !== "number" ||
+        !Number.isInteger(loss.count) ||
+        loss.count < 1
+      ) {
+        invalid = true;
+        continue;
+      }
+      const code = loss.code as ObservationNormalizationLossCode;
+      if (byCode.has(code)) invalid = true;
+      byCode.set(
+        code,
+        Math.max(byCode.get(code) ?? 0, Math.min(1_000_000, loss.count))
+      );
+    }
+  }
+  if (
+    (value.status === "complete" && byCode.size > 0) ||
+    (value.status === "lossy" && byCode.size === 0)
+  ) {
+    invalid = true;
+  }
+  if (invalid) {
+    byCode.set(
+      "normalization-metadata-invalid",
+      Math.max(byCode.get("normalization-metadata-invalid") ?? 0, 1)
+    );
+  }
+  const losses = [...byCode.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([code, count]) => ({ code, count }));
+  return { status: losses.length > 0 ? "lossy" : "complete", losses };
+}
+
+function isValidNormalizationMetadata(value: unknown): boolean {
+  if (
+    !isRecord(value) ||
+    (value.status !== "complete" && value.status !== "lossy") ||
+    !Array.isArray(value.losses)
+  ) {
+    return false;
+  }
+  const seen = new Set<string>();
+  for (const loss of value.losses) {
+    if (
+      !isRecord(loss) ||
+      typeof loss.code !== "string" ||
+      !isObservationNormalizationLossCode(loss.code) ||
+      seen.has(loss.code) ||
+      typeof loss.count !== "number" ||
+      !Number.isInteger(loss.count) ||
+      loss.count < 1
+    ) {
+      return false;
+    }
+    seen.add(loss.code);
+  }
+  return (
+    (value.status === "complete" && value.losses.length === 0) ||
+    (value.status === "lossy" && value.losses.length > 0)
+  );
+}
+
+function mergeNormalizationCopies(
+  ...states: ObservationNormalization[]
+): ObservationNormalization {
+  const byCode = new Map<ObservationNormalizationLossCode, number>();
+  for (const state of states) {
+    for (const loss of state.losses) {
+      byCode.set(loss.code, Math.max(byCode.get(loss.code) ?? 0, loss.count));
+    }
+  }
+  const losses = [...byCode.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([code, count]) => ({ code, count }));
+  return { status: losses.length > 0 ? "lossy" : "complete", losses };
+}
+
+function sameNormalization(
+  left: ObservationNormalization,
+  right: ObservationNormalization
+): boolean {
+  return (
+    left.status === right.status &&
+    left.losses.length === right.losses.length &&
+    left.losses.every(
+      (loss, index) =>
+        loss.code === right.losses[index]?.code &&
+        loss.count === right.losses[index]?.count
+    )
+  );
+}
+
+function mergeIndexLoss(
+  normalization: ObservationNormalization,
+  code: ObservationNormalizationLossCode
+): ObservationNormalization {
+  const existing = normalization.losses.find((loss) => loss.code === code);
+  return {
+    status: "lossy",
+    losses: existing
+      ? normalization.losses
+      : [...normalization.losses, { code, count: 1 }].sort((a, b) =>
+          a.code.localeCompare(b.code)
+        ),
+  };
+}
+
+const INDEX_ORIGIN_KIND_SET = new Set<ObservationOriginKind>([
+  "canonical-local-artifacts",
+  "server-synthetic-demo",
+  "external-import",
+  "supplemental-review",
+  "legacy-unknown",
+]);
 
 function buildRegistryId(bundle: ObservationBundleV1, contentHash: string): string {
   const observedAt = latestObservationTime(timeRangeFromBundle(bundle));

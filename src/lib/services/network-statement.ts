@@ -7,7 +7,10 @@ import {
   listObservations,
 } from "./observation-registry";
 import { shapeNetworkActivityComparison } from "./network-activity";
-import { isPacketHighwayObservationEntry } from "./packet-highway-observation";
+import {
+  isPacketHighwayObservationBundle,
+  isPacketHighwayObservationEntry,
+} from "./packet-highway-observation";
 import type {
   ObservationComparisonGuardrail,
   ObservationComparisonResult,
@@ -85,10 +88,11 @@ export function buildNetworkStatement(
     from,
     to
   );
-  const primaryEntries = selectedEntries.filter(
-    (entry) => !isPacketHighwayObservationEntry(entry)
+  const primaryEntries = primaryStatementRecords(
+    selectedEntries,
+    freshnessOptions
   );
-  const rawSiteIdentity = siteIdentityFromEntries(options.siteId, primaryEntries, selectedEntries);
+  const rawSiteIdentity = siteIdentityFromEntries(options.siteId, primaryEntries);
   const site = sanitizeSiteIdentityForStatement(rawSiteIdentity);
   const exportPolicy = statementExportPolicyFor(rawSiteIdentity);
   const allEntries = listObservations({}, freshnessOptions);
@@ -198,7 +202,7 @@ export class NetworkStatementRequestError extends Error {
 }
 
 function buildComparisons(
-  primaryEntries: ObservationRegistryEntry[],
+  primaryEntries: ObservationRegistryRecord[],
   freshnessOptions: ObservationFreshnessOptions,
   supplementalEvidence: NetworkActivitySupplementalEvidence[]
 ): {
@@ -209,18 +213,8 @@ function buildComparisons(
   const skipped: StatementSkippedComparison[] = [];
 
   for (let index = 1; index < primaryEntries.length; index += 1) {
-    const baselineEntry = primaryEntries[index - 1];
-    const currentEntry = primaryEntries[index];
-    const baseline = getObservationById(baselineEntry.registryId, freshnessOptions);
-    const current = getObservationById(currentEntry.registryId, freshnessOptions);
-    if (!baseline || !current) {
-      skipped.push({
-        baselineObservationId: baselineEntry.observationId,
-        currentObservationId: currentEntry.observationId,
-        reason: "One observation record could not be reopened from the registry.",
-      });
-      continue;
-    }
+    const baseline = primaryEntries[index - 1];
+    const current = primaryEntries[index];
 
     try {
       const comparison = compareObservationBundlesV1(baseline.bundle, current.bundle, {
@@ -255,6 +249,29 @@ function buildComparisons(
   }
 
   return { comparisons, skipped };
+}
+
+function primaryStatementRecords(
+  entries: ObservationRegistryEntry[],
+  freshnessOptions: ObservationFreshnessOptions
+): ObservationRegistryRecord[] {
+  const records: ObservationRegistryRecord[] = [];
+
+  for (const entry of entries) {
+    const record = getObservationById(entry.registryId, freshnessOptions);
+    if (
+      !record ||
+      record.origin.kind !== "canonical-local-artifacts" ||
+      record.normalization.status !== "complete" ||
+      isPacketHighwayObservationEntry(record) ||
+      isPacketHighwayObservationBundle(record.bundle)
+    ) {
+      continue;
+    }
+    records.push(record);
+  }
+
+  return records;
 }
 
 function selectedPeriodSection(
@@ -838,10 +855,9 @@ function supplementalEvidenceForStatement(
 
 function siteIdentityFromEntries(
   requestedSiteId: string,
-  primaryEntries: ObservationRegistryEntry[],
-  selectedEntries: ObservationRegistryEntry[]
+  primaryEntries: ObservationRegistryEntry[]
 ): StatementSiteIdentity {
-  const entry = primaryEntries[primaryEntries.length - 1] ?? selectedEntries[selectedEntries.length - 1];
+  const entry = primaryEntries[primaryEntries.length - 1];
   return {
     siteId: entry?.site.siteId ?? requestedSiteId,
     networkName: entry?.networkName ?? entry?.site.networkName ?? requestedSiteId,

@@ -108,6 +108,11 @@ const FIXTURE_LIMITS = {
   ipsPerDevice: 16,
   categoriesPerNode: 16,
 };
+const MAX_INFERRED_FIXTURE_LOSS_COUNT = 1_000_000;
+
+interface FixtureLossTracker {
+  count: number;
+}
 
 const SERVICE_CATEGORY_SET = new Set<ServiceCategory>([
   "dns", "mdns", "llmnr", "ssdp", "http", "https", "quic", "ssh", "smb", "rdp", "arp", "icmp", "other",
@@ -115,7 +120,10 @@ const SERVICE_CATEGORY_SET = new Set<ServiceCategory>([
 const PROTOCOL_SET = new Set<TrafficProtocol>(["tcp", "udp", "icmp", "arp", "other"]);
 const LEVEL_SET = new Set<WatchLevel>(["info", "review", "watch"]);
 
-export function parseNormalizedCaptureFixture(jsonText: string): NormalizedCapture {
+export function parseNormalizedCaptureFixture(
+  jsonText: string,
+  options: { dropInvalidFlows?: boolean } = {}
+): NormalizedCapture {
   let raw: unknown;
   try {
     raw = JSON.parse(jsonText);
@@ -128,18 +136,35 @@ export function parseNormalizedCaptureFixture(jsonText: string): NormalizedCaptu
     );
   }
 
+  const loss: FixtureLossTracker = { count: 0 };
   const meta = sanitizeMeta(raw.meta);
-  const devices = takeArray(raw.devices, FIXTURE_LIMITS.devices).map(sanitizeDevice);
-  const externalEndpoints = takeArray(raw.externalEndpoints, FIXTURE_LIMITS.externalEndpoints).map(
-    sanitizeExternalEndpoint
+  const devices = takeArray(raw.devices, FIXTURE_LIMITS.devices, loss).map((device) =>
+    sanitizeDevice(device, loss)
   );
-  const flows = takeArray(raw.flows, FIXTURE_LIMITS.flows).map(sanitizeFlow);
-  const animationEvents = takeArray(raw.animationEvents, FIXTURE_LIMITS.animationEvents).map(
+  const externalEndpoints = takeArray(
+    raw.externalEndpoints,
+    FIXTURE_LIMITS.externalEndpoints,
+    loss
+  ).map((endpoint) =>
+    sanitizeExternalEndpoint(endpoint, loss)
+  );
+  const flows = takeArray(raw.flows, FIXTURE_LIMITS.flows, loss)
+    .map((flow) => sanitizeFlow(flow, loss, options.dropInvalidFlows === true))
+    .filter((flow): flow is TrafficFlow => flow !== null);
+  const animationEvents = takeArray(
+    raw.animationEvents,
+    FIXTURE_LIMITS.animationEvents,
+    loss
+  ).map(
     sanitizeAnimationEvent
   );
-  const dnsQueries = takeArray(raw.dnsQueries, FIXTURE_LIMITS.dnsQueries).map(sanitizeDnsQuery);
-  const alerts = takeArray(raw.alerts, FIXTURE_LIMITS.alerts).map(sanitizeAlert);
-  const summary = sanitizeSummary(raw.summary);
+  const dnsQueries = takeArray(raw.dnsQueries, FIXTURE_LIMITS.dnsQueries, loss).map(
+    sanitizeDnsQuery
+  );
+  const alerts = takeArray(raw.alerts, FIXTURE_LIMITS.alerts, loss).map((alert) =>
+    sanitizeAlert(alert, loss)
+  );
+  const summary = sanitizeSummary(raw.summary, loss);
 
   if (devices.length === 0 && flows.length === 0) {
     throw new TrafficUploadError("This analysis file contains no devices or flows.");
@@ -147,7 +172,12 @@ export function parseNormalizedCaptureFixture(jsonText: string): NormalizedCaptu
 
   return {
     version: 1,
-    meta: { ...meta, format: "fixture" },
+    meta: {
+      ...meta,
+      format: "fixture",
+      truncated: meta.truncated || loss.count > 0,
+      ignoredPackets: addInferredFixtureLoss(meta.ignoredPackets, loss.count),
+    },
     devices,
     externalEndpoints,
     flows,
@@ -162,9 +192,49 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function takeArray(value: unknown, max: number): Record<string, unknown>[] {
-  if (!Array.isArray(value)) return [];
-  return value.filter(isRecord).slice(0, max);
+function takeArray(
+  value: unknown,
+  max: number,
+  loss: FixtureLossTracker
+): Record<string, unknown>[] {
+  if (!Array.isArray(value)) {
+    recordFixtureLoss(loss, 1);
+    return [];
+  }
+
+  const records = value.filter(isRecord);
+  const retained = records.slice(0, max);
+  recordFixtureLoss(loss, value.length - retained.length);
+  return retained;
+}
+
+function takeStrings(
+  value: unknown,
+  max: number,
+  loss: FixtureLossTracker
+): string[] {
+  if (!Array.isArray(value)) {
+    recordFixtureLoss(loss, 1);
+    return [];
+  }
+
+  const strings = value.filter((item): item is string => typeof item === "string");
+  const retained = strings.slice(0, max);
+  recordFixtureLoss(loss, value.length - retained.length);
+  return retained;
+}
+
+function recordFixtureLoss(loss: FixtureLossTracker, count: number): void {
+  if (!Number.isFinite(count) || count <= 0) return;
+  loss.count = Math.min(
+    MAX_INFERRED_FIXTURE_LOSS_COUNT,
+    loss.count + Math.floor(count)
+  );
+}
+
+function addInferredFixtureLoss(existing: number, inferred: number): number {
+  const base = Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, Math.floor(existing)));
+  return Math.min(Number.MAX_SAFE_INTEGER, base + inferred);
 }
 
 function str(value: unknown, maxLength: number, fallback = ""): string {
@@ -190,9 +260,20 @@ function category(value: unknown): ServiceCategory {
   return SERVICE_CATEGORY_SET.has(value as ServiceCategory) ? (value as ServiceCategory) : "other";
 }
 
-function categories(value: unknown): ServiceCategory[] {
-  if (!Array.isArray(value)) return [];
-  return value.slice(0, FIXTURE_LIMITS.categoriesPerNode).map(category);
+function categories(value: unknown, loss: FixtureLossTracker): ServiceCategory[] {
+  if (!Array.isArray(value)) {
+    recordFixtureLoss(loss, 1);
+    return [];
+  }
+
+  const retained = value.slice(0, FIXTURE_LIMITS.categoriesPerNode);
+  recordFixtureLoss(loss, value.length - retained.length);
+  return retained.map((item) => {
+    if (!SERVICE_CATEGORY_SET.has(item as ServiceCategory)) {
+      recordFixtureLoss(loss, 1);
+    }
+    return category(item);
+  });
 }
 
 function sanitizeMeta(raw: Record<string, unknown>): CaptureMeta {
@@ -210,14 +291,17 @@ function sanitizeMeta(raw: Record<string, unknown>): CaptureMeta {
   };
 }
 
-function sanitizeDevice(raw: Record<string, unknown>): TrafficDevice {
+function sanitizeDevice(
+  raw: Record<string, unknown>,
+  loss: FixtureLossTracker
+): TrafficDevice {
   const role = raw.role === "gateway" || raw.role === "broadcast" ? raw.role : "device";
   return {
     id: str(raw.id, 40, "dev-unknown"),
     mac: strOrNull(raw.mac, 23),
-    ips: Array.isArray(raw.ips)
-      ? raw.ips.filter((ip): ip is string => typeof ip === "string").slice(0, FIXTURE_LIMITS.ipsPerDevice).map((ip) => ip.slice(0, 45))
-      : [],
+    ips: takeStrings(raw.ips, FIXTURE_LIMITS.ipsPerDevice, loss).map((ip) =>
+      ip.slice(0, 45)
+    ),
     name: strOrNull(raw.name, 80),
     vendor: strOrNull(raw.vendor, 80),
     role,
@@ -228,45 +312,53 @@ function sanitizeDevice(raw: Record<string, unknown>): TrafficDevice {
     bytesReceived: num(raw.bytesReceived),
     firstSeen: isoOrNull(raw.firstSeen),
     lastSeen: isoOrNull(raw.lastSeen),
-    categories: categories(raw.categories),
+    categories: categories(raw.categories, loss),
     externalPeerCount: num(raw.externalPeerCount),
     dnsQueryCount: num(raw.dnsQueryCount),
     notes: strOrNull(raw.notes, 500),
   };
 }
 
-function sanitizeExternalEndpoint(raw: Record<string, unknown>): ExternalEndpoint {
+function sanitizeExternalEndpoint(
+  raw: Record<string, unknown>,
+  loss: FixtureLossTracker
+): ExternalEndpoint {
   return {
     id: str(raw.id, 40, "ext-unknown"),
     ip: str(raw.ip, 60, "unknown"),
     isAggregate: raw.isAggregate === true,
     packets: num(raw.packets),
     bytes: num(raw.bytes),
-    categories: categories(raw.categories),
+    categories: categories(raw.categories, loss),
   };
 }
 
-function sanitizeFlow(raw: Record<string, unknown>): TrafficFlow {
-  const scope =
-    raw.scope === "internal" || raw.scope === "broadcast" ? raw.scope : "external";
+function sanitizeFlow(
+  raw: Record<string, unknown>, loss: FixtureLossTracker, dropInvalid: boolean
+): TrafficFlow | null {
+  const validScope = raw.scope === "internal" || raw.scope === "broadcast" || raw.scope === "external";
+  const validProtocol = PROTOCOL_SET.has(raw.protocol as TrafficProtocol);
+  const validCategory = SERVICE_CATEGORY_SET.has(raw.category as ServiceCategory);
+  const validPort = raw.port == null || (typeof raw.port === "number" &&
+    Number.isInteger(raw.port) && raw.port >= 0 && raw.port <= 65535);
+  const invalid = !validScope || !validProtocol || !validCategory || !validPort;
+  if (invalid) {
+    recordFixtureLoss(loss, 1);
+    if (dropInvalid) return null;
+  }
   return {
     id: str(raw.id, 40, "flow-unknown"),
     fromId: str(raw.fromId, 40),
     toId: str(raw.toId, 40),
-    protocol: PROTOCOL_SET.has(raw.protocol as TrafficProtocol)
-      ? (raw.protocol as TrafficProtocol)
-      : "other",
-    port:
-      typeof raw.port === "number" && Number.isInteger(raw.port) && raw.port >= 0 && raw.port <= 65535
-        ? raw.port
-        : null,
-    category: category(raw.category),
+    protocol: validProtocol ? raw.protocol as TrafficProtocol : "other",
+    port: validPort && raw.port != null ? raw.port as number : null,
+    category: validCategory ? raw.category as ServiceCategory : "other",
     packets: num(raw.packets),
     bytes: num(raw.bytes),
     bytesFromInitiator: num(raw.bytesFromInitiator),
     firstSeen: isoOrNull(raw.firstSeen),
     lastSeen: isoOrNull(raw.lastSeen),
-    scope,
+    scope: validScope ? raw.scope as TrafficFlow["scope"] : "external",
   };
 }
 
@@ -291,23 +383,22 @@ function sanitizeDnsQuery(raw: Record<string, unknown>): DnsQueryInfo {
   };
 }
 
-function sanitizeAlert(raw: Record<string, unknown>): TrafficAlert {
+function sanitizeAlert(
+  raw: Record<string, unknown>,
+  loss: FixtureLossTracker
+): TrafficAlert {
   return {
     id: str(raw.id, 40, "alert-unknown"),
     ruleId: str(raw.ruleId, 60, "unknown"),
     level: LEVEL_SET.has(raw.level as WatchLevel) ? (raw.level as WatchLevel) : "info",
     title: str(raw.title, 160, "Watch item"),
     detail: str(raw.detail, 800),
-    deviceIds: Array.isArray(raw.deviceIds)
-      ? raw.deviceIds.filter((id): id is string => typeof id === "string").slice(0, 50).map((id) => id.slice(0, 40))
-      : [],
-    flowIds: Array.isArray(raw.flowIds)
-      ? raw.flowIds.filter((id): id is string => typeof id === "string").slice(0, 50).map((id) => id.slice(0, 40))
-      : [],
+    deviceIds: takeStrings(raw.deviceIds, 50, loss).map((id) => id.slice(0, 40)),
+    flowIds: takeStrings(raw.flowIds, 50, loss).map((id) => id.slice(0, 40)),
   };
 }
 
-function sanitizeSummary(raw: unknown): TrafficSummary {
+function sanitizeSummary(raw: unknown, loss: FixtureLossTracker): TrafficSummary {
   const record = isRecord(raw) ? raw : {};
   const stats = isRecord(record.stats) ? record.stats : {};
   const categoryBytes: Partial<Record<ServiceCategory, number>> = {};
@@ -320,12 +411,9 @@ function sanitizeSummary(raw: unknown): TrafficSummary {
   }
   return {
     headline: str(record.headline, 240, "Traffic analysis loaded from file."),
-    lines: Array.isArray(record.lines)
-      ? record.lines
-          .filter((line): line is string => typeof line === "string")
-          .slice(0, FIXTURE_LIMITS.summaryLines)
-          .map((line) => line.slice(0, 500))
-      : [],
+    lines: takeStrings(record.lines, FIXTURE_LIMITS.summaryLines, loss).map((line) =>
+      line.slice(0, 500)
+    ),
     stats: {
       deviceCount: num(stats.deviceCount),
       knownDeviceCount: num(stats.knownDeviceCount),

@@ -3,6 +3,8 @@ import type {
   CoverageRecord,
   ObservationBatch,
   ObservationBundleV1,
+  ObservationNormalization,
+  ObservationOrigin,
   ObservationSourceRef,
   SiteRef,
 } from "./observation-bundle";
@@ -47,6 +49,8 @@ export interface ObservationRegistryEntry {
   observationId: string;
   contentHash: string;
   importedAt: string;
+  origin: ObservationOrigin;
+  normalization: ObservationNormalization;
   site: SiteRef;
   networkName: string;
   batch: ObservationBatch;
