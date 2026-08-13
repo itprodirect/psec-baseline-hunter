@@ -25,6 +25,11 @@ export type ServiceCategory =
 
 export type CaptureFormat = "pcap" | "pcapng" | "fixture";
 
+export interface FixtureSanitizationLoss {
+  /** Bounded count of fixture records or fields discarded or replaced during validation. */
+  count: number;
+}
+
 export interface CaptureMeta {
   /** Original file name (basename only, never a filesystem path) */
   fileName: string;
@@ -42,6 +47,8 @@ export interface CaptureMeta {
   truncated: boolean;
   /** Packets skipped because they were not parseable Ethernet/IP frames */
   ignoredPackets: number;
+  /** Non-packet loss introduced while validating an uploaded analysis fixture. */
+  fixtureSanitizationLoss: FixtureSanitizationLoss;
   generatedAt: string;
 }
 

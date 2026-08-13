@@ -276,6 +276,12 @@ function buildPacketHighwayCoverage(
     score -= 0.05;
     notes.push(`${capture.meta.ignoredPackets} packets were ignored because they were unsupported or unparseable.`);
   }
+  if (capture.meta.fixtureSanitizationLoss.count > 0) {
+    score -= 0.05;
+    notes.push(
+      `${capture.meta.fixtureSanitizationLoss.count} fixture records or fields were discarded or replaced during validation.`
+    );
+  }
   if (missingSources.includes("capture_timing")) {
     score -= 0.1;
   }

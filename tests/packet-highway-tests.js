@@ -854,6 +854,17 @@ run("packet highway trust notices explain partial results and export metadata", 
       isDemo: false,
     })
   );
+  const lossyFixture = JSON.parse(JSON.stringify(buildDemoCapture()));
+  lossyFixture.devices[0].ips = Array.from(
+    { length: 17 },
+    (_, index) => `198.51.100.${index + 1}`
+  );
+  const lossyImportedMarkup = renderToStaticMarkup(
+    React.createElement(AnalysisSourceNotice, {
+      capture: parseNormalizedCaptureFixture(JSON.stringify(lossyFixture)),
+      isDemo: false,
+    })
+  );
 
   assert.match(partialMarkup, /Partial analysis/);
   assert.match(partialMarkup, /analysis limit or ended after a malformed or truncated tail/);
@@ -868,6 +879,8 @@ run("packet highway trust notices explain partial results and export metadata", 
   assert.match(importedMarkup, /Saved analysis JSON/);
   assert.match(importedMarkup, /not raw-capture evidence/);
   assert.match(importedMarkup, /CSV inventory is not reapplied/);
+  assert.match(lossyImportedMarkup, /1 fixture records or fields/);
+  assert.match(lossyImportedMarkup, /sanitation loss, not ignored packet loss/);
 });
 
 run("packet highway page clears stale analysis before a new analyze attempt", () => {

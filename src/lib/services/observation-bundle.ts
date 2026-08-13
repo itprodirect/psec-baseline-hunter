@@ -906,7 +906,12 @@ function parseArpSnapshot(
   const seen = new Set<string>();
   for (const rawLine of content.split(/\r?\n/)) {
     const line = rawLine.trim();
-    if (!line || /^Interface:/i.test(line) || line.startsWith("#")) continue;
+    if (
+      !line ||
+      /^Interface:/i.test(line) ||
+      /^Internet\s+Address\s+Physical\s+Address\s+Type$/i.test(line) ||
+      line.startsWith("#")
+    ) continue;
     const ip = line.match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/)?.[0];
     const macMatch =
       line.match(/\b(?:[0-9a-fA-F]{2}[:-]){5}[0-9a-fA-F]{2}\b/)?.[0] ??
@@ -1841,6 +1846,13 @@ function sanitizePacketHighwayEvidence(
         normalization,
         "packet-highway-records-ignored",
         capture.meta.ignoredPackets
+      );
+    }
+    if (capture.meta.fixtureSanitizationLoss.count > 0) {
+      recordRetainedLoss(
+        normalization,
+        "packet-highway-fixture-sanitization-loss",
+        capture.meta.fixtureSanitizationLoss.count
       );
     }
     if (

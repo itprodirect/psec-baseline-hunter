@@ -137,7 +137,7 @@ export function parseNormalizedCaptureFixture(
   }
 
   const loss: FixtureLossTracker = { count: 0 };
-  const meta = sanitizeMeta(raw.meta);
+  const meta = sanitizeMeta(raw.meta, loss);
   const devices = takeArray(raw.devices, FIXTURE_LIMITS.devices, loss).map((device) =>
     sanitizeDevice(device, loss)
   );
@@ -175,8 +175,9 @@ export function parseNormalizedCaptureFixture(
     meta: {
       ...meta,
       format: "fixture",
-      truncated: meta.truncated || loss.count > 0,
-      ignoredPackets: addInferredFixtureLoss(meta.ignoredPackets, loss.count),
+      fixtureSanitizationLoss: {
+        count: addFixtureSanitizationLoss(meta.fixtureSanitizationLoss.count, loss.count),
+      },
     },
     devices,
     externalEndpoints,
@@ -232,9 +233,12 @@ function recordFixtureLoss(loss: FixtureLossTracker, count: number): void {
   );
 }
 
-function addInferredFixtureLoss(existing: number, inferred: number): number {
-  const base = Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, Math.floor(existing)));
-  return Math.min(Number.MAX_SAFE_INTEGER, base + inferred);
+function addFixtureSanitizationLoss(existing: number, inferred: number): number {
+  const base = Math.min(
+    MAX_INFERRED_FIXTURE_LOSS_COUNT,
+    Math.max(0, Math.floor(existing))
+  );
+  return Math.min(MAX_INFERRED_FIXTURE_LOSS_COUNT, base + inferred);
 }
 
 function str(value: unknown, maxLength: number, fallback = ""): string {
@@ -276,7 +280,10 @@ function categories(value: unknown, loss: FixtureLossTracker): ServiceCategory[]
   });
 }
 
-function sanitizeMeta(raw: Record<string, unknown>): CaptureMeta {
+function sanitizeMeta(
+  raw: Record<string, unknown>,
+  loss: FixtureLossTracker
+): CaptureMeta {
   return {
     fileName: sanitizeUploadFileName(str(raw.fileName, 120, "analysis.json")),
     format: "fixture",
@@ -287,7 +294,28 @@ function sanitizeMeta(raw: Record<string, unknown>): CaptureMeta {
     durationMs: typeof raw.durationMs === "number" && Number.isFinite(raw.durationMs) && raw.durationMs >= 0 ? raw.durationMs : null,
     truncated: raw.truncated === true,
     ignoredPackets: num(raw.ignoredPackets),
+    fixtureSanitizationLoss: sanitizeFixtureSanitizationLoss(
+      raw.fixtureSanitizationLoss,
+      loss
+    ),
     generatedAt: isoOrNull(raw.generatedAt) ?? new Date().toISOString(),
+  };
+}
+
+function sanitizeFixtureSanitizationLoss(
+  value: unknown,
+  loss: FixtureLossTracker
+): CaptureMeta["fixtureSanitizationLoss"] {
+  if (value === undefined) return { count: 0 };
+  if (!isRecord(value) ||
+      typeof value.count !== "number" ||
+      !Number.isInteger(value.count) ||
+      value.count < 0) {
+    recordFixtureLoss(loss, 1);
+    return { count: 0 };
+  }
+  return {
+    count: Math.min(MAX_INFERRED_FIXTURE_LOSS_COUNT, value.count),
   };
 }
 

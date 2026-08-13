@@ -132,6 +132,7 @@ function syntheticAnalysisFixture({ truncated = false } = {}) {
       durationMs: 1000,
       truncated,
       ignoredPackets: 0,
+      fixtureSanitizationLoss: { count: 0 },
       generatedAt: "2026-06-01T19:00:02.000Z",
     },
     devices: [
