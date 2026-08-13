@@ -4213,6 +4213,17 @@ run("TV-02 fixture sanitation loss stays separate from parser packet loss throug
         expectedLoss: 1,
       },
       {
+        name: "invalid supplied replacements",
+        mutate: (capture) => {
+          capture.devices[0].role = "administrator";
+          capture.animationEvents[0].category = "synthetic-invalid-category";
+          capture.dnsQueries[0].kind = "synthetic-invalid-kind";
+          capture.alerts[0].level = "synthetic-invalid-level";
+          capture.meta.packetCount = "synthetic-invalid-count";
+        },
+        expectedLoss: 5,
+      },
+      {
         name: "existing plural sanitation loss",
         mutate: (capture) => {
           capture.meta.fixtureSanitizationLoss = { count: 2 };
@@ -4263,10 +4274,20 @@ run("TV-02 fixture sanitation loss stays separate from parser packet loss throug
         );
         assert.equal(bundle.normalization.status, "lossy", testCase.name);
         assert.equal(bundle.batch.partial, true, testCase.name);
-        const lossCopy = testCase.expectedLoss === 1
-          ? /1 fixture record or field was discarded or replaced/i
-          : /2 fixture records or fields were discarded or replaced/i;
+        const subject = testCase.expectedLoss === 1
+          ? "fixture record or field was"
+          : "fixture records or fields were";
+        const lossCopy = new RegExp(
+          `${testCase.expectedLoss} ${subject} discarded or replaced`,
+          "i"
+        );
         assert.match(coverageNotes, lossCopy, testCase.name);
+        assert.throws(
+          () => compareObservationBundlesV1(bundle, cloneJson(bundle)),
+          (error) => isObservationComparisonError(error) &&
+            error.code === "review_only_observation",
+          testCase.name
+        );
       }
 
       const result = registerSupplementalObservationBundle(bundle, {

@@ -1184,6 +1184,12 @@ run("demo capture round-trips through the fixture validator", () => {
   assert.equal(restored.devices.length, demo.devices.length);
   assert.equal(restored.flows.length, demo.flows.length);
   assert.equal(restored.meta.format, "fixture");
+  assert.equal(restored.meta.fixtureSanitizationLoss.count, 0);
+
+  const legacy = JSON.parse(JSON.stringify(demo));
+  delete legacy.meta.fixtureSanitizationLoss;
+  const restoredLegacy = parseNormalizedCaptureFixture(JSON.stringify(legacy));
+  assert.equal(restoredLegacy.meta.fixtureSanitizationLoss.count, 0);
 });
 
 run("fixture validator rejects invalid JSON and wrong shapes", () => {
@@ -1201,20 +1207,133 @@ run("fixture validator rejects invalid JSON and wrong shapes", () => {
   );
 });
 
-run("fixture validator sanitizes oversized and unknown fields", () => {
+run("fixture validator distinguishes optional absence from invalid required values", () => {
+  const demo = buildDemoCapture();
+  const optionalAbsence = JSON.parse(JSON.stringify(demo));
+  delete optionalAbsence.meta.startTime;
+  delete optionalAbsence.meta.durationMs;
+  delete optionalAbsence.devices[0].name;
+  delete optionalAbsence.devices[0].notes;
+  delete optionalAbsence.flows[0].port;
+
+  const optionalRestored = parseNormalizedCaptureFixture(JSON.stringify(optionalAbsence));
+  assert.equal(optionalRestored.meta.startTime, null);
+  assert.equal(optionalRestored.meta.durationMs, null);
+  assert.equal(optionalRestored.devices[0].name, null);
+  assert.equal(optionalRestored.devices[0].notes, null);
+  assert.equal(optionalRestored.flows[0].port, null);
+  assert.equal(optionalRestored.meta.fixtureSanitizationLoss.count, 0);
+
+  const validRole = JSON.parse(JSON.stringify(demo));
+  validRole.devices[0].role = "gateway";
+  assert.equal(
+    parseNormalizedCaptureFixture(JSON.stringify(validRole)).meta.fixtureSanitizationLoss.count,
+    0
+  );
+
+  const missingRole = JSON.parse(JSON.stringify(demo));
+  delete missingRole.devices[0].role;
+  const missingRoleRestored = parseNormalizedCaptureFixture(JSON.stringify(missingRole));
+  assert.equal(missingRoleRestored.devices[0].role, "device");
+  assert.equal(missingRoleRestored.meta.fixtureSanitizationLoss.count, 1);
+});
+
+run("fixture validator counts enum and metadata replacements", () => {
+  const demo = buildDemoCapture();
+  const cases = [
+    {
+      name: "invalid device role",
+      mutate: (fixture) => { fixture.devices[0].role = "administrator"; },
+      select: (fixture) => fixture.devices[0].role,
+      replacement: "device",
+    },
+    {
+      name: "invalid animation category",
+      mutate: (fixture) => { fixture.animationEvents[0].category = "made-up"; },
+      select: (fixture) => fixture.animationEvents[0].category,
+      replacement: "other",
+    },
+    {
+      name: "invalid DNS kind",
+      mutate: (fixture) => { fixture.dnsQueries[0].kind = "netbios"; },
+      select: (fixture) => fixture.dnsQueries[0].kind,
+      replacement: "dns",
+    },
+    {
+      name: "invalid alert level",
+      mutate: (fixture) => { fixture.alerts[0].level = "critical"; },
+      select: (fixture) => fixture.alerts[0].level,
+      replacement: "info",
+    },
+    {
+      name: "invalid packet count",
+      mutate: (fixture) => { fixture.meta.packetCount = "not-a-number"; },
+      select: (fixture) => fixture.meta.packetCount,
+      replacement: 0,
+    },
+    {
+      name: "invalid generated timestamp",
+      mutate: (fixture) => { fixture.meta.generatedAt = "not-a-date"; },
+      select: (fixture) => fixture.meta.generatedAt,
+      replacement: null,
+    },
+  ];
+
+  for (const testCase of cases) {
+    const fixture = JSON.parse(JSON.stringify(demo));
+    testCase.mutate(fixture);
+    const restored = parseNormalizedCaptureFixture(JSON.stringify(fixture));
+    if (testCase.replacement === null) {
+      assert.doesNotMatch(restored.meta.generatedAt, /not-a-date/, testCase.name);
+    } else {
+      assert.equal(testCase.select(restored), testCase.replacement, testCase.name);
+    }
+    assert.equal(restored.meta.fixtureSanitizationLoss.count, 1, testCase.name);
+  }
+});
+
+run("fixture validator adds independent replacements and preserves prior loss idempotently", () => {
+  const demo = buildDemoCapture();
+  const tampered = JSON.parse(JSON.stringify(demo));
+  tampered.devices[0].role = "administrator";
+  tampered.animationEvents[0].category = "made-up";
+  tampered.dnsQueries[0].kind = "netbios";
+  tampered.alerts[0].level = "critical";
+  tampered.meta.packetCount = "not-a-number";
+
+  const restored = parseNormalizedCaptureFixture(JSON.stringify(tampered));
+  assert.equal(restored.meta.fixtureSanitizationLoss.count, 5);
+  const restoredAgain = parseNormalizedCaptureFixture(JSON.stringify(restored));
+  assert.equal(restoredAgain.meta.fixtureSanitizationLoss.count, 5);
+
+  const priorLoss = JSON.parse(JSON.stringify(demo));
+  priorLoss.meta.fixtureSanitizationLoss = { count: 7 };
+  priorLoss.devices[0].role = "administrator";
+  const withPriorLoss = parseNormalizedCaptureFixture(JSON.stringify(priorLoss));
+  assert.equal(withPriorLoss.devices[0].role, "device");
+  assert.equal(withPriorLoss.meta.fixtureSanitizationLoss.count, 8);
+  assert.equal(
+    parseNormalizedCaptureFixture(JSON.stringify(withPriorLoss)).meta.fixtureSanitizationLoss.count,
+    8
+  );
+});
+
+run("fixture validator counts discarded, truncated, and clamped supplied fields", () => {
   const demo = buildDemoCapture();
   const tampered = JSON.parse(JSON.stringify(demo));
   tampered.devices[0].name = "x".repeat(5000);
   tampered.devices[0].unknownField = "should be dropped";
-  tampered.flows[0].category = "totally-made-up";
-  tampered.alerts = [{ level: "catastrophic", title: 42 }];
+  tampered.animationEvents[0].t = 2;
+  tampered.alerts[0].deviceIds[0] = "d".repeat(100);
+  tampered.summary.stats.categoryBytes["not-a-category"] = 10;
 
   const restored = parseNormalizedCaptureFixture(JSON.stringify(tampered));
   assert.equal(restored.devices[0].name.length, 80);
   assert.equal("unknownField" in restored.devices[0], false);
-  assert.equal(restored.flows[0].category, "other");
-  assert.equal(restored.alerts[0].level, "info");
-  assert.equal(restored.alerts[0].title, "Watch item");
+  assert.equal(restored.animationEvents[0].t, 1);
+  assert.equal(restored.alerts[0].deviceIds[0].length, 40);
+  assert.equal("not-a-category" in restored.summary.stats.categoryBytes, false);
+  assert.equal(restored.meta.fixtureSanitizationLoss.count, 5);
 });
 
 // ---------------------------------------------------------------------------
