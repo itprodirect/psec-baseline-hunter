@@ -22,6 +22,7 @@ import {
 
 export const MAX_CAPTURE_BYTES = 50 * 1024 * 1024; // 50 MiB raw capture
 export const MAX_FIXTURE_BYTES = 10 * 1024 * 1024; // 10 MiB normalized JSON
+export const MAX_PACKET_HIGHWAY_DEVICE_NOTE_LENGTH = 300;
 const MULTIPART_OVERHEAD_BYTES = 64 * 1024;
 
 export const CAPTURE_UPLOAD_ACCEPT = ".pcap,.pcapng,.json";
@@ -475,7 +476,7 @@ function sanitizeDevice(
     categories: categories(raw.categories, loss),
     externalPeerCount: num(raw.externalPeerCount, loss),
     dnsQueryCount: num(raw.dnsQueryCount, loss),
-    notes: strOrNull(raw.notes, 500, loss),
+    notes: strOrNull(raw.notes, MAX_PACKET_HIGHWAY_DEVICE_NOTE_LENGTH, loss),
   };
 }
 

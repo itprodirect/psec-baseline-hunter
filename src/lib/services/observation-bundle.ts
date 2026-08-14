@@ -3,7 +3,10 @@ import * as path from "path";
 import { isIP } from "node:net";
 import { XMLParser, XMLValidator } from "fast-xml-parser";
 import { getRunByUid, type RunManifest } from "./run-registry";
-import { parseNormalizedCaptureFixture } from "./capture-upload-safety";
+import {
+  MAX_PACKET_HIGHWAY_DEVICE_NOTE_LENGTH,
+  parseNormalizedCaptureFixture,
+} from "./capture-upload-safety";
 import { hashString } from "@/lib/utils/hash";
 import { OBSERVATION_NORMALIZATION_LOSS_CODES } from "@/lib/types/observation-bundle";
 import type {
@@ -1916,7 +1919,7 @@ function sanitizePacketHighwayCaptureForObservation(
         ips,
         name: safeTextOrNull(device.name, 80),
         vendor: safeTextOrNull(device.vendor, 80),
-        notes: safeTextOrNull(device.notes, 300),
+        notes: safeTextOrNull(device.notes, MAX_PACKET_HIGHWAY_DEVICE_NOTE_LENGTH),
       };
     }),
     externalEndpoints: capture.externalEndpoints.map((endpoint) => ({

@@ -383,6 +383,7 @@ const {
   safety: {
     MAX_CAPTURE_BYTES,
     MAX_FIXTURE_BYTES,
+    MAX_PACKET_HIGHWAY_DEVICE_NOTE_LENGTH,
     assertCaptureRequestContentLength,
     assertCaptureUploadSize,
     parseNormalizedCaptureFixture,
@@ -1316,6 +1317,39 @@ run("fixture validator adds independent replacements and preserves prior loss id
     parseNormalizedCaptureFixture(JSON.stringify(withPriorLoss)).meta.fixtureSanitizationLoss.count,
     8
   );
+});
+
+run("fixture validator aligns device-note loss with the observation retention boundary", () => {
+  assert.equal(MAX_PACKET_HIGHWAY_DEVICE_NOTE_LENGTH, 300);
+  const demo = buildDemoCapture();
+  const cases = [
+    { length: 299, expectedLength: 299, expectedLoss: 0 },
+    { length: 300, expectedLength: 300, expectedLoss: 0 },
+    { length: 301, expectedLength: 300, expectedLoss: 1 },
+    { length: 500, expectedLength: 300, expectedLoss: 1 },
+  ];
+
+  for (const testCase of cases) {
+    const fixture = JSON.parse(JSON.stringify(demo));
+    fixture.devices[0].notes = "n".repeat(testCase.length);
+    const restored = parseNormalizedCaptureFixture(JSON.stringify(fixture));
+    assert.equal(restored.devices[0].notes.length, testCase.expectedLength, testCase.length);
+    assert.equal(
+      restored.meta.fixtureSanitizationLoss.count,
+      testCase.expectedLoss,
+      testCase.length
+    );
+  }
+
+  const priorLoss = JSON.parse(JSON.stringify(demo));
+  priorLoss.meta.fixtureSanitizationLoss = { count: 2 };
+  priorLoss.devices[0].notes = "n".repeat(301);
+  const restored = parseNormalizedCaptureFixture(JSON.stringify(priorLoss));
+  assert.equal(restored.devices[0].notes.length, 300);
+  assert.equal(restored.meta.fixtureSanitizationLoss.count, 3);
+  const restoredAgain = parseNormalizedCaptureFixture(JSON.stringify(restored));
+  assert.equal(restoredAgain.devices[0].notes, restored.devices[0].notes);
+  assert.equal(restoredAgain.meta.fixtureSanitizationLoss.count, 3);
 });
 
 run("fixture validator counts discarded, truncated, and clamped supplied fields", () => {
