@@ -891,9 +891,17 @@ run("packet highway trust notices explain partial results and export metadata", 
   assert.match(importedMarkup, /Saved analysis JSON/);
   assert.match(importedMarkup, /not raw-capture evidence/);
   assert.match(importedMarkup, /CSV inventory is not reapplied/);
+  assert.doesNotMatch(importedMarkup, /sanitation loss/);
+  assert.match(lossyImportedMarkup, /CSV inventory is not reapplied/);
   assert.match(lossyImportedMarkup, /1 fixture record or field was/);
+  assert.match(pluralLossyImportedMarkup, /CSV inventory is not reapplied/);
   assert.match(pluralLossyImportedMarkup, /2 fixture records or fields were/);
   assert.match(lossyImportedMarkup, /sanitation loss, not ignored packet loss/);
+  assert.match(pluralLossyImportedMarkup, /sanitation loss, not ignored packet loss/);
+  assert.doesNotMatch(sampleMarkup, /sanitation loss/);
+  assert.doesNotMatch(rawMarkup, /sanitation loss/);
+  assert.equal((lossyImportedMarkup.match(/CSV inventory is not reapplied/g) ?? []).length, 1);
+  assert.equal((pluralLossyImportedMarkup.match(/CSV inventory is not reapplied/g) ?? []).length, 1);
 });
 
 run("packet highway page clears stale analysis before a new analyze attempt", () => {
