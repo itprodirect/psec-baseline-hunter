@@ -1320,17 +1320,92 @@ run("fixture validator adds independent replacements and preserves prior loss id
 });
 
 run("fixture validator counts malformed flow fields path-invariantly", () => {
-  const cases = [
+  const applyAllSecondaryDefects = (flow) => {
+    flow.id = 42;
+    flow.fromId = false;
+    flow.toId = { synthetic: "invalid" };
+    flow.packets = -1;
+    flow.bytes = "synthetic-invalid-bytes";
+    flow.bytesFromInitiator = -2;
+    flow.firstSeen = "synthetic-invalid-first-seen";
+    flow.lastSeen = "synthetic-invalid-last-seen";
+  };
+  const assertAllSecondaryReplacements = (flow) => {
+    assert.equal(flow.id, "flow-unknown");
+    assert.equal(flow.fromId, "");
+    assert.equal(flow.toId, "");
+    assert.equal(flow.packets, 0);
+    assert.equal(flow.bytes, 0);
+    assert.equal(flow.bytesFromInitiator, 0);
+    assert.equal(flow.firstSeen, null);
+    assert.equal(flow.lastSeen, null);
+  };
+  const secondaryCases = [
     {
-      name: "invalid scope and protocol",
+      name: "id",
+      mutate: (flow) => { flow.id = 42; },
+      assertReplacement: (flow) => assert.equal(flow.id, "flow-unknown"),
+    },
+    {
+      name: "fromId",
+      mutate: (flow) => { flow.fromId = false; },
+      assertReplacement: (flow) => assert.equal(flow.fromId, ""),
+    },
+    {
+      name: "toId",
+      mutate: (flow) => { flow.toId = { synthetic: "invalid" }; },
+      assertReplacement: (flow) => assert.equal(flow.toId, ""),
+    },
+    {
+      name: "packets",
+      mutate: (flow) => { flow.packets = -1; },
+      assertReplacement: (flow) => assert.equal(flow.packets, 0),
+    },
+    {
+      name: "bytes",
+      mutate: (flow) => { flow.bytes = "synthetic-invalid-bytes"; },
+      assertReplacement: (flow) => assert.equal(flow.bytes, 0),
+    },
+    {
+      name: "bytesFromInitiator",
+      mutate: (flow) => { flow.bytesFromInitiator = -2; },
+      assertReplacement: (flow) => assert.equal(flow.bytesFromInitiator, 0),
+    },
+    {
+      name: "firstSeen",
+      mutate: (flow) => { flow.firstSeen = "synthetic-invalid-first-seen"; },
+      assertReplacement: (flow) => assert.equal(flow.firstSeen, null),
+    },
+    {
+      name: "lastSeen",
+      mutate: (flow) => { flow.lastSeen = "synthetic-invalid-last-seen"; },
+      assertReplacement: (flow) => assert.equal(flow.lastSeen, null),
+    },
+  ];
+  const cases = [
+    ...secondaryCases.map((testCase) => ({
+      name: `invalid scope plus malformed ${testCase.name}`,
       expectedLoss: 2,
       mutate: (flow) => {
         flow.scope = "synthetic-invalid-scope";
-        flow.protocol = "synthetic-invalid-protocol";
+        testCase.mutate(flow);
       },
       assertReplacement: (flow) => {
         assert.equal(flow.scope, "external");
-        assert.equal(flow.protocol, "other");
+        testCase.assertReplacement(flow);
+      },
+      dropped: true,
+    })),
+    {
+      name: "invalid scope plus all malformed secondary fields",
+      expectedLoss: 9,
+      mutate: (flow) => {
+        flow.scope = "synthetic-invalid-scope";
+        applyAllSecondaryDefects(flow);
+      },
+      assertReplacement: (flow) => {
+        assert.equal(flow.scope, "external");
+        assertAllSecondaryReplacements(flow);
       },
       dropped: true,
     },
@@ -1348,13 +1423,20 @@ run("fixture validator counts malformed flow fields path-invariantly", () => {
       dropped: true,
     },
     {
-      name: "one invalid category",
+      name: "one invalid critical field",
       expectedLoss: 1,
       mutate: (flow) => {
-        flow.category = "synthetic-invalid-category";
+        flow.scope = "synthetic-invalid-scope";
       },
-      assertReplacement: (flow) => assert.equal(flow.category, "other"),
+      assertReplacement: (flow) => assert.equal(flow.scope, "external"),
       dropped: true,
+    },
+    {
+      name: "one malformed secondary field",
+      expectedLoss: 1,
+      mutate: (flow) => { flow.id = 42; },
+      assertReplacement: (flow) => assert.equal(flow.id, "flow-unknown"),
+      dropped: false,
     },
     {
       name: "valid flow",
@@ -1386,14 +1468,30 @@ run("fixture validator counts malformed flow fields path-invariantly", () => {
     testCase.assertReplacement(analyze.flows[0]);
     assert.equal(observation.flows.length, testCase.dropped ? 0 : 1,
       `${testCase.name}: observation drop policy`);
+    if (!testCase.dropped) {
+      assert.deepEqual(observation.flows[0], analyze.flows[0],
+        `${testCase.name}: retained replacement parity`);
+    }
+  }
+
+  const nonObjectEntry = JSON.parse(JSON.stringify(buildDemoCapture()));
+  nonObjectEntry.flows = [nonObjectEntry.flows[0], "synthetic-non-object-flow"];
+  nonObjectEntry.animationEvents = [];
+  for (const dropInvalidFlows of [false, true]) {
+    const sanitized = parseNormalizedCaptureFixture(JSON.stringify(nonObjectEntry), {
+      dropInvalidFlows,
+    });
+    assert.equal(sanitized.meta.fixtureSanitizationLoss.count, 1,
+      `non-object entry: ${dropInvalidFlows ? "observation" : "analyze"}`);
+    assert.equal(sanitized.flows.length, 1);
   }
 
   const withPriorLoss = JSON.parse(JSON.stringify(buildDemoCapture()));
   withPriorLoss.flows = [withPriorLoss.flows[0]];
   withPriorLoss.animationEvents = [];
-  withPriorLoss.meta.fixtureSanitizationLoss = { count: 999_999 };
+  withPriorLoss.meta.fixtureSanitizationLoss = { count: 999_995 };
   withPriorLoss.flows[0].scope = "synthetic-invalid-scope";
-  withPriorLoss.flows[0].protocol = "synthetic-invalid-protocol";
+  applyAllSecondaryDefects(withPriorLoss.flows[0]);
 
   for (const dropInvalidFlows of [false, true]) {
     const sanitized = parseNormalizedCaptureFixture(JSON.stringify(withPriorLoss), {

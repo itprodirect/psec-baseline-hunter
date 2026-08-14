@@ -4194,19 +4194,33 @@ run("TV-02 malformed flow loss stays path-invariant through observation persiste
     malformed.meta.ignoredPackets = 0;
     malformed.meta.truncated = false;
     malformed.flows[0].scope = "synthetic-invalid-scope";
-    malformed.flows[0].protocol = "synthetic-invalid-protocol";
+    malformed.flows[0].id = 42;
+    malformed.flows[0].fromId = false;
+    malformed.flows[0].toId = { synthetic: "invalid" };
+    malformed.flows[0].packets = -1;
+    malformed.flows[0].bytes = "synthetic-invalid-bytes";
+    malformed.flows[0].bytesFromInitiator = -2;
+    malformed.flows[0].firstSeen = "synthetic-invalid-first-seen";
+    malformed.flows[0].lastSeen = "synthetic-invalid-last-seen";
 
     const analyze = parseNormalizedCaptureFixture(JSON.stringify(malformed));
     const directObservation = parseNormalizedCaptureFixture(JSON.stringify(malformed), {
       dropInvalidFlows: true,
     });
-    assert.equal(analyze.meta.fixtureSanitizationLoss.count, 2);
-    assert.equal(directObservation.meta.fixtureSanitizationLoss.count, 2);
+    assert.equal(analyze.meta.fixtureSanitizationLoss.count, 9);
+    assert.equal(directObservation.meta.fixtureSanitizationLoss.count, 9);
     assert.equal(analyze.meta.ignoredPackets, 0);
     assert.equal(directObservation.meta.ignoredPackets, 0);
     assert.equal(analyze.flows.length, 1);
     assert.equal(analyze.flows[0].scope, "external");
-    assert.equal(analyze.flows[0].protocol, "other");
+    assert.equal(analyze.flows[0].id, "flow-unknown");
+    assert.equal(analyze.flows[0].fromId, "");
+    assert.equal(analyze.flows[0].toId, "");
+    assert.equal(analyze.flows[0].packets, 0);
+    assert.equal(analyze.flows[0].bytes, 0);
+    assert.equal(analyze.flows[0].bytesFromInitiator, 0);
+    assert.equal(analyze.flows[0].firstSeen, null);
+    assert.equal(analyze.flows[0].lastSeen, null);
     assert.equal(directObservation.flows.length, 0);
 
     const bundle = adaptPacketHighwayCaptureToObservationBundleV1({
@@ -4216,14 +4230,14 @@ run("TV-02 malformed flow loss stays path-invariant through observation persiste
     });
     const retained = bundle.supplementalEvidence[0].packetHighway.capture;
     const coverageNotes = bundle.coverage.notes.join("\n");
-    assert.equal(retained.meta.fixtureSanitizationLoss.count, 2);
+    assert.equal(retained.meta.fixtureSanitizationLoss.count, 9);
     assert.equal(retained.meta.ignoredPackets, 0);
     assert.equal(retained.flows.length, 1);
-    assert.equal(normalizationLossCount(bundle, fixtureLossCode), 2);
+    assert.equal(normalizationLossCount(bundle, fixtureLossCode), 9);
     assert.equal(normalizationLossCount(bundle, packetLossCode), 0);
     assert.equal(bundle.normalization.status, "lossy");
     assert.equal(bundle.batch.partial, true);
-    assert.match(coverageNotes, /2 fixture records or fields were discarded or replaced/i);
+    assert.match(coverageNotes, /9 fixture records or fields were discarded or replaced/i);
     assert.doesNotMatch(coverageNotes, /packets were ignored/i);
     assert.throws(
       () => compareObservationBundlesV1(bundle, cloneJson(bundle)),
@@ -4235,9 +4249,9 @@ run("TV-02 malformed flow loss stays path-invariant through observation persiste
     assert.equal(
       sanitizedAgain.supplementalEvidence[0].packetHighway.capture.meta
         .fixtureSanitizationLoss.count,
-      2
+      9
     );
-    assert.equal(normalizationLossCount(sanitizedAgain, fixtureLossCode), 2);
+    assert.equal(normalizationLossCount(sanitizedAgain, fixtureLossCode), 9);
 
     const result = registerSupplementalObservationBundle(sanitizedAgain, {
       importedAt: "2026-05-04T11:01:00.000Z",
@@ -4252,11 +4266,22 @@ run("TV-02 malformed flow loss stays path-invariant through observation persiste
     assert.ok(firstReopen);
     assert.ok(secondReopen);
 
+    const persistedRecord = JSON.parse(fs.readFileSync(
+      observationRegistryRecordPath(result.record.registryId),
+      "utf-8"
+    ));
+    assert.equal(
+      persistedRecord.bundle.supplementalEvidence[0].packetHighway.capture.meta
+        .fixtureSanitizationLoss.count,
+      9
+    );
+    assert.equal(normalizationLossCount(persistedRecord.bundle, fixtureLossCode), 9);
+
     for (const reopened of [firstReopen, secondReopen]) {
       const persisted = reopened.bundle.supplementalEvidence[0].packetHighway.capture;
-      assert.equal(persisted.meta.fixtureSanitizationLoss.count, 2);
+      assert.equal(persisted.meta.fixtureSanitizationLoss.count, 9);
       assert.equal(persisted.meta.ignoredPackets, 0);
-      assert.equal(normalizationLossCount(reopened.bundle, fixtureLossCode), 2);
+      assert.equal(normalizationLossCount(reopened.bundle, fixtureLossCode), 9);
       assert.equal(normalizationLossCount(reopened.bundle, packetLossCode), 0);
       assert.equal(reopened.bundle.normalization.status, "lossy");
       assert.equal(reopened.bundle.batch.partial, true);

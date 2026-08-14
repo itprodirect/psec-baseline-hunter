@@ -509,19 +509,27 @@ function sanitizeFlow(
   if (!validProtocol) recordFixtureLoss(loss, 1);
   if (!validCategory) recordFixtureLoss(loss, 1);
   if (!validPort) recordFixtureLoss(loss, 1);
+  const id = str(raw.id, 40, loss, "flow-unknown");
+  const fromId = str(raw.fromId, 40, loss);
+  const toId = str(raw.toId, 40, loss);
+  const packets = num(raw.packets, loss);
+  const bytes = num(raw.bytes, loss);
+  const bytesFromInitiator = num(raw.bytesFromInitiator, loss);
+  const firstSeen = isoOrNull(raw.firstSeen, loss);
+  const lastSeen = isoOrNull(raw.lastSeen, loss);
   if (invalid && dropInvalid) return null;
   return {
-    id: str(raw.id, 40, loss, "flow-unknown"),
-    fromId: str(raw.fromId, 40, loss),
-    toId: str(raw.toId, 40, loss),
+    id,
+    fromId,
+    toId,
     protocol: validProtocol ? raw.protocol as TrafficProtocol : "other",
     port: validPort && raw.port != null ? raw.port as number : null,
     category: validCategory ? raw.category as ServiceCategory : "other",
-    packets: num(raw.packets, loss),
-    bytes: num(raw.bytes, loss),
-    bytesFromInitiator: num(raw.bytesFromInitiator, loss),
-    firstSeen: isoOrNull(raw.firstSeen, loss),
-    lastSeen: isoOrNull(raw.lastSeen, loss),
+    packets,
+    bytes,
+    bytesFromInitiator,
+    firstSeen,
+    lastSeen,
     scope: validScope ? raw.scope as TrafficFlow["scope"] : "external",
   };
 }
