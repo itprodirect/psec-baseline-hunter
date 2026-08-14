@@ -1641,6 +1641,109 @@ run("observation bundle adapter converts a synthetic registered scan run", async
   });
 });
 
+run("TV-01 Windows ARP header preserves complete scan authority and malformed rows remain fail-closed", async () => {
+  await withTempCwd(async () => {
+    const windowsArp = [
+      "Interface: 192.0.2.1 --- 0x1",
+      "  Internet Address      Physical Address      Type",
+      "  192.0.2.10            02-00-00-00-00-10     dynamic",
+      "  192.0.2.20            02-00-00-00-00-20     dynamic",
+      "",
+    ].join("\n");
+    const expectedArpPairs = [
+      "192.0.2.10 02:00:00:00:00:10",
+      "192.0.2.20 02:00:00:00:00:20",
+    ];
+
+    const adaptWindowsRun = (runUid, times) => {
+      const manifest = writeObservationRunFixture({ runUid });
+      fs.writeFileSync(manifest.keyFiles.snapshots[0], windowsArp);
+      const bundle = adaptRunManifestToObservationBundleV1(manifest, {
+        generatedAt: times.generatedAt,
+      });
+      setObservationBundleTimes(bundle, times);
+      return bundle;
+    };
+
+    const baseline = adaptWindowsRun("synthetic-windows-arp-baseline", {
+      startedAt: "2026-04-01T11:59:00.000Z",
+      endedAt: "2026-04-01T12:05:00.000Z",
+      generatedAt: "2026-04-01T12:06:00.000Z",
+    });
+    const current = adaptWindowsRun("synthetic-windows-arp-current", {
+      startedAt: "2026-04-08T11:59:00.000Z",
+      endedAt: "2026-04-08T12:05:00.000Z",
+      generatedAt: "2026-04-08T12:06:00.000Z",
+    });
+
+    const arpPairs = current.devices
+      .flatMap((device) => device.identityEvidence)
+      .filter((evidence) => evidence.kind === "arp-neighbor")
+      .map((evidence) => evidence.value)
+      .sort();
+    assert.deepEqual(arpPairs, expectedArpPairs);
+    assert.deepEqual(current.normalization, { status: "complete", losses: [] });
+    assert.equal(current.coverage.status, "complete");
+    assert.deepEqual(current.coverage.missingSources, []);
+    assert.equal(current.batch.partial, false);
+
+    const comparison = compareObservationBundlesV1(baseline, current, {
+      evaluatedAt: "2026-04-08T12:06:00.000Z",
+    });
+    assert.equal(comparison.ruleVersion, "psec.observation-comparison.v1");
+
+    const baselineResult = registerCanonicalObservationBundle(baseline, {
+      importedAt: "2026-04-08T12:07:00.000Z",
+      evaluatedAt: "2026-04-08T12:08:00.000Z",
+    });
+    const currentResult = registerCanonicalObservationBundle(current, {
+      importedAt: "2026-04-08T12:09:00.000Z",
+      evaluatedAt: "2026-04-08T12:10:00.000Z",
+    });
+    assert.equal(baselineResult.record.normalization.status, "complete");
+    assert.equal(currentResult.record.normalization.status, "complete");
+
+    const statement = buildNetworkStatement({
+      siteId: current.site.siteId,
+      from: "2026-04-01T00:00:00.000Z",
+      to: "2026-04-09T00:00:00.000Z",
+      evaluatedAt: "2026-04-09T00:00:00.000Z",
+    });
+    assert.equal(statement.status, "ready");
+    assert.equal(statement.coverageSummary.primaryObservationCount, 2);
+    assert.equal(statement.coverageSummary.comparisonCount, 1);
+
+    const malformedManifest = writeObservationRunFixture({
+      runUid: "synthetic-windows-arp-malformed-control",
+    });
+    fs.writeFileSync(
+      malformedManifest.keyFiles.snapshots[0],
+      `${windowsArp}synthetic malformed data row\n`
+    );
+    const malformed = adaptRunManifestToObservationBundleV1(malformedManifest, {
+      generatedAt: "2026-04-15T12:06:00.000Z",
+    });
+    setObservationBundleTimes(malformed, {
+      startedAt: "2026-04-15T11:59:00.000Z",
+      endedAt: "2026-04-15T12:05:00.000Z",
+      generatedAt: "2026-04-15T12:06:00.000Z",
+    });
+    assert.equal(normalizationLossCount(malformed, "invalid-ip-address-dropped"), 1);
+    assert.equal(malformed.normalization.status, "lossy");
+    assert.equal(malformed.coverage.status, "partial");
+    assert.equal(malformed.batch.partial, true);
+    assert.ok(malformed.devices.some((device) =>
+      device.identityEvidence.some((evidence) =>
+        evidence.kind === "arp-neighbor" && evidence.value === expectedArpPairs[0]
+      )
+    ));
+    assert.throws(
+      () => compareObservationBundlesV1(current, malformed),
+      (error) => isObservationComparisonError(error) && error.code === "review_only_observation"
+    );
+  });
+});
+
 run("observation bundle adapter treats missing optional artifacts as partial coverage", async () => {
   await withTempCwd(async () => {
     const manifest = writeObservationRunFixture({ includeOptional: false });
@@ -4052,8 +4155,20 @@ run("packet highway save API drops malformed flows before persistence and reopen
     const reopenedFlows = reopened.supplementalEvidence[0].packetHighway.capture.flows;
     assert.deepEqual(reopenedFlows.map((flow) => flow.id), ["flow-1"]);
     assert.equal(reopenedFlows[0].scope, "external");
-    assert.equal(normalizationLossCount(reopened, "packet-highway-records-ignored"), 4);
-    assert.ok(normalizationLossCount(reopened, "packet-highway-capture-truncated") > 0);
+    assert.equal(normalizationLossCount(reopened, "packet-highway-records-ignored"), 0);
+    assert.equal(
+      normalizationLossCount(reopened, "packet-highway-fixture-sanitization-loss"),
+      4
+    );
+    assert.equal(normalizationLossCount(reopened, "packet-highway-capture-truncated"), 0);
+    assert.equal(
+      reopened.supplementalEvidence[0].packetHighway.capture.meta.ignoredPackets,
+      0
+    );
+    assert.equal(
+      reopened.supplementalEvidence[0].packetHighway.capture.meta.fixtureSanitizationLoss.count,
+      4
+    );
     assert.doesNotMatch(JSON.stringify(reopened.normalization),
       /hostile|private|flow-bad|external:C|tcp:\/tmp/i);
     assert.doesNotMatch(JSON.stringify(getBody), /hostile\.pcap|tcp:\/tmp\/hostile|https:C:\\private/i);
@@ -4065,6 +4180,494 @@ run("packet highway save API drops malformed flows before persistence and reopen
     );
     assert.deepEqual(sanitizedAgain.normalization, reopened.normalization);
   });
+});
+
+run("TV-02 malformed flow loss stays path-invariant through observation persistence", async () => {
+  const { parseNormalizedCaptureFixture } = await import(
+    "../src/lib/services/capture-upload-safety.ts"
+  );
+
+  await withTempCwd(async () => {
+    const fixtureLossCode = "packet-highway-fixture-sanitization-loss";
+    const packetLossCode = "packet-highway-records-ignored";
+    const malformed = createPacketHighwayCapture();
+    malformed.meta.ignoredPackets = 0;
+    malformed.meta.truncated = false;
+    malformed.flows[0].scope = "synthetic-invalid-scope";
+    malformed.flows[0].id = 42;
+    malformed.flows[0].fromId = false;
+    malformed.flows[0].toId = { synthetic: "invalid" };
+    malformed.flows[0].packets = -1;
+    malformed.flows[0].bytes = "synthetic-invalid-bytes";
+    malformed.flows[0].bytesFromInitiator = -2;
+    malformed.flows[0].firstSeen = "synthetic-invalid-first-seen";
+    malformed.flows[0].lastSeen = "synthetic-invalid-last-seen";
+
+    const analyze = parseNormalizedCaptureFixture(JSON.stringify(malformed));
+    const directObservation = parseNormalizedCaptureFixture(JSON.stringify(malformed), {
+      dropInvalidFlows: true,
+    });
+    assert.equal(analyze.meta.fixtureSanitizationLoss.count, 9);
+    assert.equal(directObservation.meta.fixtureSanitizationLoss.count, 9);
+    assert.equal(analyze.meta.ignoredPackets, 0);
+    assert.equal(directObservation.meta.ignoredPackets, 0);
+    assert.equal(analyze.flows.length, 1);
+    assert.equal(analyze.flows[0].scope, "external");
+    assert.equal(analyze.flows[0].id, "flow-unknown");
+    assert.equal(analyze.flows[0].fromId, "");
+    assert.equal(analyze.flows[0].toId, "");
+    assert.equal(analyze.flows[0].packets, 0);
+    assert.equal(analyze.flows[0].bytes, 0);
+    assert.equal(analyze.flows[0].bytesFromInitiator, 0);
+    assert.equal(analyze.flows[0].firstSeen, null);
+    assert.equal(analyze.flows[0].lastSeen, null);
+    assert.equal(directObservation.flows.length, 0);
+
+    const bundle = adaptPacketHighwayCaptureToObservationBundleV1({
+      capture: analyze,
+      site: { networkName: "tv-02-path-invariant-flow-loss" },
+      collectionVantage: "gateway-router",
+    });
+    const retained = bundle.supplementalEvidence[0].packetHighway.capture;
+    const coverageNotes = bundle.coverage.notes.join("\n");
+    assert.equal(retained.meta.fixtureSanitizationLoss.count, 9);
+    assert.equal(retained.meta.ignoredPackets, 0);
+    assert.equal(retained.flows.length, 1);
+    assert.equal(normalizationLossCount(bundle, fixtureLossCode), 9);
+    assert.equal(normalizationLossCount(bundle, packetLossCode), 0);
+    assert.equal(bundle.normalization.status, "lossy");
+    assert.equal(bundle.batch.partial, true);
+    assert.match(coverageNotes, /9 fixture records or fields were discarded or replaced/i);
+    assert.doesNotMatch(coverageNotes, /packets were ignored/i);
+    assert.throws(
+      () => compareObservationBundlesV1(bundle, cloneJson(bundle)),
+      (error) => isObservationComparisonError(error) &&
+        error.code === "review_only_observation"
+    );
+
+    const sanitizedAgain = sanitizeSupplementalObservationBundleV1(bundle);
+    assert.equal(
+      sanitizedAgain.supplementalEvidence[0].packetHighway.capture.meta
+        .fixtureSanitizationLoss.count,
+      9
+    );
+    assert.equal(normalizationLossCount(sanitizedAgain, fixtureLossCode), 9);
+
+    const result = registerSupplementalObservationBundle(sanitizedAgain, {
+      importedAt: "2026-05-04T11:01:00.000Z",
+      evaluatedAt: "2026-05-04T11:02:00.000Z",
+    });
+    const firstReopen = getObservationById(result.record.registryId, {
+      evaluatedAt: "2026-05-04T11:02:00.000Z",
+    });
+    const secondReopen = getObservationById(result.record.registryId, {
+      evaluatedAt: "2026-05-04T11:02:00.000Z",
+    });
+    assert.ok(firstReopen);
+    assert.ok(secondReopen);
+
+    const persistedRecord = JSON.parse(fs.readFileSync(
+      observationRegistryRecordPath(result.record.registryId),
+      "utf-8"
+    ));
+    assert.equal(
+      persistedRecord.bundle.supplementalEvidence[0].packetHighway.capture.meta
+        .fixtureSanitizationLoss.count,
+      9
+    );
+    assert.equal(normalizationLossCount(persistedRecord.bundle, fixtureLossCode), 9);
+
+    for (const reopened of [firstReopen, secondReopen]) {
+      const persisted = reopened.bundle.supplementalEvidence[0].packetHighway.capture;
+      assert.equal(persisted.meta.fixtureSanitizationLoss.count, 9);
+      assert.equal(persisted.meta.ignoredPackets, 0);
+      assert.equal(normalizationLossCount(reopened.bundle, fixtureLossCode), 9);
+      assert.equal(normalizationLossCount(reopened.bundle, packetLossCode), 0);
+      assert.equal(reopened.bundle.normalization.status, "lossy");
+      assert.equal(reopened.bundle.batch.partial, true);
+    }
+  });
+});
+
+run("TV-02 fixture sanitation loss stays separate from parser packet loss through persistence", async () => {
+  await withTempCwd(async () => {
+    const cases = [
+      {
+        name: "clean legacy control",
+        mutate: (capture) => delete capture.meta.fixtureSanitizationLoss,
+        expectedLoss: 0,
+      },
+      {
+        name: "over-limit array",
+        mutate: (capture) => {
+          capture.devices[0].ips = Array.from(
+            { length: 17 },
+            (_, index) => `198.51.100.${index + 1}`
+          );
+        },
+        expectedLoss: 1,
+      },
+      {
+        name: "missing nested array",
+        mutate: (capture) => delete capture.devices[0].ips,
+        expectedLoss: 1,
+      },
+      {
+        name: "invalid flow field",
+        mutate: (capture) => {
+          capture.flows[0].scope = "synthetic-invalid-scope";
+        },
+        expectedLoss: 1,
+      },
+      {
+        name: "invalid supplied replacements",
+        mutate: (capture) => {
+          capture.devices[0].role = "administrator";
+          capture.animationEvents[0].category = "synthetic-invalid-category";
+          capture.dnsQueries[0].kind = "synthetic-invalid-kind";
+          capture.alerts[0].level = "synthetic-invalid-level";
+          capture.meta.packetCount = "synthetic-invalid-count";
+        },
+        expectedLoss: 5,
+      },
+      {
+        name: "existing plural sanitation loss",
+        mutate: (capture) => {
+          capture.meta.fixtureSanitizationLoss = { count: 2 };
+        },
+        expectedLoss: 2,
+      },
+    ];
+
+    for (const testCase of cases) {
+      const capture = createPacketHighwayCapture();
+      capture.meta.ignoredPackets = 0;
+      capture.meta.truncated = false;
+      testCase.mutate(capture);
+
+      const bundle = adaptPacketHighwayCaptureToObservationBundleV1({
+        capture,
+        site: { networkName: `tv-02-${testCase.name.replace(/\s+/g, "-")}` },
+        collectionVantage: "gateway-router",
+      });
+      const retained = bundle.supplementalEvidence[0].packetHighway.capture;
+      const coverageNotes = bundle.coverage.notes.join("\n");
+
+      assert.equal(retained.meta.ignoredPackets, 0, testCase.name);
+      assert.equal(
+        retained.meta.fixtureSanitizationLoss.count,
+        testCase.expectedLoss,
+        testCase.name
+      );
+      assert.equal(
+        normalizationLossCount(bundle, "packet-highway-records-ignored"),
+        0,
+        testCase.name
+      );
+      assert.doesNotMatch(coverageNotes, /packets were ignored/i, testCase.name);
+
+      if (testCase.expectedLoss === 0) {
+        assert.equal(
+          normalizationLossCount(bundle, "packet-highway-fixture-sanitization-loss"),
+          0,
+          testCase.name
+        );
+        assert.doesNotMatch(coverageNotes, /fixture record|fixture records/i, testCase.name);
+      } else {
+        assert.equal(
+          normalizationLossCount(bundle, "packet-highway-fixture-sanitization-loss"),
+          testCase.expectedLoss,
+          testCase.name
+        );
+        assert.equal(bundle.normalization.status, "lossy", testCase.name);
+        assert.equal(bundle.batch.partial, true, testCase.name);
+        const subject = testCase.expectedLoss === 1
+          ? "fixture record or field was"
+          : "fixture records or fields were";
+        const lossCopy = new RegExp(
+          `${testCase.expectedLoss} ${subject} discarded or replaced`,
+          "i"
+        );
+        assert.match(coverageNotes, lossCopy, testCase.name);
+        assert.throws(
+          () => compareObservationBundlesV1(bundle, cloneJson(bundle)),
+          (error) => isObservationComparisonError(error) &&
+            error.code === "review_only_observation",
+          testCase.name
+        );
+      }
+
+      const result = registerSupplementalObservationBundle(bundle, {
+        importedAt: "2026-05-04T11:01:00.000Z",
+        evaluatedAt: "2026-05-04T11:02:00.000Z",
+      });
+      const reopened = getObservationById(result.record.registryId, {
+        evaluatedAt: "2026-05-04T11:02:00.000Z",
+      });
+      assert.ok(reopened, testCase.name);
+      const persisted = reopened.bundle.supplementalEvidence[0].packetHighway.capture;
+      assert.equal(persisted.meta.ignoredPackets, 0, testCase.name);
+      assert.equal(
+        persisted.meta.fixtureSanitizationLoss.count,
+        testCase.expectedLoss,
+        testCase.name
+      );
+      assert.equal(
+        normalizationLossCount(reopened.bundle, "packet-highway-records-ignored"),
+        0,
+        testCase.name
+      );
+      assert.equal(
+        normalizationLossCount(reopened.bundle, "packet-highway-fixture-sanitization-loss"),
+        testCase.expectedLoss,
+        testCase.name
+      );
+    }
+  });
+});
+
+run("TV-02 device-note retention boundary is loss-aware and idempotent", async () => {
+  await withTempCwd(async () => {
+    const fixtureLossCode = "packet-highway-fixture-sanitization-loss";
+    const packetLossCode = "packet-highway-records-ignored";
+    const cases = [
+      { length: 299, priorLoss: 0, expectedLength: 299, expectedLoss: 0 },
+      { length: 300, priorLoss: 0, expectedLength: 300, expectedLoss: 0 },
+      { length: 301, priorLoss: 0, expectedLength: 300, expectedLoss: 1 },
+      { length: 500, priorLoss: 0, expectedLength: 300, expectedLoss: 1 },
+      { length: 301, priorLoss: 2, expectedLength: 300, expectedLoss: 3 },
+    ];
+
+    for (const testCase of cases) {
+      const context = `note length ${testCase.length}; prior loss ${testCase.priorLoss}`;
+      const capture = createPacketHighwayCapture();
+      capture.devices[0].notes = "n".repeat(testCase.length);
+      capture.meta.fixtureSanitizationLoss = { count: testCase.priorLoss };
+      capture.meta.ignoredPackets = 0;
+      capture.meta.truncated = false;
+
+      const bundle = adaptPacketHighwayCaptureToObservationBundleV1({
+        capture,
+        site: {
+          networkName: `synthetic-note-${testCase.length}-${testCase.priorLoss}`,
+        },
+        collectionVantage: "gateway-router",
+      });
+      const retained = bundle.supplementalEvidence[0].packetHighway.capture;
+      const retainedNote = retained.devices[0].notes;
+      const coverageNotes = bundle.coverage.notes.join("\n");
+
+      assert.equal(retainedNote.length, testCase.expectedLength, context);
+      assert.equal(
+        retained.meta.fixtureSanitizationLoss.count,
+        testCase.expectedLoss,
+        context
+      );
+      assert.equal(retained.meta.ignoredPackets, 0, context);
+      assert.equal(normalizationLossCount(bundle, packetLossCode), 0, context);
+      assert.doesNotMatch(coverageNotes, /packets were ignored/i, context);
+
+      if (testCase.expectedLoss === 0) {
+        assert.equal(normalizationLossCount(bundle, fixtureLossCode), 0, context);
+        assert.doesNotMatch(coverageNotes, /fixture record|fixture records/i, context);
+      } else {
+        assert.equal(
+          normalizationLossCount(bundle, fixtureLossCode),
+          testCase.expectedLoss,
+          context
+        );
+        assert.equal(bundle.normalization.status, "lossy", context);
+        assert.equal(bundle.batch.partial, true, context);
+        assert.match(coverageNotes, /fixture records? or fields? (?:was|were) discarded or replaced/i,
+          context);
+        assert.throws(
+          () => compareObservationBundlesV1(bundle, cloneJson(bundle)),
+          (error) => isObservationComparisonError(error) &&
+            error.code === "review_only_observation",
+          context
+        );
+      }
+
+      const sanitizedAgain = sanitizeSupplementalObservationBundleV1(bundle);
+      const repeated = sanitizedAgain.supplementalEvidence[0].packetHighway.capture;
+      assert.equal(repeated.devices[0].notes, retainedNote, context);
+      assert.equal(
+        repeated.meta.fixtureSanitizationLoss.count,
+        testCase.expectedLoss,
+        context
+      );
+
+      const result = registerSupplementalObservationBundle(sanitizedAgain, {
+        importedAt: "2026-05-04T11:01:00.000Z",
+        evaluatedAt: "2026-05-04T11:02:00.000Z",
+      });
+      const firstReopen = getObservationById(result.record.registryId, {
+        evaluatedAt: "2026-05-04T11:02:00.000Z",
+      });
+      const secondReopen = getObservationById(result.record.registryId, {
+        evaluatedAt: "2026-05-04T11:02:00.000Z",
+      });
+      assert.ok(firstReopen, context);
+      assert.ok(secondReopen, context);
+      for (const reopened of [firstReopen, secondReopen]) {
+        const persisted = reopened.bundle.supplementalEvidence[0].packetHighway.capture;
+        assert.equal(persisted.devices[0].notes, retainedNote, context);
+        assert.equal(
+          persisted.meta.fixtureSanitizationLoss.count,
+          testCase.expectedLoss,
+          context
+        );
+        assert.equal(persisted.meta.ignoredPackets, 0, context);
+        assert.equal(normalizationLossCount(reopened.bundle, packetLossCode), 0, context);
+        assert.equal(
+          normalizationLossCount(reopened.bundle, fixtureLossCode),
+          testCase.expectedLoss,
+          context
+        );
+      }
+    }
+  });
+});
+
+run("TV-02 aggregates independent device-note truncation across captures", () => {
+  const fixtureLossCode = "packet-highway-fixture-sanitization-loss";
+  const makeNoteEvidence = (length, index) => {
+    const capture = createPacketHighwayCapture();
+    capture.devices[0].notes = "n".repeat(length);
+    capture.meta.fixtureSanitizationLoss = { count: 0 };
+    capture.meta.ignoredPackets = 0;
+    capture.meta.truncated = false;
+    const bundle = adaptPacketHighwayCaptureToObservationBundleV1({
+      capture,
+      site: { networkName: `synthetic-note-aggregate-${index}` },
+      collectionVantage: "gateway-router",
+    });
+    const evidence = cloneJson(bundle.supplementalEvidence[0]);
+    evidence.evidenceId = `synthetic-note-evidence-${index}`;
+    return evidence;
+  };
+
+  const host = adaptPacketHighwayCaptureToObservationBundleV1({
+    capture: createPacketHighwayCapture(),
+    site: { networkName: "synthetic-note-aggregate-host" },
+    collectionVantage: "gateway-router",
+  });
+  host.supplementalEvidence = [makeNoteEvidence(301, 1), makeNoteEvidence(500, 2)];
+  host.normalization = { status: "complete", losses: [] };
+
+  const aggregate = sanitizeSupplementalObservationBundleV1(host);
+  const retained = aggregate.supplementalEvidence.map(
+    (evidence) => evidence.packetHighway.capture
+  );
+  assert.deepEqual(retained.map((capture) => capture.devices[0].notes.length), [300, 300]);
+  assert.deepEqual(
+    retained.map((capture) => capture.meta.fixtureSanitizationLoss.count),
+    [1, 1]
+  );
+  assert.deepEqual(retained.map((capture) => capture.meta.ignoredPackets), [0, 0]);
+  assert.equal(normalizationLossCount(aggregate, fixtureLossCode), 2);
+  assert.equal(normalizationLossCount(aggregate, "packet-highway-records-ignored"), 0);
+});
+
+run("TV-02 aggregates fixture sanitation loss across retained supplemental captures", async () => {
+  await withTempCwd(async () => {
+    const fixtureLossCode = "packet-highway-fixture-sanitization-loss";
+    const buildMultiCaptureBundle = (
+      fixtureLossCounts,
+      { inheritedCount, ignoredPacketCounts = [] } = {}
+    ) => {
+      const seed = createPacketHighwayCapture();
+      seed.meta.fixtureSanitizationLoss = { count: 0 };
+      seed.meta.ignoredPackets = 0;
+      seed.meta.truncated = false;
+      const bundle = adaptPacketHighwayCaptureToObservationBundleV1({
+        capture: seed,
+        site: { networkName: "tv-02-multi-capture-loss" },
+        collectionVantage: "gateway-router",
+      });
+      const template = bundle.supplementalEvidence[0];
+      bundle.supplementalEvidence = fixtureLossCounts.map((count, index) => {
+        const evidence = cloneJson(template);
+        evidence.evidenceId = `synthetic-fixture-loss-${index + 1}`;
+        evidence.packetHighway.capture.meta.fixtureSanitizationLoss = { count };
+        evidence.packetHighway.capture.meta.ignoredPackets = ignoredPacketCounts[index] ?? 0;
+        return evidence;
+      });
+      bundle.normalization = inheritedCount === undefined
+        ? { status: "complete", losses: [] }
+        : { status: "lossy", losses: [{ code: fixtureLossCode, count: inheritedCount }] };
+      return sanitizeSupplementalObservationBundleV1(bundle);
+    };
+    const retainedFixtureCounts = (bundle) => bundle.supplementalEvidence.map(
+      (evidence) => evidence.packetHighway.capture.meta.fixtureSanitizationLoss.count
+    );
+
+    const onePlusOne = buildMultiCaptureBundle([1, 1]);
+    assert.deepEqual(retainedFixtureCounts(onePlusOne), [1, 1]);
+    assert.equal(normalizationLossCount(onePlusOne, fixtureLossCode), 2);
+
+    const twoPlusThree = buildMultiCaptureBundle([2, 3]);
+    assert.deepEqual(retainedFixtureCounts(twoPlusThree), [2, 3]);
+    assert.equal(normalizationLossCount(twoPlusThree, fixtureLossCode), 5);
+
+    const persisted = registerSupplementalObservationBundle(twoPlusThree, {
+      importedAt: "2026-05-04T11:01:00.000Z",
+      evaluatedAt: "2026-05-04T11:02:00.000Z",
+    });
+    const reopened = getObservationById(persisted.record.registryId, {
+      evaluatedAt: "2026-05-04T11:02:00.000Z",
+    });
+    assert.ok(reopened);
+    assert.deepEqual(retainedFixtureCounts(reopened.bundle), [2, 3]);
+    assert.equal(normalizationLossCount(reopened.bundle, fixtureLossCode), 5);
+
+    const inheritedBelowAggregate = buildMultiCaptureBundle([2, 3], { inheritedCount: 2 });
+    assert.equal(normalizationLossCount(inheritedBelowAggregate, fixtureLossCode), 5);
+
+    const inheritedEqualAggregate = buildMultiCaptureBundle([2, 3], { inheritedCount: 5 });
+    assert.equal(normalizationLossCount(inheritedEqualAggregate, fixtureLossCode), 5);
+
+    const saturated = buildMultiCaptureBundle([600_000, 600_000]);
+    assert.deepEqual(retainedFixtureCounts(saturated), [600_000, 600_000]);
+    assert.equal(normalizationLossCount(saturated, fixtureLossCode), 1_000_000);
+
+    const retentionLimited = buildMultiCaptureBundle([1, 1, 1, 1, 1, 99]);
+    assert.deepEqual(retainedFixtureCounts(retentionLimited), [1, 1, 1, 1, 1]);
+    assert.equal(normalizationLossCount(retentionLimited, fixtureLossCode), 5);
+
+    const independentPacketLoss = buildMultiCaptureBundle([2, 3], {
+      ignoredPacketCounts: [7, 0],
+    });
+    assert.deepEqual(
+      independentPacketLoss.supplementalEvidence.map(
+        (evidence) => evidence.packetHighway.capture.meta.ignoredPackets
+      ),
+      [7, 0]
+    );
+    assert.equal(normalizationLossCount(independentPacketLoss, fixtureLossCode), 5);
+    assert.equal(normalizationLossCount(independentPacketLoss, "packet-highway-records-ignored"), 7);
+  });
+});
+
+run("TV-02 real parser packet loss retains its existing packet-loss accounting", () => {
+  const capture = createPacketHighwayCapture();
+  capture.meta.ignoredPackets = 3;
+  capture.meta.truncated = true;
+  const bundle = adaptPacketHighwayCaptureToObservationBundleV1({
+    capture,
+    site: { networkName: "tv-02-parser-loss-control" },
+    collectionVantage: "gateway-router",
+  });
+  const retained = bundle.supplementalEvidence[0].packetHighway.capture;
+
+  assert.equal(retained.meta.ignoredPackets, 3);
+  assert.equal(retained.meta.fixtureSanitizationLoss.count, 0);
+  assert.equal(normalizationLossCount(bundle, "packet-highway-records-ignored"), 3);
+  assert.equal(
+    normalizationLossCount(bundle, "packet-highway-fixture-sanitization-loss"),
+    0
+  );
+  assert.match(bundle.coverage.notes.join("\n"), /3 packets were ignored/);
 });
 
 run("packet highway save API reconciles retained source counts after discarding alerts", async () => {

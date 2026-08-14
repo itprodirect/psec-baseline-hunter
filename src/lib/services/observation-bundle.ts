@@ -3,7 +3,10 @@ import * as path from "path";
 import { isIP } from "node:net";
 import { XMLParser, XMLValidator } from "fast-xml-parser";
 import { getRunByUid, type RunManifest } from "./run-registry";
-import { parseNormalizedCaptureFixture } from "./capture-upload-safety";
+import {
+  MAX_PACKET_HIGHWAY_DEVICE_NOTE_LENGTH,
+  parseNormalizedCaptureFixture,
+} from "./capture-upload-safety";
 import { hashString } from "@/lib/utils/hash";
 import { OBSERVATION_NORMALIZATION_LOSS_CODES } from "@/lib/types/observation-bundle";
 import type {
@@ -906,7 +909,12 @@ function parseArpSnapshot(
   const seen = new Set<string>();
   for (const rawLine of content.split(/\r?\n/)) {
     const line = rawLine.trim();
-    if (!line || /^Interface:/i.test(line) || line.startsWith("#")) continue;
+    if (
+      !line ||
+      /^Interface:/i.test(line) ||
+      /^Internet\s+Address\s+Physical\s+Address\s+Type$/i.test(line) ||
+      line.startsWith("#")
+    ) continue;
     const ip = line.match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/)?.[0];
     const macMatch =
       line.match(/\b(?:[0-9a-fA-F]{2}[:-]){5}[0-9a-fA-F]{2}\b/)?.[0] ??
@@ -1776,7 +1784,27 @@ function sanitizeSupplementalEvidence(
     );
   }
 
-  return evidence.length > 0 ? evidence.slice(0, MAX_SUPPLEMENTAL_EVIDENCE) : undefined;
+  const retainedEvidence = evidence.slice(0, MAX_SUPPLEMENTAL_EVIDENCE);
+  const fixtureSanitizationLoss = retainedEvidence.reduce(
+    (total, item) => saturatingAddNormalizationLoss(
+      total,
+      item.packetHighway?.capture.meta.fixtureSanitizationLoss.count ?? 0
+    ),
+    0
+  );
+  recordRetainedLoss(
+    normalization,
+    "packet-highway-fixture-sanitization-loss",
+    fixtureSanitizationLoss
+  );
+
+  return retainedEvidence.length > 0 ? retainedEvidence : undefined;
+}
+
+function saturatingAddNormalizationLoss(total: number, count: number): number {
+  const boundedTotal = Math.min(MAX_NORMALIZATION_LOSS_COUNT, Math.max(0, Math.floor(total)));
+  const boundedCount = Math.min(MAX_NORMALIZATION_LOSS_COUNT, Math.max(0, Math.floor(count)));
+  return Math.min(MAX_NORMALIZATION_LOSS_COUNT, boundedTotal + boundedCount);
 }
 
 function isUntrustedPacketHighwayOrigin(origin: ObservationOriginKind): boolean {
@@ -1891,7 +1919,7 @@ function sanitizePacketHighwayCaptureForObservation(
         ips,
         name: safeTextOrNull(device.name, 80),
         vendor: safeTextOrNull(device.vendor, 80),
-        notes: safeTextOrNull(device.notes, 300),
+        notes: safeTextOrNull(device.notes, MAX_PACKET_HIGHWAY_DEVICE_NOTE_LENGTH),
       };
     }),
     externalEndpoints: capture.externalEndpoints.map((endpoint) => ({

@@ -383,6 +383,7 @@ const {
   safety: {
     MAX_CAPTURE_BYTES,
     MAX_FIXTURE_BYTES,
+    MAX_PACKET_HIGHWAY_DEVICE_NOTE_LENGTH,
     assertCaptureRequestContentLength,
     assertCaptureUploadSize,
     parseNormalizedCaptureFixture,
@@ -854,6 +855,28 @@ run("packet highway trust notices explain partial results and export metadata", 
       isDemo: false,
     })
   );
+  const lossyFixture = JSON.parse(JSON.stringify(buildDemoCapture()));
+  lossyFixture.devices[0].ips = Array.from(
+    { length: 17 },
+    (_, index) => `198.51.100.${index + 1}`
+  );
+  const lossyImportedMarkup = renderToStaticMarkup(
+    React.createElement(AnalysisSourceNotice, {
+      capture: parseNormalizedCaptureFixture(JSON.stringify(lossyFixture)),
+      isDemo: false,
+    })
+  );
+  const pluralLossyFixture = JSON.parse(JSON.stringify(buildDemoCapture()));
+  pluralLossyFixture.devices[0].ips = Array.from(
+    { length: 18 },
+    (_, index) => `198.51.100.${index + 1}`
+  );
+  const pluralLossyImportedMarkup = renderToStaticMarkup(
+    React.createElement(AnalysisSourceNotice, {
+      capture: parseNormalizedCaptureFixture(JSON.stringify(pluralLossyFixture)),
+      isDemo: false,
+    })
+  );
 
   assert.match(partialMarkup, /Partial analysis/);
   assert.match(partialMarkup, /analysis limit or ended after a malformed or truncated tail/);
@@ -868,6 +891,17 @@ run("packet highway trust notices explain partial results and export metadata", 
   assert.match(importedMarkup, /Saved analysis JSON/);
   assert.match(importedMarkup, /not raw-capture evidence/);
   assert.match(importedMarkup, /CSV inventory is not reapplied/);
+  assert.doesNotMatch(importedMarkup, /sanitation loss/);
+  assert.match(lossyImportedMarkup, /CSV inventory is not reapplied/);
+  assert.match(lossyImportedMarkup, /1 fixture record or field was/);
+  assert.match(pluralLossyImportedMarkup, /CSV inventory is not reapplied/);
+  assert.match(pluralLossyImportedMarkup, /2 fixture records or fields were/);
+  assert.match(lossyImportedMarkup, /sanitation loss, not ignored packet loss/);
+  assert.match(pluralLossyImportedMarkup, /sanitation loss, not ignored packet loss/);
+  assert.doesNotMatch(sampleMarkup, /sanitation loss/);
+  assert.doesNotMatch(rawMarkup, /sanitation loss/);
+  assert.equal((lossyImportedMarkup.match(/CSV inventory is not reapplied/g) ?? []).length, 1);
+  assert.equal((pluralLossyImportedMarkup.match(/CSV inventory is not reapplied/g) ?? []).length, 1);
 });
 
 run("packet highway page clears stale analysis before a new analyze attempt", () => {
@@ -1159,6 +1193,12 @@ run("demo capture round-trips through the fixture validator", () => {
   assert.equal(restored.devices.length, demo.devices.length);
   assert.equal(restored.flows.length, demo.flows.length);
   assert.equal(restored.meta.format, "fixture");
+  assert.equal(restored.meta.fixtureSanitizationLoss.count, 0);
+
+  const legacy = JSON.parse(JSON.stringify(demo));
+  delete legacy.meta.fixtureSanitizationLoss;
+  const restoredLegacy = parseNormalizedCaptureFixture(JSON.stringify(legacy));
+  assert.equal(restoredLegacy.meta.fixtureSanitizationLoss.count, 0);
 });
 
 run("fixture validator rejects invalid JSON and wrong shapes", () => {
@@ -1176,20 +1216,359 @@ run("fixture validator rejects invalid JSON and wrong shapes", () => {
   );
 });
 
-run("fixture validator sanitizes oversized and unknown fields", () => {
+run("fixture validator distinguishes optional absence from invalid required values", () => {
+  const demo = buildDemoCapture();
+  const optionalAbsence = JSON.parse(JSON.stringify(demo));
+  delete optionalAbsence.meta.startTime;
+  delete optionalAbsence.meta.durationMs;
+  delete optionalAbsence.devices[0].name;
+  delete optionalAbsence.devices[0].notes;
+  delete optionalAbsence.flows[0].port;
+
+  const optionalRestored = parseNormalizedCaptureFixture(JSON.stringify(optionalAbsence));
+  assert.equal(optionalRestored.meta.startTime, null);
+  assert.equal(optionalRestored.meta.durationMs, null);
+  assert.equal(optionalRestored.devices[0].name, null);
+  assert.equal(optionalRestored.devices[0].notes, null);
+  assert.equal(optionalRestored.flows[0].port, null);
+  assert.equal(optionalRestored.meta.fixtureSanitizationLoss.count, 0);
+
+  const validRole = JSON.parse(JSON.stringify(demo));
+  validRole.devices[0].role = "gateway";
+  assert.equal(
+    parseNormalizedCaptureFixture(JSON.stringify(validRole)).meta.fixtureSanitizationLoss.count,
+    0
+  );
+
+  const missingRole = JSON.parse(JSON.stringify(demo));
+  delete missingRole.devices[0].role;
+  const missingRoleRestored = parseNormalizedCaptureFixture(JSON.stringify(missingRole));
+  assert.equal(missingRoleRestored.devices[0].role, "device");
+  assert.equal(missingRoleRestored.meta.fixtureSanitizationLoss.count, 1);
+});
+
+run("fixture validator counts enum and metadata replacements", () => {
+  const demo = buildDemoCapture();
+  const cases = [
+    {
+      name: "invalid device role",
+      mutate: (fixture) => { fixture.devices[0].role = "administrator"; },
+      select: (fixture) => fixture.devices[0].role,
+      replacement: "device",
+    },
+    {
+      name: "invalid animation category",
+      mutate: (fixture) => { fixture.animationEvents[0].category = "made-up"; },
+      select: (fixture) => fixture.animationEvents[0].category,
+      replacement: "other",
+    },
+    {
+      name: "invalid DNS kind",
+      mutate: (fixture) => { fixture.dnsQueries[0].kind = "netbios"; },
+      select: (fixture) => fixture.dnsQueries[0].kind,
+      replacement: "dns",
+    },
+    {
+      name: "invalid alert level",
+      mutate: (fixture) => { fixture.alerts[0].level = "critical"; },
+      select: (fixture) => fixture.alerts[0].level,
+      replacement: "info",
+    },
+    {
+      name: "invalid packet count",
+      mutate: (fixture) => { fixture.meta.packetCount = "not-a-number"; },
+      select: (fixture) => fixture.meta.packetCount,
+      replacement: 0,
+    },
+    {
+      name: "invalid generated timestamp",
+      mutate: (fixture) => { fixture.meta.generatedAt = "not-a-date"; },
+      select: (fixture) => fixture.meta.generatedAt,
+      replacement: null,
+    },
+  ];
+
+  for (const testCase of cases) {
+    const fixture = JSON.parse(JSON.stringify(demo));
+    testCase.mutate(fixture);
+    const restored = parseNormalizedCaptureFixture(JSON.stringify(fixture));
+    if (testCase.replacement === null) {
+      assert.doesNotMatch(restored.meta.generatedAt, /not-a-date/, testCase.name);
+    } else {
+      assert.equal(testCase.select(restored), testCase.replacement, testCase.name);
+    }
+    assert.equal(restored.meta.fixtureSanitizationLoss.count, 1, testCase.name);
+  }
+});
+
+run("fixture validator adds independent replacements and preserves prior loss idempotently", () => {
+  const demo = buildDemoCapture();
+  const tampered = JSON.parse(JSON.stringify(demo));
+  tampered.devices[0].role = "administrator";
+  tampered.animationEvents[0].category = "made-up";
+  tampered.dnsQueries[0].kind = "netbios";
+  tampered.alerts[0].level = "critical";
+  tampered.meta.packetCount = "not-a-number";
+
+  const restored = parseNormalizedCaptureFixture(JSON.stringify(tampered));
+  assert.equal(restored.meta.fixtureSanitizationLoss.count, 5);
+  const restoredAgain = parseNormalizedCaptureFixture(JSON.stringify(restored));
+  assert.equal(restoredAgain.meta.fixtureSanitizationLoss.count, 5);
+
+  const priorLoss = JSON.parse(JSON.stringify(demo));
+  priorLoss.meta.fixtureSanitizationLoss = { count: 7 };
+  priorLoss.devices[0].role = "administrator";
+  const withPriorLoss = parseNormalizedCaptureFixture(JSON.stringify(priorLoss));
+  assert.equal(withPriorLoss.devices[0].role, "device");
+  assert.equal(withPriorLoss.meta.fixtureSanitizationLoss.count, 8);
+  assert.equal(
+    parseNormalizedCaptureFixture(JSON.stringify(withPriorLoss)).meta.fixtureSanitizationLoss.count,
+    8
+  );
+});
+
+run("fixture validator counts malformed flow fields path-invariantly", () => {
+  const applyAllSecondaryDefects = (flow) => {
+    flow.id = 42;
+    flow.fromId = false;
+    flow.toId = { synthetic: "invalid" };
+    flow.packets = -1;
+    flow.bytes = "synthetic-invalid-bytes";
+    flow.bytesFromInitiator = -2;
+    flow.firstSeen = "synthetic-invalid-first-seen";
+    flow.lastSeen = "synthetic-invalid-last-seen";
+  };
+  const assertAllSecondaryReplacements = (flow) => {
+    assert.equal(flow.id, "flow-unknown");
+    assert.equal(flow.fromId, "");
+    assert.equal(flow.toId, "");
+    assert.equal(flow.packets, 0);
+    assert.equal(flow.bytes, 0);
+    assert.equal(flow.bytesFromInitiator, 0);
+    assert.equal(flow.firstSeen, null);
+    assert.equal(flow.lastSeen, null);
+  };
+  const secondaryCases = [
+    {
+      name: "id",
+      mutate: (flow) => { flow.id = 42; },
+      assertReplacement: (flow) => assert.equal(flow.id, "flow-unknown"),
+    },
+    {
+      name: "fromId",
+      mutate: (flow) => { flow.fromId = false; },
+      assertReplacement: (flow) => assert.equal(flow.fromId, ""),
+    },
+    {
+      name: "toId",
+      mutate: (flow) => { flow.toId = { synthetic: "invalid" }; },
+      assertReplacement: (flow) => assert.equal(flow.toId, ""),
+    },
+    {
+      name: "packets",
+      mutate: (flow) => { flow.packets = -1; },
+      assertReplacement: (flow) => assert.equal(flow.packets, 0),
+    },
+    {
+      name: "bytes",
+      mutate: (flow) => { flow.bytes = "synthetic-invalid-bytes"; },
+      assertReplacement: (flow) => assert.equal(flow.bytes, 0),
+    },
+    {
+      name: "bytesFromInitiator",
+      mutate: (flow) => { flow.bytesFromInitiator = -2; },
+      assertReplacement: (flow) => assert.equal(flow.bytesFromInitiator, 0),
+    },
+    {
+      name: "firstSeen",
+      mutate: (flow) => { flow.firstSeen = "synthetic-invalid-first-seen"; },
+      assertReplacement: (flow) => assert.equal(flow.firstSeen, null),
+    },
+    {
+      name: "lastSeen",
+      mutate: (flow) => { flow.lastSeen = "synthetic-invalid-last-seen"; },
+      assertReplacement: (flow) => assert.equal(flow.lastSeen, null),
+    },
+  ];
+  const cases = [
+    ...secondaryCases.map((testCase) => ({
+      name: `invalid scope plus malformed ${testCase.name}`,
+      expectedLoss: 2,
+      mutate: (flow) => {
+        flow.scope = "synthetic-invalid-scope";
+        testCase.mutate(flow);
+      },
+      assertReplacement: (flow) => {
+        assert.equal(flow.scope, "external");
+        testCase.assertReplacement(flow);
+      },
+      dropped: true,
+    })),
+    {
+      name: "invalid scope plus all malformed secondary fields",
+      expectedLoss: 9,
+      mutate: (flow) => {
+        flow.scope = "synthetic-invalid-scope";
+        applyAllSecondaryDefects(flow);
+      },
+      assertReplacement: (flow) => {
+        assert.equal(flow.scope, "external");
+        assertAllSecondaryReplacements(flow);
+      },
+      dropped: true,
+    },
+    {
+      name: "unknown field and invalid scope",
+      expectedLoss: 2,
+      mutate: (flow) => {
+        flow.syntheticUnknown = "discard-me";
+        flow.scope = "synthetic-invalid-scope";
+      },
+      assertReplacement: (flow) => {
+        assert.equal("syntheticUnknown" in flow, false);
+        assert.equal(flow.scope, "external");
+      },
+      dropped: true,
+    },
+    {
+      name: "one invalid critical field",
+      expectedLoss: 1,
+      mutate: (flow) => {
+        flow.scope = "synthetic-invalid-scope";
+      },
+      assertReplacement: (flow) => assert.equal(flow.scope, "external"),
+      dropped: true,
+    },
+    {
+      name: "one malformed secondary field",
+      expectedLoss: 1,
+      mutate: (flow) => { flow.id = 42; },
+      assertReplacement: (flow) => assert.equal(flow.id, "flow-unknown"),
+      dropped: false,
+    },
+    {
+      name: "valid flow",
+      expectedLoss: 0,
+      mutate: () => {},
+      assertReplacement: (flow) => assert.equal(flow.category, "quic"),
+      dropped: false,
+    },
+  ];
+
+  for (const testCase of cases) {
+    const fixture = JSON.parse(JSON.stringify(buildDemoCapture()));
+    fixture.flows = [fixture.flows[0]];
+    fixture.animationEvents = [];
+    testCase.mutate(fixture.flows[0]);
+
+    const analyze = parseNormalizedCaptureFixture(JSON.stringify(fixture));
+    const observation = parseNormalizedCaptureFixture(JSON.stringify(fixture), {
+      dropInvalidFlows: true,
+    });
+
+    assert.equal(analyze.meta.fixtureSanitizationLoss.count, testCase.expectedLoss,
+      `${testCase.name}: analyze loss`);
+    assert.equal(observation.meta.fixtureSanitizationLoss.count, testCase.expectedLoss,
+      `${testCase.name}: observation loss`);
+    assert.equal(analyze.meta.ignoredPackets, 0, `${testCase.name}: analyze packets`);
+    assert.equal(observation.meta.ignoredPackets, 0, `${testCase.name}: observation packets`);
+    assert.equal(analyze.flows.length, 1, `${testCase.name}: analyze retains flow`);
+    testCase.assertReplacement(analyze.flows[0]);
+    assert.equal(observation.flows.length, testCase.dropped ? 0 : 1,
+      `${testCase.name}: observation drop policy`);
+    if (!testCase.dropped) {
+      assert.deepEqual(observation.flows[0], analyze.flows[0],
+        `${testCase.name}: retained replacement parity`);
+    }
+  }
+
+  const nonObjectEntry = JSON.parse(JSON.stringify(buildDemoCapture()));
+  nonObjectEntry.flows = [nonObjectEntry.flows[0], "synthetic-non-object-flow"];
+  nonObjectEntry.animationEvents = [];
+  for (const dropInvalidFlows of [false, true]) {
+    const sanitized = parseNormalizedCaptureFixture(JSON.stringify(nonObjectEntry), {
+      dropInvalidFlows,
+    });
+    assert.equal(sanitized.meta.fixtureSanitizationLoss.count, 1,
+      `non-object entry: ${dropInvalidFlows ? "observation" : "analyze"}`);
+    assert.equal(sanitized.flows.length, 1);
+  }
+
+  const withPriorLoss = JSON.parse(JSON.stringify(buildDemoCapture()));
+  withPriorLoss.flows = [withPriorLoss.flows[0]];
+  withPriorLoss.animationEvents = [];
+  withPriorLoss.meta.fixtureSanitizationLoss = { count: 999_995 };
+  withPriorLoss.flows[0].scope = "synthetic-invalid-scope";
+  applyAllSecondaryDefects(withPriorLoss.flows[0]);
+
+  for (const dropInvalidFlows of [false, true]) {
+    const sanitized = parseNormalizedCaptureFixture(JSON.stringify(withPriorLoss), {
+      dropInvalidFlows,
+    });
+    assert.equal(sanitized.meta.fixtureSanitizationLoss.count, 1_000_000,
+      `saturation: ${dropInvalidFlows ? "observation" : "analyze"}`);
+    assert.equal(sanitized.meta.ignoredPackets, 0);
+  }
+
+  const analyze = parseNormalizedCaptureFixture(JSON.stringify(withPriorLoss));
+  const sanitizedAgain = parseNormalizedCaptureFixture(JSON.stringify(analyze));
+  const observationAfterAnalyze = parseNormalizedCaptureFixture(JSON.stringify(analyze), {
+    dropInvalidFlows: true,
+  });
+  assert.equal(sanitizedAgain.meta.fixtureSanitizationLoss.count, 1_000_000);
+  assert.equal(observationAfterAnalyze.meta.fixtureSanitizationLoss.count, 1_000_000);
+  assert.equal(observationAfterAnalyze.flows.length, 1);
+});
+
+run("fixture validator aligns device-note loss with the observation retention boundary", () => {
+  assert.equal(MAX_PACKET_HIGHWAY_DEVICE_NOTE_LENGTH, 300);
+  const demo = buildDemoCapture();
+  const cases = [
+    { length: 299, expectedLength: 299, expectedLoss: 0 },
+    { length: 300, expectedLength: 300, expectedLoss: 0 },
+    { length: 301, expectedLength: 300, expectedLoss: 1 },
+    { length: 500, expectedLength: 300, expectedLoss: 1 },
+  ];
+
+  for (const testCase of cases) {
+    const fixture = JSON.parse(JSON.stringify(demo));
+    fixture.devices[0].notes = "n".repeat(testCase.length);
+    const restored = parseNormalizedCaptureFixture(JSON.stringify(fixture));
+    assert.equal(restored.devices[0].notes.length, testCase.expectedLength, testCase.length);
+    assert.equal(
+      restored.meta.fixtureSanitizationLoss.count,
+      testCase.expectedLoss,
+      testCase.length
+    );
+  }
+
+  const priorLoss = JSON.parse(JSON.stringify(demo));
+  priorLoss.meta.fixtureSanitizationLoss = { count: 2 };
+  priorLoss.devices[0].notes = "n".repeat(301);
+  const restored = parseNormalizedCaptureFixture(JSON.stringify(priorLoss));
+  assert.equal(restored.devices[0].notes.length, 300);
+  assert.equal(restored.meta.fixtureSanitizationLoss.count, 3);
+  const restoredAgain = parseNormalizedCaptureFixture(JSON.stringify(restored));
+  assert.equal(restoredAgain.devices[0].notes, restored.devices[0].notes);
+  assert.equal(restoredAgain.meta.fixtureSanitizationLoss.count, 3);
+});
+
+run("fixture validator counts discarded, truncated, and clamped supplied fields", () => {
   const demo = buildDemoCapture();
   const tampered = JSON.parse(JSON.stringify(demo));
   tampered.devices[0].name = "x".repeat(5000);
   tampered.devices[0].unknownField = "should be dropped";
-  tampered.flows[0].category = "totally-made-up";
-  tampered.alerts = [{ level: "catastrophic", title: 42 }];
+  tampered.animationEvents[0].t = 2;
+  tampered.alerts[0].deviceIds[0] = "d".repeat(100);
+  tampered.summary.stats.categoryBytes["not-a-category"] = 10;
 
   const restored = parseNormalizedCaptureFixture(JSON.stringify(tampered));
   assert.equal(restored.devices[0].name.length, 80);
   assert.equal("unknownField" in restored.devices[0], false);
-  assert.equal(restored.flows[0].category, "other");
-  assert.equal(restored.alerts[0].level, "info");
-  assert.equal(restored.alerts[0].title, "Watch item");
+  assert.equal(restored.animationEvents[0].t, 1);
+  assert.equal(restored.alerts[0].deviceIds[0].length, 40);
+  assert.equal("not-a-category" in restored.summary.stats.categoryBytes, false);
+  assert.equal(restored.meta.fixtureSanitizationLoss.count, 5);
 });
 
 // ---------------------------------------------------------------------------

@@ -227,6 +227,7 @@ export function buildNormalizedCapture(
     durationMs,
     truncated: extract.truncated || trackedDataDropped,
     ignoredPackets: extract.ignoredPackets,
+    fixtureSanitizationLoss: { count: 0 },
     generatedAt: new Date().toISOString(),
   };
 

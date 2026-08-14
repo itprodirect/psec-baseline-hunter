@@ -84,6 +84,7 @@ export const OBSERVATION_NORMALIZATION_LOSS_CODES = [
   "artifact-limit-exceeded",
   "packet-highway-capture-truncated",
   "packet-highway-records-ignored",
+  "packet-highway-fixture-sanitization-loss",
 ] as const;
 export type ObservationNormalizationLossCode =
   (typeof OBSERVATION_NORMALIZATION_LOSS_CODES)[number];

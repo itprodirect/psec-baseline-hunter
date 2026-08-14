@@ -40,10 +40,18 @@ export function AnalysisSourceNotice({
   }
 
   if (capture.meta.format === "fixture") {
+    const fixtureNotice =
+      "Loaded from a saved analysis JSON file, not raw-capture evidence. The file was checked for expected shape, but any CSV inventory is not reapplied here.";
+    const fixtureLoss = capture.meta.fixtureSanitizationLoss.count;
+    const fixtureLossSubject = fixtureLoss === 1
+      ? "fixture record or field was"
+      : "fixture records or fields were";
     return (
       <SourceNotice
         title="Saved analysis JSON"
-        body="Loaded from a saved analysis JSON file, not raw-capture evidence. The file was checked for expected shape, but any CSV inventory is not reapplied here."
+        body={fixtureLoss > 0
+          ? `${fixtureNotice} ${fixtureLoss} ${fixtureLossSubject} discarded or replaced during validation; this is sanitation loss, not ignored packet loss.`
+          : fixtureNotice}
       />
     );
   }

@@ -276,6 +276,15 @@ function buildPacketHighwayCoverage(
     score -= 0.05;
     notes.push(`${capture.meta.ignoredPackets} packets were ignored because they were unsupported or unparseable.`);
   }
+  if (capture.meta.fixtureSanitizationLoss.count > 0) {
+    score -= 0.05;
+    const subject = capture.meta.fixtureSanitizationLoss.count === 1
+      ? "fixture record or field was"
+      : "fixture records or fields were";
+    notes.push(
+      `${capture.meta.fixtureSanitizationLoss.count} ${subject} discarded or replaced during validation.`
+    );
+  }
   if (missingSources.includes("capture_timing")) {
     score -= 0.1;
   }
