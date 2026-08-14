@@ -4182,6 +4182,88 @@ run("packet highway save API drops malformed flows before persistence and reopen
   });
 });
 
+run("TV-02 malformed flow loss stays path-invariant through observation persistence", async () => {
+  const { parseNormalizedCaptureFixture } = await import(
+    "../src/lib/services/capture-upload-safety.ts"
+  );
+
+  await withTempCwd(async () => {
+    const fixtureLossCode = "packet-highway-fixture-sanitization-loss";
+    const packetLossCode = "packet-highway-records-ignored";
+    const malformed = createPacketHighwayCapture();
+    malformed.meta.ignoredPackets = 0;
+    malformed.meta.truncated = false;
+    malformed.flows[0].scope = "synthetic-invalid-scope";
+    malformed.flows[0].protocol = "synthetic-invalid-protocol";
+
+    const analyze = parseNormalizedCaptureFixture(JSON.stringify(malformed));
+    const directObservation = parseNormalizedCaptureFixture(JSON.stringify(malformed), {
+      dropInvalidFlows: true,
+    });
+    assert.equal(analyze.meta.fixtureSanitizationLoss.count, 2);
+    assert.equal(directObservation.meta.fixtureSanitizationLoss.count, 2);
+    assert.equal(analyze.meta.ignoredPackets, 0);
+    assert.equal(directObservation.meta.ignoredPackets, 0);
+    assert.equal(analyze.flows.length, 1);
+    assert.equal(analyze.flows[0].scope, "external");
+    assert.equal(analyze.flows[0].protocol, "other");
+    assert.equal(directObservation.flows.length, 0);
+
+    const bundle = adaptPacketHighwayCaptureToObservationBundleV1({
+      capture: analyze,
+      site: { networkName: "tv-02-path-invariant-flow-loss" },
+      collectionVantage: "gateway-router",
+    });
+    const retained = bundle.supplementalEvidence[0].packetHighway.capture;
+    const coverageNotes = bundle.coverage.notes.join("\n");
+    assert.equal(retained.meta.fixtureSanitizationLoss.count, 2);
+    assert.equal(retained.meta.ignoredPackets, 0);
+    assert.equal(retained.flows.length, 1);
+    assert.equal(normalizationLossCount(bundle, fixtureLossCode), 2);
+    assert.equal(normalizationLossCount(bundle, packetLossCode), 0);
+    assert.equal(bundle.normalization.status, "lossy");
+    assert.equal(bundle.batch.partial, true);
+    assert.match(coverageNotes, /2 fixture records or fields were discarded or replaced/i);
+    assert.doesNotMatch(coverageNotes, /packets were ignored/i);
+    assert.throws(
+      () => compareObservationBundlesV1(bundle, cloneJson(bundle)),
+      (error) => isObservationComparisonError(error) &&
+        error.code === "review_only_observation"
+    );
+
+    const sanitizedAgain = sanitizeSupplementalObservationBundleV1(bundle);
+    assert.equal(
+      sanitizedAgain.supplementalEvidence[0].packetHighway.capture.meta
+        .fixtureSanitizationLoss.count,
+      2
+    );
+    assert.equal(normalizationLossCount(sanitizedAgain, fixtureLossCode), 2);
+
+    const result = registerSupplementalObservationBundle(sanitizedAgain, {
+      importedAt: "2026-05-04T11:01:00.000Z",
+      evaluatedAt: "2026-05-04T11:02:00.000Z",
+    });
+    const firstReopen = getObservationById(result.record.registryId, {
+      evaluatedAt: "2026-05-04T11:02:00.000Z",
+    });
+    const secondReopen = getObservationById(result.record.registryId, {
+      evaluatedAt: "2026-05-04T11:02:00.000Z",
+    });
+    assert.ok(firstReopen);
+    assert.ok(secondReopen);
+
+    for (const reopened of [firstReopen, secondReopen]) {
+      const persisted = reopened.bundle.supplementalEvidence[0].packetHighway.capture;
+      assert.equal(persisted.meta.fixtureSanitizationLoss.count, 2);
+      assert.equal(persisted.meta.ignoredPackets, 0);
+      assert.equal(normalizationLossCount(reopened.bundle, fixtureLossCode), 2);
+      assert.equal(normalizationLossCount(reopened.bundle, packetLossCode), 0);
+      assert.equal(reopened.bundle.normalization.status, "lossy");
+      assert.equal(reopened.bundle.batch.partial, true);
+    }
+  });
+});
+
 run("TV-02 fixture sanitation loss stays separate from parser packet loss through persistence", async () => {
   await withTempCwd(async () => {
     const cases = [

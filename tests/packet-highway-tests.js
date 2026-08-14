@@ -1319,6 +1319,101 @@ run("fixture validator adds independent replacements and preserves prior loss id
   );
 });
 
+run("fixture validator counts malformed flow fields path-invariantly", () => {
+  const cases = [
+    {
+      name: "invalid scope and protocol",
+      expectedLoss: 2,
+      mutate: (flow) => {
+        flow.scope = "synthetic-invalid-scope";
+        flow.protocol = "synthetic-invalid-protocol";
+      },
+      assertReplacement: (flow) => {
+        assert.equal(flow.scope, "external");
+        assert.equal(flow.protocol, "other");
+      },
+      dropped: true,
+    },
+    {
+      name: "unknown field and invalid scope",
+      expectedLoss: 2,
+      mutate: (flow) => {
+        flow.syntheticUnknown = "discard-me";
+        flow.scope = "synthetic-invalid-scope";
+      },
+      assertReplacement: (flow) => {
+        assert.equal("syntheticUnknown" in flow, false);
+        assert.equal(flow.scope, "external");
+      },
+      dropped: true,
+    },
+    {
+      name: "one invalid category",
+      expectedLoss: 1,
+      mutate: (flow) => {
+        flow.category = "synthetic-invalid-category";
+      },
+      assertReplacement: (flow) => assert.equal(flow.category, "other"),
+      dropped: true,
+    },
+    {
+      name: "valid flow",
+      expectedLoss: 0,
+      mutate: () => {},
+      assertReplacement: (flow) => assert.equal(flow.category, "quic"),
+      dropped: false,
+    },
+  ];
+
+  for (const testCase of cases) {
+    const fixture = JSON.parse(JSON.stringify(buildDemoCapture()));
+    fixture.flows = [fixture.flows[0]];
+    fixture.animationEvents = [];
+    testCase.mutate(fixture.flows[0]);
+
+    const analyze = parseNormalizedCaptureFixture(JSON.stringify(fixture));
+    const observation = parseNormalizedCaptureFixture(JSON.stringify(fixture), {
+      dropInvalidFlows: true,
+    });
+
+    assert.equal(analyze.meta.fixtureSanitizationLoss.count, testCase.expectedLoss,
+      `${testCase.name}: analyze loss`);
+    assert.equal(observation.meta.fixtureSanitizationLoss.count, testCase.expectedLoss,
+      `${testCase.name}: observation loss`);
+    assert.equal(analyze.meta.ignoredPackets, 0, `${testCase.name}: analyze packets`);
+    assert.equal(observation.meta.ignoredPackets, 0, `${testCase.name}: observation packets`);
+    assert.equal(analyze.flows.length, 1, `${testCase.name}: analyze retains flow`);
+    testCase.assertReplacement(analyze.flows[0]);
+    assert.equal(observation.flows.length, testCase.dropped ? 0 : 1,
+      `${testCase.name}: observation drop policy`);
+  }
+
+  const withPriorLoss = JSON.parse(JSON.stringify(buildDemoCapture()));
+  withPriorLoss.flows = [withPriorLoss.flows[0]];
+  withPriorLoss.animationEvents = [];
+  withPriorLoss.meta.fixtureSanitizationLoss = { count: 999_999 };
+  withPriorLoss.flows[0].scope = "synthetic-invalid-scope";
+  withPriorLoss.flows[0].protocol = "synthetic-invalid-protocol";
+
+  for (const dropInvalidFlows of [false, true]) {
+    const sanitized = parseNormalizedCaptureFixture(JSON.stringify(withPriorLoss), {
+      dropInvalidFlows,
+    });
+    assert.equal(sanitized.meta.fixtureSanitizationLoss.count, 1_000_000,
+      `saturation: ${dropInvalidFlows ? "observation" : "analyze"}`);
+    assert.equal(sanitized.meta.ignoredPackets, 0);
+  }
+
+  const analyze = parseNormalizedCaptureFixture(JSON.stringify(withPriorLoss));
+  const sanitizedAgain = parseNormalizedCaptureFixture(JSON.stringify(analyze));
+  const observationAfterAnalyze = parseNormalizedCaptureFixture(JSON.stringify(analyze), {
+    dropInvalidFlows: true,
+  });
+  assert.equal(sanitizedAgain.meta.fixtureSanitizationLoss.count, 1_000_000);
+  assert.equal(observationAfterAnalyze.meta.fixtureSanitizationLoss.count, 1_000_000);
+  assert.equal(observationAfterAnalyze.flows.length, 1);
+});
+
 run("fixture validator aligns device-note loss with the observation retention boundary", () => {
   assert.equal(MAX_PACKET_HIGHWAY_DEVICE_NOTE_LENGTH, 300);
   const demo = buildDemoCapture();

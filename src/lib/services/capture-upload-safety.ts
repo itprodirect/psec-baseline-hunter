@@ -505,14 +505,11 @@ function sanitizeFlow(
   const validPort = raw.port == null || (typeof raw.port === "number" &&
     Number.isInteger(raw.port) && raw.port >= 0 && raw.port <= 65535);
   const invalid = !validScope || !validProtocol || !validCategory || !validPort;
-  if (invalid && dropInvalid) {
-    recordFixtureLoss(loss, 1);
-    return null;
-  }
   if (!validScope) recordFixtureLoss(loss, 1);
   if (!validProtocol) recordFixtureLoss(loss, 1);
   if (!validCategory) recordFixtureLoss(loss, 1);
   if (!validPort) recordFixtureLoss(loss, 1);
+  if (invalid && dropInvalid) return null;
   return {
     id: str(raw.id, 40, loss, "flow-unknown"),
     fromId: str(raw.fromId, 40, loss),
